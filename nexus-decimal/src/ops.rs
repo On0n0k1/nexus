@@ -193,21 +193,9 @@ impl_decimal_iter_traits!(i128);
 
 macro_rules! impl_decimal_from_traits {
     ($backing:ty) => {
-        impl<const D: u8> TryFrom<i64> for Decimal<$backing, D> {
-            type Error = crate::error::ConvertError;
-
-            fn try_from(value: i64) -> Result<Self, Self::Error> {
-                Self::from_i64(value).ok_or(crate::error::ConvertError::Overflow)
-            }
-        }
-
-        impl<const D: u8> TryFrom<u64> for Decimal<$backing, D> {
-            type Error = crate::error::ConvertError;
-
-            fn try_from(value: u64) -> Result<Self, Self::Error> {
-                Self::from_u64(value).ok_or(crate::error::ConvertError::Overflow)
-            }
-        }
+        // `TryFrom<i64>` and `TryFrom<u64>` are emitted per-(backing, D) by
+        // `from_int.rs` — sound combinations get `From<IntType>` instead, which
+        // auto-implies `TryFrom` via the std blanket. See `src/from_int.rs`.
 
         #[cfg(feature = "std")]
         impl<const D: u8> TryFrom<f64> for Decimal<$backing, D> {

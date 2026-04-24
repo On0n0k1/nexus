@@ -362,6 +362,44 @@ macro_rules! impl_decimal_convert {
                 }
             }
 
+            /// Constructs a `Decimal` representing `value * 10^-scale`.
+            ///
+            /// Useful for tick sizes and precision-boundary construction.
+            /// For example, `from_scaled(1, 5)` returns a value equal to
+            /// `0.00001`.
+            ///
+            /// Returns `None` if:
+            /// - `scale > D` (would require rounding; use
+            ///   [`from_str_lossy`](Self::from_str_lossy) for a rounding policy)
+            /// - The scaled value overflows the backing type
+            ///
+            /// # Examples
+            ///
+            /// ```
+            /// use nexus_decimal::Decimal;
+            /// type D64 = Decimal<i64, 8>;
+            ///
+            /// let tick = D64::from_scaled(1, 5).unwrap();
+            /// assert_eq!(tick, D64::from_str_exact("0.00001").unwrap());
+            ///
+            /// // scale > D
+            /// assert!(D64::from_scaled(1, 9).is_none());
+            /// ```
+            #[inline]
+            pub const fn from_scaled(value: $backing, scale: u8) -> Option<Self> {
+                if scale > D {
+                    return None;
+                }
+                // 10^scale ≤ 10^D = SCALE, so the divisor fits the backing.
+                // Self::SCALE forces compile-time validation that D fits the backing.
+                let divisor = (10 as $backing).pow(scale as u32);
+                let multiplier = Self::SCALE / divisor;
+                match value.checked_mul(multiplier) {
+                    Some(v) => Some(Self { value: v }),
+                    None => None,
+                }
+            }
+
             // ========================================================
             // Float conversions
             // ========================================================

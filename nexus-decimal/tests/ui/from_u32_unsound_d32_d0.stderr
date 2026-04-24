@@ -1,0 +1,13 @@
+error[E0277]: the trait bound `Decimal<i32, 0>: From<u32>` is not satisfied
+  --> tests/ui/from_u32_unsound_d32_d0.rs:10:25
+   |
+10 |     let _: BadD = 5_u32.into();
+   |                         ^^^^ the trait `From<u32>` is not implemented for `Decimal<i32, 0>`
+   |
+   = help: the following other types implement trait `From<T>`:
+             `Decimal<i32, 0>` implements `From<i16>`
+             `Decimal<i32, 0>` implements `From<i32>`
+             `Decimal<i32, 0>` implements `From<i8>`
+             `Decimal<i32, 0>` implements `From<u16>`
+             `Decimal<i32, 0>` implements `From<u8>`
+   = note: required for `u32` to implement `Into<Decimal<i32, 0>>`

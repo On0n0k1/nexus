@@ -1,0 +1,14 @@
+error[E0277]: the trait bound `Decimal<i128, 20>: From<i64>` is not satisfied
+  --> tests/ui/from_i64_unsound_d128_d20.rs:10:25
+   |
+10 |     let _: BadD = 5_i64.into();
+   |                         ^^^^ the trait `From<i64>` is not implemented for `Decimal<i128, 20>`
+   |
+   = help: the following other types implement trait `From<T>`:
+             `Decimal<i128, 20>` implements `From<i16>`
+             `Decimal<i128, 20>` implements `From<i32>`
+             `Decimal<i128, 20>` implements `From<i8>`
+             `Decimal<i128, 20>` implements `From<u16>`
+             `Decimal<i128, 20>` implements `From<u32>`
+             `Decimal<i128, 20>` implements `From<u8>`
+   = note: required for `i64` to implement `Into<Decimal<i128, 20>>`

@@ -18,6 +18,32 @@ macro_rules! impl_decimal_arithmetic {
     ($backing:ty) => {
         impl<const D: u8> Decimal<$backing, D> {
             // ========================================================
+            // Default semantics (panic on overflow in debug, wrap in release)
+            // ========================================================
+
+            /// Computes the absolute value of `self`.
+            ///
+            /// # Overflow behavior
+            ///
+            /// The absolute value of `Self::MIN` cannot be represented as
+            /// a `Self`, and attempting to calculate it will cause an
+            /// overflow. This means that code in debug mode will trigger
+            /// a panic on this case and optimized code will return
+            /// `Self::MIN` without a panic.
+            ///
+            /// Matches the semantics of `<backing>::abs`. Use
+            /// [`checked_abs`](Self::checked_abs),
+            /// [`saturating_abs`](Self::saturating_abs), or
+            /// [`wrapping_abs`](Self::wrapping_abs) for explicit overflow
+            /// policies.
+            #[inline(always)]
+            pub const fn abs(self) -> Self {
+                Self {
+                    value: self.value.abs(),
+                }
+            }
+
+            // ========================================================
             // Checked
             // ========================================================
 

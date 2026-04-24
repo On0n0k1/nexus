@@ -180,6 +180,73 @@ fn checked_abs_min_returns_none() {
 }
 
 // ============================================================================
+// Plain abs() — default semantics (panic in debug on MIN, wrap in release)
+// ============================================================================
+
+#[test]
+fn abs_positive_unchanged() {
+    assert_eq!(D64::ONE.abs(), D64::ONE);
+    assert_eq!(D64::from_i32(5).unwrap().abs(), D64::from_i32(5).unwrap());
+}
+
+#[test]
+fn abs_negative_flipped() {
+    assert_eq!(D64::NEG_ONE.abs(), D64::ONE);
+    assert_eq!(D64::from_i32(-5).unwrap().abs(), D64::from_i32(5).unwrap());
+}
+
+#[test]
+fn abs_zero_is_zero() {
+    assert_eq!(D64::ZERO.abs(), D64::ZERO);
+}
+
+#[test]
+fn abs_preserves_fractional() {
+    let neg = D64::from_str_exact("-1.23456789").unwrap();
+    let pos = D64::from_str_exact("1.23456789").unwrap();
+    assert_eq!(neg.abs(), pos);
+}
+
+#[test]
+fn abs_min_plus_one_does_not_panic() {
+    let v = D64::from_raw(i64::MIN + 1);
+    assert_eq!(v.abs().to_raw(), i64::MAX);
+}
+
+// MIN.abs() panics in debug (i64::MIN.abs() overflows). Skip in release where
+// it wraps to MIN — should_panic would fail there.
+#[cfg(debug_assertions)]
+#[test]
+#[should_panic(expected = "attempt to negate with overflow")]
+fn abs_min_panics_in_debug() {
+    let _ = D64::MIN.abs();
+}
+
+#[test]
+fn abs_d32() {
+    assert_eq!(D32::from_i32(5).unwrap().abs(), D32::from_i32(5).unwrap());
+    assert_eq!(D32::from_i32(-5).unwrap().abs(), D32::from_i32(5).unwrap());
+    assert_eq!(D32::ZERO.abs(), D32::ZERO);
+}
+
+#[test]
+fn abs_d128() {
+    assert_eq!(D128::from_i32(5).unwrap().abs(), D128::from_i32(5).unwrap());
+    assert_eq!(
+        D128::from_i32(-5).unwrap().abs(),
+        D128::from_i32(5).unwrap()
+    );
+    assert_eq!(D128::ZERO.abs(), D128::ZERO);
+}
+
+#[test]
+fn abs_const_evaluable() {
+    const NEG: D64 = D64::from_raw(-100_000_000);
+    const POS: D64 = NEG.abs();
+    assert_eq!(POS.to_raw(), 100_000_000);
+}
+
+// ============================================================================
 // Saturating arithmetic
 // ============================================================================
 

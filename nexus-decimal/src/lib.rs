@@ -44,6 +44,35 @@
 //! assert_eq!(mid.to_string(), "100.25");
 //! ```
 //!
+//! # Integer Conversions
+//!
+//! `From<IntType>` is implemented for primitive integer types whenever the
+//! conversion is sound — i.e., `IntType::MAX * 10^DECIMALS` fits the backing.
+//! Otherwise, `TryFrom<i64>` and `TryFrom<u64>` provide fallible conversions.
+//! Smaller types that don't fit must be widened explicitly.
+//!
+//! ```
+//! use nexus_decimal::Decimal;
+//! type D64 = Decimal<i64, 8>;
+//!
+//! // Sound combinations: infallible.
+//! let qty: D64 = 100_i32.into();
+//! let count: D64 = 42_u16.into();
+//!
+//! // Unsound combinations: fallible.
+//! let huge: Result<D64, _> = i64::MAX.try_into();
+//! assert!(huge.is_err());
+//! ```
+//!
+//! Use [`Decimal::from_scaled`] for tick-size construction:
+//!
+//! ```
+//! use nexus_decimal::Decimal;
+//! type D64 = Decimal<i64, 8>;
+//!
+//! let tick = D64::from_scaled(1, 5).unwrap(); // 0.00001
+//! ```
+//!
 //! # Compile-Time Constants
 //!
 //! ```
@@ -132,6 +161,7 @@ mod decimal;
 mod div_by_scale;
 mod financial;
 mod format;
+mod from_int;
 mod ops;
 mod pow10;
 mod rounding;

@@ -1,0 +1,21 @@
+error[E0277]: the trait bound `Decimal<i64, 10>: From<i32>` is not satisfied
+  --> tests/ui/from_i32_unsound_d64_d10.rs:13:25
+   |
+13 |     let _: BadD = 5_i32.into();
+   |                         ^^^^ the trait `From<i32>` is not implemented for `Decimal<i64, 10>`
+   |
+help: the following other types implement trait `From<T>`
+  --> src/from_int.rs
+   |
+   |             impl From<$int> for Decimal<$backing, $d> {
+   |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |             |
+   |             `Decimal<i64, 10>` implements `From<i16>`
+   |             `Decimal<i64, 10>` implements `From<i8>`
+   |             `Decimal<i64, 10>` implements `From<u16>`
+   |             `Decimal<i64, 10>` implements `From<u8>`
+...
+   | impl_from_sound!(i64, 10, [i8, i16, u8, u16]);
+   | --------------------------------------------- in this macro invocation
+   = note: required for `i32` to implement `Into<Decimal<i64, 10>>`
+   = note: this error originates in the macro `impl_from_sound` (in Nightly builds, run with -Z macro-backtrace for more info)
