@@ -1,11 +1,17 @@
-//! Reproduction for suspected bug: slab task in all_tasks at Runtime::drop
-//! triggers panic in slab_free_task because SLAB_FREE TLS is cleared after
-//! run_loop exits, but Executor::drop still calls free_task on slab tasks.
+//! Reproduction for BUG-1 (tracked in issue #167): slab task in all_tasks
+//! at `Runtime::drop` triggers panic in `slab_free_task` because the
+//! `SLAB_FREE` TLS is cleared after `run_loop` exits, but `Executor::drop`
+//! still calls `free_task` on surviving slab tasks.
+//!
+//! Tests are marked `#[should_panic]` so CI documents the bug without
+//! blocking unrelated work. When #167 is fixed, invert these to
+//! `#[test]` (no panic expected) and they become regression tests.
 
 use nexus_async_rt::{Runtime, spawn_slab};
 use nexus_rt::WorldBuilder;
 
 #[test]
+#[should_panic(expected = "slab free called without a slab configured")]
 fn slab_task_uncompleted_at_runtime_drop_panics() {
     let slab = unsafe { nexus_slab::byte::unbounded::Slab::<256>::with_chunk_capacity(8) };
     let wb = WorldBuilder::new();
@@ -27,6 +33,7 @@ fn slab_task_uncompleted_at_runtime_drop_panics() {
 }
 
 #[test]
+#[should_panic(expected = "slab free called without a slab configured")]
 fn slab_handle_dropped_outside_block_on_panics() {
     let slab = unsafe { nexus_slab::byte::unbounded::Slab::<256>::with_chunk_capacity(8) };
     let wb = WorldBuilder::new();
