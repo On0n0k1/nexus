@@ -610,11 +610,21 @@ fn tokio_tcp_concurrent_clients() {
         }
 
         // Wait for all clients.
+        //
+        // We use `tokio::sleep` rather than `yield_now` here because the
+        // wait is for cross-thread state — the clients' completion
+        // depends on tokio's IO driver thread firing wakes. `yield_now`
+        // is a cooperative yield within nexus's executor; it doesn't
+        // give other OS threads CPU time. A tight `yield_now` loop
+        // on a single-threaded executor can starve tokio's worker
+        // thread, causing the cross-thread wakes to arrive after the
+        // budget runs out. `sleep` parks the executor for a bounded
+        // duration, letting the OS schedule tokio's worker.
         for _ in 0..200 {
             if count.get() >= 5 {
                 return;
             }
-            nexus_async_rt::yield_now().await;
+            with_tokio(|| tokio::time::sleep(std::time::Duration::from_millis(1))).await;
         }
         panic!("only {}/5 clients completed", count.get());
     });
@@ -1012,4 +1022,135 @@ fn spawn_on_tokio_tcp_io() {
         assert_eq!(echo, "hello");
         server.await.unwrap();
     });
+}
+
+// =============================================================================
+// Regression: Executor::drop must not double-panic during unwinding
+// =============================================================================
+
+/// Helper: spawn a task that registers a tokio waker, signals readiness,
+/// then sleeps forever. Returns when the spawned task is at its await
+/// point (waker registered) or the wait deadline expires.
+///
+/// `spawner` lets us use this for both Box and slab variants.
+async fn setup_pending_tokio_task<F>(spawner: F)
+where
+    F: FnOnce(std::pin::Pin<Box<dyn std::future::Future<Output = ()> + 'static>>),
+{
+    let started = Rc::new(Cell::new(false));
+    let s = started.clone();
+    spawner(Box::pin(async move {
+        s.set(true);
+        with_tokio(|| async {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        })
+        .await;
+    }));
+
+    // Wait for the spawned task to start AND for tokio to register the
+    // waker. The flag confirms the spawned task ran past `s.set(true)`,
+    // i.e., it's now in the with_tokio body. The additional sleeps give
+    // tokio's worker thread CPU to process the IO source registration.
+    while !started.get() {
+        with_tokio(|| tokio::time::sleep(std::time::Duration::from_millis(1))).await;
+    }
+    for _ in 0..50 {
+        with_tokio(|| tokio::time::sleep(std::time::Duration::from_millis(1))).await;
+    }
+}
+
+/// When `block_on` panics from user code, the Runtime drops mid-unwind.
+/// `Executor::drop` then iterates `all_tasks` — for any task with
+/// outstanding cross-thread waker refs (e.g., tokio holds a stored
+/// waker), the executor previously debug-panicked with "outstanding
+/// references". A panic during unwinding is a double-panic → SIGABRT.
+///
+/// This is the **box-allocated** variant. Box leak is safe: the Box just
+/// sits in process memory; subsequent `cross_task_drop` from tokio's
+/// thread sees valid memory.
+///
+/// Verifies via `catch_unwind` that the original panic propagates rather
+/// than the process aborting. Resources held by the spawned task are
+/// still cleaned up by `drop_task_future`.
+#[test]
+fn executor_drop_during_unwind_does_not_abort_box() {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let mut rt = Runtime::new(&mut world);
+
+        rt.block_on(async {
+            setup_pending_tokio_task(|fut| {
+                spawn_boxed(fut);
+            })
+            .await;
+
+            // Panic with a cross-thread waker still held by tokio.
+            panic!("intentional test panic");
+        });
+    }));
+
+    // Reaching here at all means the original panic propagated cleanly.
+    // If Executor::drop double-panicked, the process would have aborted.
+    assert!(result.is_err(), "block_on panic should propagate, not abort");
+    let panic_msg = result
+        .unwrap_err()
+        .downcast::<&'static str>()
+        .map(|s| *s)
+        .unwrap_or("<not-a-static-str>");
+    assert!(
+        panic_msg.contains("intentional test panic"),
+        "expected our panic to propagate, got: {panic_msg}"
+    );
+}
+
+/// **Slab-allocated** variant of the unwind regression test.
+///
+/// Slab tasks have stricter lifetime constraints than box tasks: the
+/// `_slab_guard` field on `Runtime` releases the slab's backing storage
+/// immediately after `Executor::drop` returns. If we leaked an
+/// outstanding-ref slab task (as we do for box tasks), the slab memory
+/// would be freed while a cross-thread waker still holds the task ptr —
+/// `cross_task_drop` would later UAF on freed slab memory.
+///
+/// `Executor::drop` handles this by waiting (bounded) for cross-thread
+/// refs to settle before allowing the slab guard to drop. If the wait
+/// times out, it aborts (UAF would be worse). For this test the wait
+/// should succeed — tokio's worker thread will drop its waker when
+/// `drop_task_future` releases the IO source, well within 100ms.
+#[test]
+fn executor_drop_during_unwind_does_not_uaf_slab() {
+    use nexus_async_rt::spawn_slab;
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let slab = unsafe {
+            nexus_slab::byte::unbounded::Slab::<256>::with_chunk_capacity(8)
+        };
+        let wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let mut rt = Runtime::builder(&mut world).slab_unbounded(slab).build();
+
+        rt.block_on(async {
+            setup_pending_tokio_task(|fut| {
+                spawn_slab(fut);
+            })
+            .await;
+
+            // Panic with a slab task holding a cross-thread waker.
+            panic!("intentional slab test panic");
+        });
+    }));
+
+    // Same as the box variant: reaching here means we didn't abort.
+    // Additionally verifies the slab branch (wait + free) didn't UAF.
+    assert!(result.is_err(), "block_on panic should propagate, not abort");
+    let panic_msg = result
+        .unwrap_err()
+        .downcast::<&'static str>()
+        .map(|s| *s)
+        .unwrap_or("<not-a-static-str>");
+    assert!(
+        panic_msg.contains("intentional slab test panic"),
+        "expected our panic to propagate, got: {panic_msg}"
+    );
 }

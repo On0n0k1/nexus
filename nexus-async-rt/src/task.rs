@@ -524,6 +524,19 @@ pub(crate) unsafe fn is_completed(ptr: *mut u8) -> bool {
     (unsafe { state_load(ptr) }) & COMPLETED != 0
 }
 
+/// Read the SLAB_ALLOCATED flag.
+///
+/// Used by `Executor::drop` to differentiate cleanup behavior between
+/// slab- and box-allocated tasks during unwinding.
+///
+/// # Safety
+///
+/// `ptr` must point to a live `Task<F>`.
+#[inline]
+pub(crate) unsafe fn is_slab_allocated(ptr: *mut u8) -> bool {
+    (unsafe { state_load(ptr) }) & SLAB_ALLOCATED != 0
+}
+
 /// Read the is_queued flag.
 ///
 /// # Safety
