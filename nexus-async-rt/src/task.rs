@@ -459,7 +459,6 @@ pub(crate) unsafe fn ref_dec(ptr: *mut u8) -> FreeAction {
 /// # Safety
 ///
 /// `ptr` must point to a live `Task<F>`.
-#[allow(dead_code)]
 #[inline]
 pub(crate) unsafe fn ref_count(ptr: *mut u8) -> usize {
     (unsafe { state_load(ptr) } & REF_MASK) >> 6
@@ -1172,7 +1171,11 @@ mod tests {
             assert_eq!(action, FreeAction::FreeSlab);
 
             let s = state_load(ptr);
-            assert_eq!(s, COMPLETED | SLAB_ALLOCATED, "terminal state must be COMPLETED | SLAB_ALLOCATED");
+            assert_eq!(
+                s,
+                COMPLETED | SLAB_ALLOCATED,
+                "terminal state must be COMPLETED | SLAB_ALLOCATED"
+            );
             assert_eq!(s, 33);
             assert!(is_terminal(ptr));
 
@@ -1354,7 +1357,11 @@ mod tests {
 
             // Drop 9 waker refs — all Retain
             for i in 0..9 {
-                assert_eq!(ref_dec(ptr), FreeAction::Retain, "ref_dec #{i} should Retain");
+                assert_eq!(
+                    ref_dec(ptr),
+                    FreeAction::Retain,
+                    "ref_dec #{i} should Retain"
+                );
             }
             assert_eq!(ref_count(ptr), 1);
 
