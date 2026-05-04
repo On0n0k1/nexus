@@ -155,25 +155,8 @@ impl TaskRef {
 
     /// The raw task pointer this handle holds.
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn as_ptr(&self) -> *mut u8 {
         self.ptr
-    }
-
-    /// Release the ref without invoking Drop's terminal routing. Returns
-    /// the `FreeAction` so the caller can decide how to dispose of a
-    /// terminal task.
-    ///
-    /// Use sparingly. Drop is the expected disposal path for almost all
-    /// holders. `release` exists for callers that need to inspect the
-    /// terminal action (e.g., to make a routing decision the standard
-    /// `dispose_terminal` flow doesn't cover).
-    #[inline]
-    #[allow(dead_code)]
-    pub(crate) fn release(self) -> FreeAction {
-        let ptr = self.ptr;
-        std::mem::forget(self);
-        unsafe { ref_dec(ptr) }
     }
 }
 
@@ -283,8 +266,13 @@ impl<F: Future<Output = ()> + 'static> Task<F> {
     /// Used internally for tests and low-level task construction.
     /// `ref_count = 1` (executor only), `HAS_JOIN` not set.
     /// `cross_wake_ctx` is null — test tasks aren't registered with any
-    /// runtime, so terminal frees go through `dispose_terminal`'s
-    /// null-ctx branch (free directly).
+    /// runtime. Terminal frees go through `dispose_terminal`'s on-thread
+    /// defer path (`try_defer_free` if a poll cycle is active, otherwise
+    /// leak until `Executor::drop`'s `all_tasks` scan reclaims them).
+    /// Direct-free is unsafe even for null-ctx tasks because
+    /// `dispose_terminal` doesn't own `all_tasks` bookkeeping — see
+    /// `dispose_terminal`'s doc-comment in `cross_wake.rs` for the full
+    /// rationale.
     ///
     /// # Why `Output = ()` is required
     ///
@@ -1515,52 +1503,6 @@ mod tests {
             // Cleanup: complete and free directly (no TaskRef path).
             drop_task_future(ptr);
             assert!(matches!(complete_and_unref(ptr), FreeAction::FreeBox));
-            free_task(ptr);
-        }
-    }
-
-    #[test]
-    fn taskref_release_returns_freeaction_retain() {
-        // Acquire TaskRef on a non-terminal task, then release. ref_dec
-        // returns Retain (other refs still exist or task not completed).
-        let task = Box::new(Task::new_boxed(async {}, 0));
-        let ptr = Box::into_raw(task) as *mut u8;
-
-        unsafe {
-            assert_eq!(ref_count(ptr), 1);
-            let task_ref = TaskRef::acquire(ptr); // rc=2
-            let action = task_ref.release(); // rc=2 → 1, no COMPLETED → Retain
-            assert!(matches!(action, FreeAction::Retain));
-            assert_eq!(ref_count(ptr), 1);
-
-            // Cleanup.
-            drop_task_future(ptr);
-            assert!(matches!(complete_and_unref(ptr), FreeAction::FreeBox));
-            free_task(ptr);
-        }
-    }
-
-    #[test]
-    fn taskref_release_returns_freeaction_terminal() {
-        // Set up a task at rc=1, COMPLETED, lifecycle clear. Wrap with
-        // from_owned (TaskRef takes the existing ref). Release →
-        // ref_dec returns FreeBox. Verifies release exposes the
-        // terminal action without going through dispose_terminal.
-        let ptr = box_spawn_joinable(async { 42u64 }, 0, std::ptr::null());
-        unsafe {
-            // rc=2, HAS_JOIN. Drop future, complete_and_unref → rc=1
-            // (HAS_JOIN gates terminal), COMPLETED.
-            drop_task_future(ptr);
-            assert!(matches!(complete_and_unref(ptr), FreeAction::Retain));
-            // Clear HAS_JOIN — rc=1, COMPLETED, no lifecycle flags.
-            clear_has_join(ptr);
-
-            // TaskRef wraps the existing rc=1 (no extra inc).
-            let task_ref = TaskRef::from_owned(ptr);
-            let action = task_ref.release(); // rc=1 → 0, terminal → FreeBox
-            assert!(matches!(action, FreeAction::FreeBox));
-            assert!(is_terminal(ptr));
-
             free_task(ptr);
         }
     }

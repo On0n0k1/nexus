@@ -236,6 +236,17 @@ pub struct Runtime {
     /// `executor`, the on-thread fast path silently misroutes terminal
     /// frees to the cross-queue. The `const _: ()` block below this
     /// struct enforces the ordering at compile time.
+    ///
+    /// **FAILURE MODE: silent UAF in production for slab tasks.** If
+    /// this guard drops before `executor`, the on-thread fast path in
+    /// `dispose_terminal::on_owning_executor` silently misroutes
+    /// terminal `TaskRef::Drop` calls to the cross-queue. Nothing
+    /// drains the cross-queue at this point in shutdown. `_slab_guard`
+    /// then releases the slab backing storage. Any off-thread holder
+    /// still pointing into the freed slab memory dereferences a
+    /// dangling pointer. Do NOT modify the field declaration order
+    /// without re-running miri tree-borrows on the full test suite AND
+    /// the BUG-4 unwind regression tests.
     _cross_wake_tls_guard: crate::cross_wake::RuntimeCrossWakeGuard,
 
     /// IO driver (mio). Wrapped in `UnsafeCell` because a raw pointer
