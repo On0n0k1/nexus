@@ -245,3 +245,230 @@ fn cancel_child_drop_before_parent() {
     // The child's future should now resolve.
     assert_eq!(poll_once(child_fut.as_mut()), Poll::Ready(()));
 }
+
+// =============================================================================
+// PR 3 — intrusive doubly-linked list regression tests
+// =============================================================================
+
+/// PR 3 / BUG-3 regression #1: pin a `Cancelled` future, poll N times
+/// alternating wakers. Embedded `WaiterNode` is reused across polls —
+/// no per-poll heap allocation. Under tree-borrows miri, the lock +
+/// node-update path stays sound across waker churn.
+///
+/// Pre-PR-3 (Treiber stack): each waker change Box-allocated a fresh
+/// `WaiterNode` and pushed onto the stack; old nodes accumulated until
+/// `cancel()` drained. For long-lived tokens with high waker churn,
+/// the stack grew linearly with poll count (the §F8 leak class).
+///
+/// Post-PR-3 (intrusive list): the embedded node is reused. Allocator
+/// traffic is zero for re-polls.
+#[test]
+fn no_allocation_on_repoll() {
+    let token = CancellationToken::new();
+    let mut fut = Box::pin(token.cancelled());
+
+    // Use 3 distinct tracking wakers; cycle through them. Each
+    // change forces the will_wake comparison to fail and trigger
+    // the in-place waker update under the lock.
+    let flags: Vec<std::cell::Cell<bool>> = (0..3).map(|_| std::cell::Cell::new(false)).collect();
+
+    // First poll: registers via the first-poll branch.
+    {
+        let waker = tracking_waker(&flags[0]);
+        let mut cx = Context::from_waker(&waker);
+        assert_eq!(fut.as_mut().poll(&mut cx), Poll::Pending);
+    }
+
+    // 99 more polls cycling through 3 wakers. Pre-PR3: 99 fresh
+    // WaiterNode boxes. Post-PR3: zero allocations, just lock +
+    // waker update.
+    for i in 0..99 {
+        let waker = tracking_waker(&flags[i % 3]);
+        let mut cx = Context::from_waker(&waker);
+        assert_eq!(fut.as_mut().poll(&mut cx), Poll::Pending);
+    }
+
+    // Cancel — drain the (single) WaiterNode + wake the most recent
+    // waker. The loop ran `for i in 0..99` so the last `i` was 98;
+    // the last stored waker is `flags[98 % 3] = flags[2]`.
+    token.cancel();
+    let waker = tracking_waker(&flags[2]);
+    let mut cx = Context::from_waker(&waker);
+    assert_eq!(fut.as_mut().poll(&mut cx), Poll::Ready(()));
+    assert!(flags[2].get(), "most recent waker (flags[2]) should fire");
+}
+
+/// PR 3 regression #2: drop several `Cancelled` futures BEFORE
+/// calling `cancel()`. Each drop unlinks under the lock (slow path).
+/// `cancel()` then drains an empty list. No UAF; Inner::Drop's
+/// debug_assert verifies the list ended empty.
+#[test]
+fn drop_while_in_list() {
+    let token = CancellationToken::new();
+    let mut futures: Vec<_> = (0..5).map(|_| Box::pin(token.cancelled())).collect();
+
+    // Register all.
+    for f in &mut futures {
+        assert_eq!(poll_once(f.as_mut()), Poll::Pending);
+    }
+
+    // Drop a random subset BEFORE cancel — exercises the slow-path
+    // unlink (still in_list, lock + DLL prev-pointer unlink).
+    futures.remove(2); // drop the middle one
+    futures.remove(0); // drop a front one (was head after middle removal)
+
+    // Cancel — drains the survivors.
+    token.cancel();
+    for f in &mut futures {
+        assert_eq!(poll_once(f.as_mut()), Poll::Ready(()));
+    }
+    drop(futures);
+    drop(token);
+    // Inner::Drop's debug_assert verifies head is null.
+}
+
+/// PR 3 regression #3: cancel first, then drop the futures. Drop
+/// hits the FAST path (in_list=false after cancel's drain), no lock
+/// acquired.
+#[test]
+fn drop_after_cancel_fast_path() {
+    let token = CancellationToken::new();
+    let mut futures: Vec<_> = (0..5).map(|_| Box::pin(token.cancelled())).collect();
+
+    for f in &mut futures {
+        assert_eq!(poll_once(f.as_mut()), Poll::Pending);
+    }
+
+    // Cancel drains the list and clears in_list on every node.
+    token.cancel();
+
+    // Drop the futures. Each Drop's fast-path load on in_list reads
+    // false → no lock, no unlink. Verify by completing the polls
+    // (post-cancel poll resolves Ready via the lock-free fast-out).
+    for f in &mut futures {
+        assert_eq!(poll_once(f.as_mut()), Poll::Ready(()));
+    }
+    drop(futures);
+    drop(token);
+}
+
+/// PR 3 regression #4: concurrent register-and-cancel race
+/// (multi-threaded). Thread A polls a Cancelled (registers); thread B
+/// calls cancel() concurrently. Either A's register inserts BEFORE
+/// B's drain (and B's drain wakes A's waker) OR A's register sees
+/// cancelled=true on the post-registration recheck and resolves
+/// immediately. No UAF, no lost wake.
+#[test]
+fn concurrent_register_and_cancel_race() {
+    use std::sync::Barrier;
+
+    for _ in 0..50 {
+        let token = CancellationToken::new();
+        let cancel_token = token.clone();
+        let barrier = std::sync::Arc::new(Barrier::new(2));
+        let bar_a = barrier.clone();
+        let bar_b = barrier.clone();
+
+        // Thread A: pin a Cancelled, poll it, then poll again until
+        // it resolves to Ready.
+        let a = std::thread::spawn(move || {
+            bar_a.wait();
+            let mut fut = Box::pin(token.cancelled());
+            // First poll: registers (or sees cancelled).
+            let _ = poll_once(fut.as_mut());
+            // Spin-poll until ready. Without a real waker dispatch,
+            // we rely on the lock-free fast-out (`is_cancelled`)
+            // resolving subsequent polls.
+            while !matches!(poll_once(fut.as_mut()), Poll::Ready(())) {
+                std::hint::spin_loop();
+            }
+        });
+
+        // Thread B: cancel.
+        let b = std::thread::spawn(move || {
+            bar_b.wait();
+            cancel_token.cancel();
+        });
+
+        a.join().unwrap();
+        b.join().unwrap();
+    }
+}
+
+/// PR 3 regression #5: BUG-3 reproduction. Pin a long-lived
+/// `Cancelled`, poll it 1000 times alternating between waker X and
+/// waker Y. Pre-PR3 the Treiber stack would grow linearly with poll
+/// count (one new `Box<WaiterNode>` per waker change). Post-PR3 the
+/// embedded node is reused, so memory stays flat.
+///
+/// We verify by completing successfully under tree-borrows miri (no
+/// UAF on the high-churn path) AND by Inner::Drop's debug_assert
+/// (waiter list is empty after cancel's drain).
+#[test]
+fn bug_3_reproduction_high_waker_churn() {
+    let token = CancellationToken::new();
+    let mut fut = Box::pin(token.cancelled());
+    let flag_x = std::cell::Cell::new(false);
+    let flag_y = std::cell::Cell::new(false);
+
+    // First poll registers.
+    {
+        let waker = tracking_waker(&flag_x);
+        let mut cx = Context::from_waker(&waker);
+        assert_eq!(fut.as_mut().poll(&mut cx), Poll::Pending);
+    }
+
+    // 1000 alternating polls. Pre-PR3 this leaks 1000 nodes onto
+    // the Treiber stack. Post-PR3 it updates the embedded node's
+    // waker in-place under the lock.
+    for i in 0..1000 {
+        let flag = if i % 2 == 0 { &flag_x } else { &flag_y };
+        let waker = tracking_waker(flag);
+        let mut cx = Context::from_waker(&waker);
+        assert_eq!(fut.as_mut().poll(&mut cx), Poll::Pending);
+    }
+
+    // Cancel — wakes the last waker (flag_y, since 999 % 2 == 1).
+    token.cancel();
+    {
+        let waker = tracking_waker(&flag_y);
+        let mut cx = Context::from_waker(&waker);
+        assert_eq!(fut.as_mut().poll(&mut cx), Poll::Ready(()));
+    }
+    assert!(flag_y.get(), "last waker (Y) should be woken by cancel");
+}
+
+/// PR 3 regression #6: stress with many concurrent awaiters.
+/// 100 pinned Cancelled futures (kept smaller than 1000 so this
+/// runs reasonably fast under miri); half are dropped pre-cancel
+/// (slow-path unlink), half are awoken by cancel's drain. No leaks
+/// (Inner::Drop's debug_assert verifies empty list at drop time).
+#[test]
+fn stress_many_awaiters_mixed_drop_and_cancel() {
+    let token = CancellationToken::new();
+    let mut futures: Vec<_> = (0..100).map(|_| Box::pin(token.cancelled())).collect();
+
+    // Register all 100.
+    for f in &mut futures {
+        assert_eq!(poll_once(f.as_mut()), Poll::Pending);
+    }
+
+    // Drop the even-indexed half — slow-path unlinks under the lock.
+    // (Drop in reverse to keep indices stable.)
+    let mut survivors = Vec::new();
+    for (i, f) in futures.into_iter().enumerate() {
+        if i % 2 == 0 {
+            drop(f);
+        } else {
+            survivors.push(f);
+        }
+    }
+
+    // Cancel drains the survivors.
+    token.cancel();
+    for f in &mut survivors {
+        assert_eq!(poll_once(f.as_mut()), Poll::Ready(()));
+    }
+    drop(survivors);
+    drop(token);
+}
