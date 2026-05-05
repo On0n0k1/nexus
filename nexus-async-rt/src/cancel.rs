@@ -161,43 +161,6 @@ impl Drop for SpinGuard<'_> {
 }
 
 // =============================================================================
-// Test-only race-window control (PR3-John-review item 2)
-// =============================================================================
-//
-// Some races are too narrow to reliably reproduce in unit tests on
-// modern hardware. The race in `Inner::cancel`'s drain loop (item 1)
-// has a window of "between in_list=false store and the next *cur
-// access," which is a few cycles. To make the regression test
-// deterministic, we expose a thread-shared toggle: when enabled, the
-// drain loop yields right after the in_list=false store. That widens
-// the race window from cycles to scheduler-quantum, giving a
-// concurrent `Cancelled::Drop` fast path enough time to observe the
-// store, return, and free the WaiterNode. Pre-fix, the next
-// dereference inside the drain body then UAFs.
-//
-// The toggle is `#[cfg(test)]`-only so production builds compile the
-// hook out entirely.
-
-#[cfg(test)]
-static CANCEL_DRAIN_RACE_YIELD: AtomicBool = AtomicBool::new(false);
-
-/// Test-only: enable the drain-loop yield hook for the duration of a
-/// test that wants to widen the cancel/drop race window. Reset to
-/// false at test end.
-#[cfg(test)]
-pub(crate) fn set_cancel_drain_race_yield(enable: bool) {
-    CANCEL_DRAIN_RACE_YIELD.store(enable, Ordering::Relaxed);
-}
-
-#[cfg(test)]
-#[inline]
-fn cancel_drain_race_yield_hook() {
-    if CANCEL_DRAIN_RACE_YIELD.load(Ordering::Relaxed) {
-        std::thread::yield_now();
-    }
-}
-
-// =============================================================================
 // Inner state
 // =============================================================================
 
@@ -215,6 +178,18 @@ struct Inner {
     /// — `cancel()` owns the drain atomically — so the simpler
     /// lock-free design is fine here.)
     child_head: AtomicPtr<ChildNode>,
+    /// Test-only race-window widener (PR3-John-review item 2,
+    /// PR3-Copilot-review item 3). When `true`, `cancel()`'s drain
+    /// yields right after each `in_list=false` Release store. That
+    /// widens the item-1 race window from a few cycles to a scheduler
+    /// quantum, letting a concurrent `Cancelled::Drop` fast path
+    /// observe the store and free the WaiterNode in time to UAF the
+    /// drain's next access (pre-fix). Per-`Inner` so test parallelism
+    /// doesn't cross-contaminate: only the regression test's specific
+    /// token has this enabled. Production builds compile the field
+    /// (and the load) out entirely.
+    #[cfg(test)]
+    race_yield: AtomicBool,
 }
 
 /// Intrusive waiter node. Lives EMBEDDED inside a [`Cancelled`]
@@ -284,6 +259,8 @@ impl Inner {
             list_lock: AtomicBool::new(false),
             head: UnsafeCell::new(std::ptr::null_mut()),
             child_head: AtomicPtr::new(std::ptr::null_mut()),
+            #[cfg(test)]
+            race_yield: AtomicBool::new(false),
         })
     }
 
@@ -292,67 +269,86 @@ impl Inner {
         self.cancelled.load(Ordering::Acquire)
     }
 
-    /// Cancel: set flag, drain and wake all waiters (under lock),
-    /// drain and cancel all children (lock-free Treiber stack swap).
+    /// Cancel: set flag, drain waiters and collect their wakers (under
+    /// lock), release lock, fire wakers, then drain and cancel all
+    /// children (lock-free Treiber stack swap).
     ///
-    /// Idempotent. Wakers fire INSIDE the critical section — see
-    /// CALLOUT 4 in the PR 3 plan: per-token lock, brief default
-    /// wakers, simpler correctness.
+    /// Idempotent. Wakers fire OUTSIDE the critical section — collect-
+    /// then-wake pattern (PR3-Copilot-review item 2 — supersedes the
+    /// original CALLOUT 4 trade-off). Releasing the lock before
+    /// `wake()` defends against:
+    ///   - User-provided wakers that re-enter `cancel()` on the same
+    ///     token (would deadlock if `wake()` ran under the lock).
+    ///   - Long-running `wake()` implementations that hold the lock
+    ///     for unbounded time, blocking concurrent ops on this token.
+    ///   - Panicking wakers leaking the lock (SpinGuard handles this
+    ///     on the unwind path; collecting first means a panicking
+    ///     `wake()` can't even reach the critical section).
+    ///
+    /// Cost: one `Vec<Waker>` allocation per `cancel()` call, bounded
+    /// by waiter count (typically <50 in trading patterns). `cancel()`
+    /// runs once per token lifetime, so the allocation is rare and small.
     fn cancel(&self) {
         // Set the flag BEFORE draining so `Cancelled::poll`'s
         // post-registration recheck (and Drop's fast path) sees a
         // consistent "I'm cancelled" view.
         self.cancelled.store(true, Ordering::Release);
 
-        // Drain waiters under the lock. O(N) where N is the number of
-        // currently-registered awaiters of THIS token.
-        let waiter_guard = SpinGuard::new(&self.list_lock);
-        // SAFETY: list_lock held — exclusive access to head + node fields.
-        let mut cur = unsafe { *self.head.get() };
-        unsafe { *self.head.get() = std::ptr::null_mut() };
-        while !cur.is_null() {
-            // SAFETY: `cur` was pushed under the lock by Cancelled::poll;
-            // its lifetime is bounded by the Cancelled future's Pin (the
-            // future cannot move while we hold a raw ptr to its inner
-            // node because !Unpin enforces the drop-before-move
-            // guarantee). The Cancelled holds an Arc<Inner>, so Inner
-            // can't drop while a Cancelled exists.
-            //
-            // **Race-fix invariant (PR3-John-review item 1):** read all
-            // node fields BEFORE the `in_list.store(false, Release)`
-            // below. The Release store synchronizes-with the Acquire
-            // load in `Cancelled::Drop`'s fast path; once a concurrent
-            // Drop observes `in_list=false`, it returns immediately
-            // and frees the WaiterNode memory. After our Release store
-            // we MUST NOT touch `*cur` again — UAF on the freed
-            // allocation. No `let node = &*cur;` binding, because the
-            // borrow's lifetime would extend past the invalidation
-            // point under stacked-/tree-borrows rules.
-            //
-            // The intermediate-test stress hook (yield_now) widens
-            // this race window to make the regression test deterministic
-            // — see `cancel_race_regression`. In production builds the
-            // hook is compiled out.
-            let next = unsafe { *(*cur).next.get() };
-            let waker = unsafe { (*(*cur).waker.get()).take() };
-            // After this Release store, *cur may be invalidated by a
-            // concurrent Cancelled::Drop fast-path. Do not access
-            // *cur below this line.
-            unsafe { (*cur).in_list.store(false, Ordering::Release) };
-            #[cfg(test)]
-            cancel_drain_race_yield_hook();
-            cur = next;
-            // Wake INSIDE the critical section (CALLOUT 4). Brief
-            // default wakers (queue push + maybe eventfd poke) keep
-            // the lock-hold time bounded.
-            if let Some(w) = waker {
-                w.wake();
+        // Drain waiters under the lock, collecting their wakers. O(N)
+        // where N is the number of currently-registered awaiters of
+        // THIS token. Wakers are fired AFTER the guard drops.
+        let mut wakers: Vec<Waker> = Vec::new();
+        {
+            let _guard = SpinGuard::new(&self.list_lock);
+            // SAFETY: list_lock held — exclusive access to head + node fields.
+            let mut cur = unsafe { *self.head.get() };
+            unsafe { *self.head.get() = std::ptr::null_mut() };
+            while !cur.is_null() {
+                // SAFETY: `cur` was pushed under the lock by Cancelled::poll;
+                // its lifetime is bounded by the Cancelled future's Pin (the
+                // future cannot move while we hold a raw ptr to its inner
+                // node because !Unpin enforces the drop-before-move
+                // guarantee). The Cancelled holds an Arc<Inner>, so Inner
+                // can't drop while a Cancelled exists.
+                //
+                // **Race-fix invariant (PR3-John-review item 1):** read all
+                // node fields BEFORE the `in_list.store(false, Release)`
+                // below. The Release store synchronizes-with the Acquire
+                // load in `Cancelled::Drop`'s fast path; once a concurrent
+                // Drop observes `in_list=false`, it returns immediately
+                // and frees the WaiterNode memory. After our Release store
+                // we MUST NOT touch `*cur` again — UAF on the freed
+                // allocation. No `let node = &*cur;` binding, because the
+                // borrow's lifetime would extend past the invalidation
+                // point under stacked-/tree-borrows rules.
+                //
+                // The intermediate-test stress hook (yield_now) widens
+                // this race window to make the regression test deterministic
+                // — see `cancel_race_regression`. In production builds the
+                // hook is compiled out.
+                let next = unsafe { *(*cur).next.get() };
+                let waker = unsafe { (*(*cur).waker.get()).take() };
+                // After this Release store, *cur may be invalidated by a
+                // concurrent Cancelled::Drop fast-path. Do not access
+                // *cur below this line.
+                unsafe { (*cur).in_list.store(false, Ordering::Release) };
+                #[cfg(test)]
+                if self.race_yield.load(Ordering::Relaxed) {
+                    std::thread::yield_now();
+                }
+                cur = next;
+                if let Some(w) = waker {
+                    wakers.push(w);
+                }
             }
+        } // SpinGuard drops here, lock released BEFORE wake calls.
+
+        // Fire wakers outside the critical section. A re-entrant or
+        // long-running waker can no longer block other ops on this
+        // token's lock.
+        for w in wakers {
+            w.wake();
         }
-        // Explicit drop: release the lock BEFORE the child drain to
-        // avoid holding it across the Treiber-stack child cancels
-        // (each child's cancel() acquires its own per-token lock).
-        drop(waiter_guard);
 
         // Drain children — lock-free Treiber stack swap.
         let mut child = self.child_head.swap(std::ptr::null_mut(), Ordering::AcqRel);
@@ -507,6 +503,16 @@ impl CancellationToken {
             node: WaiterNode::new(),
             _pin: PhantomPinned,
         }
+    }
+
+    /// Test-only: enable the race-window-widening yield in this
+    /// token's `cancel()` drain. Per-token (not process-global) so
+    /// parallel test execution doesn't cross-contaminate scheduling
+    /// — only this token's drain yields. See `Inner::race_yield`
+    /// for the rationale (PR3-Copilot-review item 3).
+    #[cfg(test)]
+    pub(crate) fn enable_race_yield(&self) {
+        self.inner.race_yield.store(true, Ordering::Relaxed);
     }
 }
 
@@ -961,17 +967,19 @@ mod tests {
     /// existing `concurrent_register_and_cancel_race` test runs ~50
     /// iterations and doesn't deterministically hit it).
     ///
-    /// **Widening:** `set_cancel_drain_race_yield(true)` makes the
+    /// **Widening:** `token.enable_race_yield()` makes THIS token's
     /// drain loop yield right after the in_list=false store. That
     /// turns "a few cycles" into a scheduler quantum, which is
-    /// reliable. (#[cfg(test)]-only — production is unaffected.)
+    /// reliable. Per-token (not process-global) so parallel tests
+    /// don't see this token's yield (#[cfg(test)]-only — production
+    /// is unaffected).
     ///
     /// **Test shape:** spawn N=200 trials. Each trial: thread A pins
-    /// + polls a Cancelled to register, signals "registered", spins
-    /// on `is_cancelled()`, drops the future as soon as the flag
-    /// fires. Thread B waits for "registered", then calls
-    /// `token.cancel()`. With the yield hook on, this hits the race
-    /// window deterministically pre-fix.
+    /// then polls a Cancelled to register, signals "registered",
+    /// spins on `is_cancelled()`, drops the future as soon as the
+    /// flag fires. Thread B waits for "registered", then calls
+    /// `token.cancel()`. With the per-token yield enabled, this hits
+    /// the race window deterministically pre-fix.
     ///
     /// Pre-fix: tree-borrows miri reports UB in the drain loop
     /// reading freed WaiterNode memory. Post-fix: clean.
@@ -979,19 +987,6 @@ mod tests {
     fn cancel_drain_race_regression() {
         use std::sync::Arc;
         use std::sync::atomic::AtomicBool;
-
-        // Enable the race-window-widening hook for the duration of
-        // this test.
-        set_cancel_drain_race_yield(true);
-        // Cleanup: ensure we always disable the hook on test exit
-        // (panic-safe).
-        struct DisableOnDrop;
-        impl Drop for DisableOnDrop {
-            fn drop(&mut self) {
-                set_cancel_drain_race_yield(false);
-            }
-        }
-        let _cleanup = DisableOnDrop;
 
         // Smaller iteration count under miri (which is ~100x slower);
         // larger in normal cargo test.
@@ -1002,6 +997,9 @@ mod tests {
 
         for _ in 0..TRIALS {
             let token = CancellationToken::new();
+            // Per-token toggle: only THIS token's drain yields.
+            // Other tests running in parallel are unaffected.
+            token.enable_race_yield();
             let registered = Arc::new(AtomicBool::new(false));
 
             let drop_thread = {
