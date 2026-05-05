@@ -67,7 +67,13 @@ pub use net::{
     TcpStream, UdpSocket, WriteHalf,
 };
 pub use nexus_slab::byte::unbounded::Slab as ByteSlab;
-pub use runtime::{Runtime, RuntimeBuilder, claim_slab, spawn_boxed, spawn_slab, try_claim_slab};
+pub use runtime::{
+    QuiesceTimeout, Runtime, RuntimeBuilder, claim_slab, spawn_boxed, spawn_slab, try_claim_slab,
+};
+// `ShutdownStats` is the snapshot type users match on. `ShutdownStatsAtomics`
+// is the Arc-shared inner that survives Runtime drop — `Runtime::shutdown_stats`
+// returns `Arc<ShutdownStatsAtomics>` and users call `.snapshot()` to get a
+// plain `ShutdownStats`.
 pub use shutdown::{ShutdownHandle, ShutdownSignal};
 pub use task::{JoinHandle, TASK_HEADER_SIZE};
 pub use timer::{Elapsed, Interval, MissedTickBehavior, Sleep, Timeout, TimerHandle, YieldNow};
@@ -138,6 +144,109 @@ pub struct Executor {
     ///
     /// Same UnsafeCell rationale as `incoming` — TLS pointer stored during poll.
     deferred_free: std::cell::UnsafeCell<Vec<*mut u8>>,
+
+    /// Atomic counters for abnormal-shutdown paths. Surfaced via
+    /// [`Runtime::shutdown_stats`](crate::Runtime::shutdown_stats),
+    /// which returns an `Arc` clone so users can read AFTER Runtime
+    /// drop (the counters fire DURING `Executor::drop`; pre-drop
+    /// snapshots always read zero). Per CALLOUT 5 of PR 2's plan,
+    /// these paths increment counters ONLY — no `eprintln!`/`tracing`
+    /// in new paths. PR 1a's existing eprintlns in the
+    /// slab-unwinding-abort path stay (only signal at moment of
+    /// process abort).
+    shutdown_stats: std::sync::Arc<ShutdownStatsAtomics>,
+
+    /// Cross-wake context, set by Runtime via [`Executor::install_cross_wake_for_drop`]
+    /// after construction. `Executor::drop` uses it to drain the
+    /// cross-thread queue at shutdown end and tally
+    /// `cross_queue_undrained`. `None` for bare `Executor` use in
+    /// tests (no Runtime, no cross-queue inspection at drop).
+    cross_wake_for_drop: Option<std::sync::Arc<crate::cross_wake::CrossWakeContext>>,
+}
+
+/// Atomic counters backing [`ShutdownStats`]. Written by `Executor`,
+/// readable via the handle returned by
+/// [`Runtime::shutdown_stats`](crate::Runtime::shutdown_stats).
+///
+/// Atomics are used (not `Cell`) so the user-facing handle can survive
+/// `Runtime::drop` and be read on the same thread post-drop. All
+/// updates use `Relaxed` ordering — the counters are observability,
+/// not synchronization.
+#[derive(Default, Debug)]
+pub struct ShutdownStatsAtomics {
+    aborted_unwinds: std::sync::atomic::AtomicU64,
+    leaked_box_tasks: std::sync::atomic::AtomicU64,
+    unbalanced_normal_shutdowns: std::sync::atomic::AtomicU64,
+    cross_queue_undrained: std::sync::atomic::AtomicU64,
+}
+
+impl ShutdownStatsAtomics {
+    /// Snapshot the current counter values into a plain
+    /// [`ShutdownStats`]. Loads are `Relaxed` — observability, not
+    /// synchronization.
+    pub fn snapshot(&self) -> ShutdownStats {
+        use std::sync::atomic::Ordering;
+        ShutdownStats {
+            aborted_unwinds: self.aborted_unwinds.load(Ordering::Relaxed),
+            leaked_box_tasks: self.leaked_box_tasks.load(Ordering::Relaxed),
+            unbalanced_normal_shutdowns: self.unbalanced_normal_shutdowns.load(Ordering::Relaxed),
+            cross_queue_undrained: self.cross_queue_undrained.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// Counters for abnormal-shutdown paths. Snapshot returned by
+/// [`Runtime::shutdown_stats`](crate::Runtime::shutdown_stats).
+///
+/// All counters are `0` for a clean shutdown. Any non-zero counter is a
+/// signal to investigate — the runtime hit a defensive code path that
+/// should be unreachable in normal operation. Users own their
+/// observability stack; the runtime emits no logs of its own (per
+/// PR 2's design — see `ShutdownStats` doc-comment for the user
+/// pattern).
+///
+/// # Example
+///
+/// ```ignore
+/// let handle = runtime.shutdown_stats();   // Arc<ShutdownStatsAtomics>
+/// drop(runtime);                            // counters fire during drop
+/// let stats = handle.snapshot();            // plain ShutdownStats for matching
+/// if stats.aborted_unwinds != 0
+///     || stats.leaked_box_tasks != 0
+///     || stats.unbalanced_normal_shutdowns != 0
+///     || stats.cross_queue_undrained != 0
+/// {
+///     // user's own observability — log to wherever they want
+///     my_logger::warn!("nexus runtime shutdown: {stats:?}");
+/// }
+/// ```
+#[derive(Default, Debug, Clone, Copy)]
+pub struct ShutdownStats {
+    /// `Executor::drop` hit the slab-unwinding 100ms-wait-then-abort
+    /// path. Indicates a producer thread held a slab task ref past
+    /// Runtime drop during a panic. **The process aborted before this
+    /// counter could be read** — non-zero means a previous run aborted
+    /// (the counter is preserved across the abort by being stored in
+    /// the executor's state, but reading it requires the runtime to
+    /// have survived; in practice this counter is set just before
+    /// abort and serves as a guarantee the abort path was hit if the
+    /// runtime somehow survived).
+    pub aborted_unwinds: u64,
+    /// Box-allocated tasks the executor couldn't free during shutdown
+    /// unwinding (outstanding cross-thread refs, leaked to avoid
+    /// double-panic). Memory leak, not UAF. Box memory is reclaimed
+    /// at process exit.
+    pub leaked_box_tasks: u64,
+    /// Normal shutdown (no panic in flight) found an `all_tasks` entry
+    /// with `rc > 0`. Debug builds panic. Release builds eprintln +
+    /// leak. Indicates a producer didn't release refs before Runtime
+    /// drop — call [`Runtime::shutdown_quiesce`](crate::Runtime::shutdown_quiesce)
+    /// before drop to surface this as an `Err` instead.
+    pub unbalanced_normal_shutdowns: u64,
+    /// Cross-thread queue entries that landed after Runtime drop and
+    /// were never drained (the leak path inherited from PR 1a's
+    /// dispose_terminal off-thread branch). Pure memory leak.
+    pub cross_queue_undrained: u64,
 }
 
 /// Default poll limit.
@@ -152,6 +261,8 @@ impl Executor {
             all_tasks: slab::Slab::with_capacity(initial_capacity),
             live_count: 0,
             tasks_per_cycle: DEFAULT_TASKS_PER_CYCLE,
+            shutdown_stats: std::sync::Arc::new(ShutdownStatsAtomics::default()),
+            cross_wake_for_drop: None,
             deferred_free: std::cell::UnsafeCell::new(Vec::new()),
         }
     }
@@ -218,7 +329,7 @@ impl Executor {
         &mut self,
         inbox: &crate::cross_wake::CrossWakeQueue,
         limit: usize,
-    ) {
+    ) -> usize {
         let mut drained = 0;
         while drained < limit {
             match inbox.pop() {
@@ -240,6 +351,7 @@ impl Executor {
                 None => break,
             }
         }
+        drained
     }
 
     /// Poll all ready tasks once.
@@ -309,11 +421,75 @@ impl Executor {
         self.live_count
     }
 
+    /// Number of tasks tracked in the executor's `all_tasks` slab.
+    /// Includes COMPLETED-but-still-referenced tasks (a `JoinHandle`
+    /// or cross-thread waker holds a ref) — distinguishing it from
+    /// `task_count()` which decrements `live_count` unconditionally on
+    /// completion.
+    ///
+    /// `shutdown_quiesce` uses this for its quiesce check: a task that
+    /// completed but has outstanding refs WILL fire one of the
+    /// abnormal-shutdown branches in `Executor::drop` (debug-panic
+    /// "outstanding references" or release-eprintln + counter
+    /// increment). Quiesce-as-`Ok` requires `all_tasks` to be empty,
+    /// not just `live_count == 0`. (PR2-John-review item 2.)
+    pub(crate) fn outstanding_tasks(&self) -> usize {
+        self.all_tasks.len()
+    }
+
     /// Number of completed task slots awaiting deferred free.
     #[cfg(test)]
     pub fn deferred_free_count(&self) -> usize {
         // SAFETY: single-threaded, read-only snapshot.
         unsafe { &*self.deferred_free.get() }.len()
+    }
+
+    /// Returns an Arc handle to the shutdown counters. Callers can
+    /// hold it past Runtime drop to read final values via
+    /// [`ShutdownStatsAtomics::snapshot`].
+    pub(crate) fn shutdown_stats(&self) -> std::sync::Arc<ShutdownStatsAtomics> {
+        std::sync::Arc::clone(&self.shutdown_stats)
+    }
+
+    /// Counter increments for the abnormal-shutdown branches.
+    /// Per CALLOUT 5 of PR 2's plan: counter-only — no eprintln,
+    /// no tracing, no log calls. Users own their observability.
+    fn record_aborted_unwind(&self) {
+        self.shutdown_stats
+            .aborted_unwinds
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn record_leaked_box(&self) {
+        self.shutdown_stats
+            .leaked_box_tasks
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn record_unbalanced_normal(&self) {
+        self.shutdown_stats
+            .unbalanced_normal_shutdowns
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Add `count` to the `cross_queue_undrained` counter. Called from
+    /// `Executor::drop` after the all_tasks loop, when the cross-thread
+    /// queue's tail-end is drained for the diagnostic count.
+    fn record_cross_queue_undrained(&self, count: u64) {
+        self.shutdown_stats
+            .cross_queue_undrained
+            .fetch_add(count, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Wire the runtime's cross-wake context into the executor so
+    /// `Executor::drop` can drain + count the cross-thread queue at
+    /// shutdown end. Called by `RuntimeBuilder::build` after both
+    /// `Executor::new` and `Arc::new(CrossWakeContext { ... })`.
+    pub(crate) fn install_cross_wake_for_drop(
+        &mut self,
+        cross_wake: std::sync::Arc<crate::cross_wake::CrossWakeContext>,
+    ) {
+        self.cross_wake_for_drop = Some(cross_wake);
     }
 
     /// Returns `true` if any tasks are queued for polling.
@@ -427,8 +603,89 @@ impl Executor {
 
 impl Drop for Executor {
     fn drop(&mut self) {
-        // Free deferred slots first (completed tasks whose last ref dropped).
-        // SAFETY: &mut self in Drop, no concurrent access.
+        // Step 1 (PR 2 §2.3, fixed in PR2-John-review item 1): drain
+        // the cross-thread queue FIRST, before walking `all_tasks`.
+        //
+        // **Why first.** An off-thread holder dropping a TaskRef
+        // terminal between the runtime's last drain and `Executor::drop`
+        // start enqueues a TERMINAL task pointer in `cross_queue`
+        // (`try_set_queued + push`). The task allocation is alive (we
+        // haven't freed it yet) but rc=0, COMPLETED set, QUEUED set.
+        //
+        // If we walked `all_tasks` BEFORE draining cross_queue:
+        //   - `is_terminal` returns false (QUEUED bit is set, mask
+        //     `INERT_MASK` doesn't clear it).
+        //   - Falls through to the rc=0 branch → `free_task(ptr)`.
+        //   - Step 3's pop then derefs `cross_next` at offset 32 of
+        //     the freed allocation. **UAF.**
+        //
+        // By draining cross_queue first, `drain_cross_thread` clears
+        // QUEUED and routes the terminal entry to `deferred_free`
+        // (state is now just COMPLETED → `is_terminal` returns true
+        // there). Step 2's deferred_free drain frees + removes from
+        // `all_tasks`. Step 3's all_tasks walk no longer sees it.
+        //
+        // Entries that arrive AFTER step 1 (off-thread holder pushes
+        // mid-drop) leave a stale pointer in cross_queue. No one pops
+        // it post-drop (no executor) so no UAF; the leak is bounded
+        // by the lifetime of `Arc<CrossWakeContext>` and the entry
+        // is freed-then-pointer-leaked when the last Arc clone drops.
+        let undrained = self.cross_wake_for_drop.take().map_or(0u64, |ctx| {
+            self.drain_cross_thread(&ctx.queue, usize::MAX) as u64
+        });
+        if undrained > 0 {
+            self.record_cross_queue_undrained(undrained);
+        }
+
+        // Step 2: drain deferred-free (now includes any terminals
+        // routed by step 1's cross-queue drain). Updates `all_tasks`
+        // bookkeeping in the right order (read tracker_key BEFORE
+        // free_task).
+        self.drop_drain_deferred_free();
+
+        // Step 3: walk surviving tasks. Each task hits one of four
+        // branches: TERMINAL (free directly), not-completed (try to
+        // complete + maybe free), outstanding-refs (route to unwinding
+        // or normal-shutdown handlers), or zero-refs (free).
+        for (_, &ptr) in &self.all_tasks {
+            if unsafe { task::is_terminal(ptr) } {
+                // TERMINAL: completed, zero refs, all flags cleared.
+                // Happens when a cross-thread waker produced TERMINAL
+                // via ref_dec but the executor hadn't scanned yet.
+                unsafe { task::free_task(ptr) };
+                continue;
+            }
+
+            if !unsafe { task::is_completed(ptr) } && Self::drop_complete_and_maybe_free(ptr) {
+                continue;
+            }
+
+            let rc = unsafe { task::ref_count(ptr) };
+            if rc > 0 {
+                if std::thread::panicking() {
+                    self.drop_outstanding_unwinding(ptr, rc);
+                } else {
+                    self.drop_outstanding_normal(ptr, rc);
+                }
+                continue;
+            }
+
+            unsafe { task::free_task(ptr) };
+        }
+    }
+}
+
+impl Executor {
+    /// Drop step 1: drain deferred-free entries from the last poll
+    /// cycle (or accumulated since one). Each entry is a completed
+    /// task whose final ref dropped after the last poll cycle's drain
+    /// ran; we own them and must free the storage + remove from
+    /// `all_tasks`. The order (read tracker_key, then free_task, then
+    /// remove key) matters because tracker_key reads from the task
+    /// header — must happen before the allocation is freed.
+    ///
+    /// SAFETY: `&mut self` in Drop, no concurrent access.
+    fn drop_drain_deferred_free(&mut self) {
         for ptr in unsafe { &mut *self.deferred_free.get() }.drain(..) {
             let key = unsafe { task::tracker_key(ptr) } as usize;
             unsafe { task::free_task(ptr) };
@@ -436,115 +693,121 @@ impl Drop for Executor {
                 self.all_tasks.remove(key);
             }
         }
+    }
 
-        for (_, &ptr) in &self.all_tasks {
-            if unsafe { task::is_terminal(ptr) } {
-                // TERMINAL: completed, zero refs, all flags cleared.
-                // This happens when a cross-thread waker produced TERMINAL
-                // via ref_dec but the executor hadn't scanned yet.
+    /// Drop step 2 / branch B: task hasn't completed yet. Drop its
+    /// future (running its destructors — Aeron publishers, sockets,
+    /// file handles all release here), then atomically set COMPLETED +
+    /// decrement the executor's ref. Returns true if the resulting
+    /// state is terminal (we freed the slot) — caller `continue`s.
+    /// Returns false when the task still has cross-thread refs and
+    /// the caller falls through to the rc-check.
+    ///
+    /// SAFETY: caller guarantees `ptr` references a not-yet-completed
+    /// task with the executor's ref still held.
+    fn drop_complete_and_maybe_free(ptr: *mut u8) -> bool {
+        unsafe { task::drop_task_future(ptr) };
+        match unsafe { task::complete_and_unref(ptr) } {
+            task::FreeAction::Retain => false,
+            task::FreeAction::FreeBox | task::FreeAction::FreeSlab => {
                 unsafe { task::free_task(ptr) };
-                continue;
+                true
             }
-
-            // Drop the future if not already completed.
-            if !unsafe { task::is_completed(ptr) } {
-                unsafe { task::drop_task_future(ptr) };
-                // Use complete_and_unref to atomically set COMPLETED + dec ref.
-                match unsafe { task::complete_and_unref(ptr) } {
-                    task::FreeAction::Retain => {}
-                    task::FreeAction::FreeBox | task::FreeAction::FreeSlab => {
-                        unsafe { task::free_task(ptr) };
-                        continue;
-                    }
-                }
-            }
-
-            // Task is completed but not TERMINAL — outstanding refs exist.
-            let rc = unsafe { task::ref_count(ptr) };
-            if rc > 0 {
-                if std::thread::panicking() {
-                    // Mid-unwind — must not double-panic (would abort the
-                    // process via SIGABRT). Resources held by the task
-                    // were already released by `drop_task_future` above
-                    // (Aeron publishers, sockets, file handles all run
-                    // their Drop impls there).
-                    //
-                    // Cleanup behavior differs by allocation type because
-                    // of how the task memory gets reclaimed:
-                    //
-                    // - **Box tasks**: leaking is safe. The Box just sits
-                    //   in process memory; outstanding cross-thread waker
-                    //   refs that later run `ref_dec` see valid memory.
-                    //   Memory is reclaimed at process exit.
-                    //
-                    // - **Slab tasks**: leaking is UNSAFE. After this
-                    //   `Executor::drop` returns, the `_slab_guard`
-                    //   field on Runtime drops, freeing the slab's
-                    //   backing storage. Outstanding cross-thread waker
-                    //   refs that later run `ref_dec` would access
-                    //   freed slab memory → UAF.
-                    //
-                    //   For slab tasks, we wait briefly for cross-thread
-                    //   wakers to drop their refs (this happens
-                    //   asynchronously on producer threads — e.g.,
-                    //   tokio's worker thread). If they settle within
-                    //   the deadline, we free cleanly. If not, we abort
-                    //   — the original SIGABRT we were trying to avoid,
-                    //   but UAF would be worse.
-                    if unsafe { task::is_slab_allocated(ptr) } {
-                        let deadline =
-                            std::time::Instant::now() + std::time::Duration::from_millis(100);
-                        while unsafe { task::ref_count(ptr) } > 0
-                            && std::time::Instant::now() < deadline
-                        {
-                            std::thread::yield_now();
-                        }
-                        if unsafe { task::ref_count(ptr) } > 0 {
-                            eprintln!(
-                                "nexus-async-rt: slab task {ptr:p} has \
-                                 outstanding refs after 100ms during unwinding \
-                                 — aborting to avoid UAF on slab memory \
-                                 release. Cross-thread waker producer thread \
-                                 may be deadlocked or starved."
-                            );
-                            std::process::abort();
-                        }
-                        // Refs settled — free cleanly. Avoid the panic
-                        // path below.
-                        unsafe { task::free_task(ptr) };
-                        continue;
-                    }
-                    // Box task — leak is safe.
-                    eprintln!(
-                        "nexus-async-rt: executor dropped with {rc} outstanding \
-                         reference(s) during unwinding — suppressing panic to \
-                         avoid abort. Task resources were released via \
-                         drop_task_future; leaking box task allocation + waker \
-                         bookkeeping memory."
-                    );
-                    continue;
-                }
-
-                // Normal shutdown (no panic in flight) — sanity-check the
-                // user's lifetime discipline.
-                #[cfg(debug_assertions)]
-                panic!(
-                    "executor dropped with {rc} outstanding reference(s) — \
-                     all wakers and JoinHandles must be dropped before the Runtime"
-                );
-                #[cfg(not(debug_assertions))]
-                eprintln!(
-                    "nexus-async-rt: executor dropped with {rc} outstanding task \
-                     reference(s) — leaking to avoid UB"
-                );
-                #[allow(unreachable_code)]
-                {
-                    continue;
-                }
-            }
-
-            unsafe { task::free_task(ptr) };
         }
+    }
+
+    /// Drop step 2 / branch C+D: task completed but has outstanding
+    /// cross-thread refs, and we're mid-unwind. Behavior splits by
+    /// allocation type:
+    ///
+    /// - **Slab task**: wait up to 100ms for refs to settle (producer
+    ///   threads may be racing to release). If settled, free cleanly.
+    ///   If not, abort — leaking would UAF when `_slab_guard` releases
+    ///   the slab backing storage after `Executor::drop` returns.
+    /// - **Box task**: leak. The Box sits in process memory until
+    ///   process exit; outstanding cross-thread refs that later run
+    ///   `ref_dec` see valid memory.
+    ///
+    /// The eprintln!s in this branch are PR 1a's existing signals —
+    /// they stay (per CALLOUT 5 of PR 2's plan, removable post-§2.4
+    /// once `shutdown_quiesce` makes this branch unreachable in
+    /// normal operation). The slab and box helpers each increment
+    /// the relevant `ShutdownStats` counter (`aborted_unwinds` /
+    /// `leaked_box_tasks`).
+    ///
+    /// SAFETY: caller guarantees `ptr` references a completed task
+    /// with rc > 0, called during unwind.
+    fn drop_outstanding_unwinding(&self, ptr: *mut u8, rc: usize) {
+        if unsafe { task::is_slab_allocated(ptr) } {
+            self.drop_outstanding_slab_unwinding(ptr);
+        } else {
+            self.drop_outstanding_box_unwinding(ptr, rc);
+        }
+    }
+
+    /// Slab branch of the unwinding path. See `drop_outstanding_unwinding`
+    /// for context. Increments `aborted_unwinds` counter on the
+    /// abort path (PR 2 §2.3) BEFORE calling `std::process::abort()`
+    /// so a parent process inspecting the runtime's state can see
+    /// the counter via shared memory or memory-mapped logging.
+    fn drop_outstanding_slab_unwinding(&self, ptr: *mut u8) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(100);
+        while unsafe { task::ref_count(ptr) } > 0 && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+        if unsafe { task::ref_count(ptr) } > 0 {
+            // Record before the abort — the eprintln stays per CALLOUT 5
+            // (only signal at moment of process abort).
+            self.record_aborted_unwind();
+            eprintln!(
+                "nexus-async-rt: slab task {ptr:p} has \
+                 outstanding refs after 100ms during unwinding \
+                 — aborting to avoid UAF on slab memory \
+                 release. Cross-thread waker producer thread \
+                 may be deadlocked or starved."
+            );
+            std::process::abort();
+        }
+        // Refs settled — free cleanly. Avoid the panic path.
+        unsafe { task::free_task(ptr) };
+    }
+
+    /// Box branch of the unwinding path. See `drop_outstanding_unwinding`
+    /// for context. Leaks the box; safe — outstanding refs see valid
+    /// memory until process exit. Increments `leaked_box_tasks` (PR 2 §2.3).
+    fn drop_outstanding_box_unwinding(&self, _ptr: *mut u8, rc: usize) {
+        self.record_leaked_box();
+        eprintln!(
+            "nexus-async-rt: executor dropped with {rc} outstanding \
+             reference(s) during unwinding — suppressing panic to \
+             avoid abort. Task resources were released via \
+             drop_task_future; leaking box task allocation + waker \
+             bookkeeping memory."
+        );
+    }
+
+    /// Drop step 2 / branch E: task completed but has outstanding
+    /// cross-thread refs, normal shutdown (no panic in flight). This
+    /// indicates a user-side lifetime discipline violation — wakers
+    /// or JoinHandles weren't dropped before the Runtime. Debug builds
+    /// panic to surface the bug; release builds eprintln + leak to
+    /// avoid UB. Increments `unbalanced_normal_shutdowns` (PR 2 §2.3)
+    /// before either path.
+    ///
+    /// SAFETY: caller guarantees `ptr` references a completed task
+    /// with rc > 0, called outside any panic.
+    fn drop_outstanding_normal(&self, _ptr: *mut u8, rc: usize) {
+        self.record_unbalanced_normal();
+        #[cfg(debug_assertions)]
+        panic!(
+            "executor dropped with {rc} outstanding reference(s) — \
+             all wakers and JoinHandles must be dropped before the Runtime"
+        );
+        #[cfg(not(debug_assertions))]
+        eprintln!(
+            "nexus-async-rt: executor dropped with {rc} outstanding task \
+             reference(s) — leaking to avoid UB"
+        );
     }
 }
 
