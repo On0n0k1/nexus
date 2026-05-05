@@ -239,10 +239,62 @@ mod tests {
     // In-memory handshake scaffolding (lifted from examples/perf_tls.rs).
     // -------------------------------------------------------------------------
 
-    fn generate_self_signed() -> (Vec<u8>, Vec<u8>) {
+    fn generate_self_signed() -> (Vec<rustls::pki_types::CertificateDer<'static>>, Vec<u8>) {
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
             .expect("cert generation");
-        (cert.cert.der().to_vec(), cert.key_pair.serialize_der())
+        (
+            vec![rustls::pki_types::CertificateDer::from(cert.cert.der().to_vec())],
+            cert.key_pair.serialize_der(),
+        )
+    }
+
+    /// Generate a 3-cert chain (root → intermediate → leaf) with RSA 4096
+    /// keys. Real production-shape chain — chain has 3 certs each ~1.5KB
+    /// of DER, so the TLS 1.3 server's Certificate message alone exceeds
+    /// 4500 bytes. Combined with ServerHello + EncryptedExtensions +
+    /// CertVerify (RSA 4096 signature is 512 bytes) + Finished, the
+    /// server's first burst easily clears rustls's `READ_SIZE = 4096`
+    /// per-call deframer cap — exactly the partial-consumption surface
+    /// birch hit against polymarket.
+    fn generate_rsa_4096_chain() -> (Vec<rustls::pki_types::CertificateDer<'static>>, Vec<u8>) {
+        use rcgen::{
+            BasicConstraints, CertificateParams, IsCa, KeyPair, RsaKeySize,
+            PKCS_RSA_SHA256,
+        };
+
+        // Root CA (RSA 4096, self-signed, CA-flagged).
+        let root_key = KeyPair::generate_rsa_for(&PKCS_RSA_SHA256, RsaKeySize::_4096)
+            .expect("root key");
+        let mut root_params = CertificateParams::new(Vec::<String>::new()).expect("root params");
+        root_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let root_cert = root_params.self_signed(&root_key).expect("root self-sign");
+
+        // Intermediate (RSA 4096, signed by root, CA-flagged).
+        let int_key = KeyPair::generate_rsa_for(&PKCS_RSA_SHA256, RsaKeySize::_4096)
+            .expect("intermediate key");
+        let mut int_params = CertificateParams::new(Vec::<String>::new()).expect("intermediate params");
+        int_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        let int_cert = int_params
+            .signed_by(&int_key, &root_cert, &root_key)
+            .expect("intermediate signed by root");
+
+        // Leaf (RSA 4096, signed by intermediate, SAN=localhost).
+        let leaf_key = KeyPair::generate_rsa_for(&PKCS_RSA_SHA256, RsaKeySize::_4096)
+            .expect("leaf key");
+        let leaf_params = CertificateParams::new(vec!["localhost".to_string()])
+            .expect("leaf params");
+        let leaf_cert = leaf_params
+            .signed_by(&leaf_key, &int_cert, &int_key)
+            .expect("leaf signed by intermediate");
+
+        // Server sends [leaf, intermediate, root] in the Certificate
+        // message. Three RSA 4096 certs ≈ 4.5KB chain.
+        let chain = vec![
+            rustls::pki_types::CertificateDer::from(leaf_cert.der().to_vec()),
+            rustls::pki_types::CertificateDer::from(int_cert.der().to_vec()),
+            rustls::pki_types::CertificateDer::from(root_cert.der().to_vec()),
+        ];
+        (chain, leaf_key.serialize_der())
     }
 
     /// In-memory pipe for handshake bytes.
@@ -276,15 +328,15 @@ mod tests {
     /// Finished under TLS 1.3 — several records pushed back-to-back). The
     /// returned `server_out` is the slice we feed to the client `TlsCodec`
     /// to exercise the partial-consumption surface.
-    fn setup_and_capture_server_burst() -> (TlsCodec, rustls::ServerConnection, Vec<u8>) {
-        let (cert_der, key_der) = generate_self_signed();
-
-        let cert = rustls::pki_types::CertificateDer::from(cert_der);
+    fn setup_and_capture_server_burst(
+        cert_chain: Vec<rustls::pki_types::CertificateDer<'static>>,
+        key_der: Vec<u8>,
+    ) -> (TlsCodec, rustls::ServerConnection, Vec<u8>) {
         let key = rustls::pki_types::PrivateKeyDer::try_from(key_der).unwrap();
         let server_config = Arc::new(
             rustls::ServerConfig::builder()
                 .with_no_client_auth()
-                .with_single_cert(vec![cert], key)
+                .with_single_cert(cert_chain, key)
                 .unwrap(),
         );
         let mut server = rustls::ServerConnection::new(server_config).unwrap();
@@ -342,7 +394,8 @@ mod tests {
     /// entire slice is consumed.
     #[test]
     fn read_and_process_tls_consumes_full_slice() {
-        let (mut client, _server, server_out) = setup_and_capture_server_burst();
+        let (chain, key) = generate_self_signed();
+        let (mut client, _server, server_out) = setup_and_capture_server_burst(chain, key);
 
         let consumed = client
             .read_and_process_tls(&server_out)
@@ -365,7 +418,8 @@ mod tests {
     /// `process_new_packets` step in some iterations.
     #[test]
     fn read_and_process_tls_byte_at_a_time() {
-        let (mut client, _server, server_out) = setup_and_capture_server_burst();
+        let (chain, key) = generate_self_signed();
+        let (mut client, _server, server_out) = setup_and_capture_server_burst(chain, key);
 
         for byte in &server_out {
             client
@@ -377,6 +431,55 @@ mod tests {
             client.wants_write(),
             "client should have produced its handshake response \
              after byte-at-a-time consumption"
+        );
+    }
+
+    /// **The actual end-to-end regression test for issue #200.**
+    ///
+    /// The other tests in this module either don't exercise the helper's
+    /// multi-iteration loop (`read_and_process_tls_consumes_full_slice`
+    /// uses a small burst that consumes in one inner iteration;
+    /// `read_and_process_tls_byte_at_a_time` invokes the helper many times
+    /// with 1-byte slices but each invocation has a 1-iteration loop),
+    /// or test only rustls's contract without exercising our helper
+    /// (`bare_read_tls_partially_consumes_large_slice`).
+    ///
+    /// This test uses a 3-cert RSA 4096 chain to push the server's first
+    /// handshake burst past rustls's `READ_SIZE = 4096` per-call cap. The
+    /// helper is fed the whole burst in ONE call; its internal loop must
+    /// iterate multiple times to consume everything. This is exactly the
+    /// shape birch hit against polymarket.
+    #[test]
+    fn read_and_process_tls_handles_oversize_burst() {
+        let (chain, key) = generate_rsa_4096_chain();
+        let (mut client, _server, server_out) = setup_and_capture_server_burst(chain, key);
+
+        // Confirm the test is actually exercising the partial-consumption
+        // path. If this assertion fails, future contributors investigating
+        // know the burst-size assumption broke (e.g., rustls raised
+        // READ_SIZE, or the cert chain shrank). Bump the chain size or
+        // the key size in `generate_rsa_4096_chain` to restore.
+        assert!(
+            server_out.len() > 4096,
+            "burst must exceed READ_SIZE to exercise multi-iteration loop, \
+             got {} bytes — bump cert chain in generate_rsa_4096_chain",
+            server_out.len()
+        );
+
+        let consumed = client
+            .read_and_process_tls(&server_out)
+            .expect("helper must consume the full slice across multiple iterations");
+
+        assert_eq!(
+            consumed,
+            server_out.len(),
+            "helper must consume every byte across the multi-iteration loop \
+             (issue #200 — the actual partial-consumption surface)"
+        );
+        assert!(
+            client.wants_write(),
+            "client should have produced its handshake response after \
+             consuming the oversize burst"
         );
     }
 
