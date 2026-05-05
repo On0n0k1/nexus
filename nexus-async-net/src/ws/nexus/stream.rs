@@ -68,8 +68,7 @@ async fn handshake_tls(
                     "closed during TLS handshake",
                 )));
             }
-            codec.read_tls(&tmp[..n])?;
-            codec.process_new_packets()?;
+            codec.read_and_process_tls(&tmp[..n])?;
         }
     }
 

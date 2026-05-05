@@ -54,10 +54,68 @@ impl TlsCodec {
 
     /// Feed raw TLS bytes from a byte slice (sans-IO path).
     ///
-    /// Returns the number of bytes consumed.
+    /// Returns the number of bytes consumed. **May be less than
+    /// `src.len()`** — rustls's deframer can require a
+    /// [`process_new_packets`](Self::process_new_packets) call before
+    /// accepting more bytes. Most callers want
+    /// [`read_and_process_tls`](Self::read_and_process_tls), which
+    /// loops until the entire slice is consumed and is the correct
+    /// primitive when bytes have already been read into a buffer
+    /// (async paths, sans-IO pipelines).
     pub fn read_tls(&mut self, src: &[u8]) -> Result<usize, TlsError> {
         let mut cursor = io::Cursor::new(src);
         Ok(self.inner.read_tls(&mut cursor)?)
+    }
+
+    /// Feed buffered TLS bytes through rustls, looping until the entire
+    /// slice is consumed.
+    ///
+    /// Use this anywhere code reads bytes into a buffer first (async
+    /// paths, IO drivers that don't expose a `Read` trait, sans-IO
+    /// pipelines) and then needs to push them into the codec. Sync paths
+    /// reading directly from a [`Read`](std::io::Read) trait should use
+    /// [`read_tls_from`](Self::read_tls_from) instead — rustls handles
+    /// the consume-loop internally there.
+    ///
+    /// # Why a loop is required
+    ///
+    /// `rustls::Connection::read_tls` is not guaranteed to consume the
+    /// full provided slice on a single call. It may consume part, return
+    /// that count, and require [`process_new_packets`](Self::process_new_packets)
+    /// before accepting more. Calling `read_tls(&buf)` once and ignoring
+    /// the returned consumed count silently drops the unconsumed tail
+    /// (issue #200 — a TLS handshake against a server that splits its
+    /// response into multiple records inside a single TCP segment fails
+    /// because the unconsumed bytes vanish).
+    ///
+    /// # Returns
+    ///
+    /// `Ok(src.len())` when the entire slice has been consumed and
+    /// processed.
+    ///
+    /// # Errors
+    ///
+    /// - `TlsError::Io(InvalidData)` if rustls's deframer can't make
+    ///   progress (returns 0 bytes consumed) despite the prior
+    ///   `process_new_packets` call. Indicates a malformed or hostile
+    ///   TLS stream.
+    /// - Any error returned by [`read_tls`](Self::read_tls) or
+    ///   [`process_new_packets`](Self::process_new_packets).
+    pub fn read_and_process_tls(&mut self, src: &[u8]) -> Result<usize, TlsError> {
+        let mut consumed = 0;
+        while consumed < src.len() {
+            let n = self.read_tls(&src[consumed..])?;
+            if n == 0 {
+                return Err(TlsError::Io(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "TLS codec stopped before consuming buffered input \
+                     (rustls deframer cannot make progress)",
+                )));
+            }
+            consumed += n;
+            self.process_new_packets()?;
+        }
+        Ok(consumed)
     }
 
     /// Read raw TLS bytes from a socket.
@@ -167,5 +225,201 @@ impl std::fmt::Debug for TlsCodec {
         f.debug_struct("TlsCodec")
             .field("handshaking", &self.inner.is_handshaking())
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Cursor;
+    use std::sync::Arc;
+
+    use super::*;
+
+    // -------------------------------------------------------------------------
+    // In-memory handshake scaffolding (lifted from examples/perf_tls.rs).
+    // -------------------------------------------------------------------------
+
+    fn generate_self_signed() -> (Vec<u8>, Vec<u8>) {
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("cert generation");
+        (cert.cert.der().to_vec(), cert.key_pair.serialize_der())
+    }
+
+    /// In-memory pipe for handshake bytes.
+    struct MemPipe {
+        buf: Vec<u8>,
+    }
+
+    impl MemPipe {
+        fn new() -> Self {
+            Self { buf: Vec::new() }
+        }
+
+        fn write_to(&mut self, data: &[u8]) {
+            self.buf.extend_from_slice(data);
+        }
+
+        fn read_from(&mut self, dst: &mut [u8]) -> usize {
+            let n = dst.len().min(self.buf.len());
+            dst[..n].copy_from_slice(&self.buf[..n]);
+            self.buf.drain(..n);
+            n
+        }
+
+        fn len(&self) -> usize {
+            self.buf.len()
+        }
+    }
+
+    /// Build the server side and capture its first multi-record handshake
+    /// burst (ServerHello + EncryptedExtensions + Certificate + CertVerify +
+    /// Finished under TLS 1.3 — several records pushed back-to-back). The
+    /// returned `server_out` is the slice we feed to the client `TlsCodec`
+    /// to exercise the partial-consumption surface.
+    fn setup_and_capture_server_burst() -> (TlsCodec, rustls::ServerConnection, Vec<u8>) {
+        let (cert_der, key_der) = generate_self_signed();
+
+        let cert = rustls::pki_types::CertificateDer::from(cert_der);
+        let key = rustls::pki_types::PrivateKeyDer::try_from(key_der).unwrap();
+        let server_config = Arc::new(
+            rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(vec![cert], key)
+                .unwrap(),
+        );
+        let mut server = rustls::ServerConnection::new(server_config).unwrap();
+
+        let client_config = TlsConfig::builder().danger_no_verify().build().unwrap();
+        let mut client = TlsCodec::new(&client_config, "localhost").unwrap();
+
+        let mut c2s = MemPipe::new();
+        let mut s2c = MemPipe::new();
+
+        // Client writes ClientHello.
+        let mut cursor = Cursor::new(Vec::new());
+        client.write_tls_to(&mut cursor).unwrap();
+        c2s.write_to(cursor.get_ref());
+
+        // Server consumes ClientHello.
+        let mut tmp = vec![0u8; 16384];
+        let n = c2s.read_from(&mut tmp);
+        server
+            .read_tls(&mut Cursor::new(&tmp[..n]))
+            .expect("server reads ClientHello");
+        server.process_new_packets().unwrap();
+
+        // Server writes its multi-record burst.
+        while server.wants_write() {
+            let mut cursor = Cursor::new(Vec::new());
+            server.write_tls(&mut cursor).unwrap();
+            s2c.write_to(cursor.get_ref());
+        }
+
+        let mut server_out = vec![0u8; s2c.len()];
+        let n = s2c.read_from(&mut server_out);
+        assert!(n > 0, "server should have produced handshake bytes");
+        server_out.truncate(n);
+
+        (client, server, server_out)
+    }
+
+    // -------------------------------------------------------------------------
+    // Tests
+    // -------------------------------------------------------------------------
+
+    /// Regression test for issue #200.
+    ///
+    /// Pre-fix: `read_tls(&buf)` may consume only part of `buf`. Calling
+    /// code in nexus-async-net + nexus-net's tls/stream.rs ignored the
+    /// returned consumed count, dropping the unconsumed tail and stalling
+    /// the TLS handshake. Post-fix: `read_and_process_tls` loops until the
+    /// entire slice is consumed.
+    #[test]
+    fn read_and_process_tls_consumes_full_slice() {
+        let (mut client, _server, server_out) = setup_and_capture_server_burst();
+
+        let consumed = client
+            .read_and_process_tls(&server_out)
+            .expect("helper must consume the full slice");
+
+        assert_eq!(
+            consumed,
+            server_out.len(),
+            "helper must consume every byte (issue #200)"
+        );
+        assert!(
+            client.wants_write(),
+            "client should have produced its handshake response"
+        );
+    }
+
+    /// Stricter exercise: feed the captured server bytes one byte per
+    /// `read_and_process_tls` call. Catches a class of bugs where the
+    /// helper itself drops bytes between calls or skips the
+    /// `process_new_packets` step in some iterations.
+    #[test]
+    fn read_and_process_tls_byte_at_a_time() {
+        let (mut client, _server, server_out) = setup_and_capture_server_burst();
+
+        for byte in &server_out {
+            client
+                .read_and_process_tls(std::slice::from_ref(byte))
+                .expect("byte-at-a-time must succeed");
+        }
+
+        assert!(
+            client.wants_write(),
+            "client should have produced its handshake response \
+             after byte-at-a-time consumption"
+        );
+    }
+
+    /// Demonstrates the contract difference between `read_tls` and
+    /// `read_and_process_tls` (issue #200).
+    ///
+    /// rustls 0.23 clamps each `read_tls` call to a 4096-byte chunk per
+    /// the deframer's internal `READ_SIZE` (see
+    /// `rustls::msgs::deframer::buffers::DeframerVecBuffer::prepare_read`).
+    /// Any slice larger than that is partially consumed in one call —
+    /// the buggy pattern `codec.read_tls(&buf)?; process_new_packets()?;`
+    /// silently drops everything past byte 4096 because the call site
+    /// ignores the returned count.
+    ///
+    /// In the real-world failure (Polymarket's WSS endpoint) the server
+    /// emits a multi-record TLS 1.3 handshake burst (ServerHello +
+    /// EncryptedExtensions + Certificate + CertVerify + Finished) that
+    /// can easily exceed 4096 bytes when the cert chain is non-trivial,
+    /// or arrive concatenated inside a single TCP segment. The server
+    /// times out after ~15s waiting for the client's Finished record
+    /// that never comes, because the client never decrypted past the
+    /// 4096th byte.
+    ///
+    /// The 4096-byte cap is rustls-internal and may change in future
+    /// versions. If it does, this assertion needs adjusting (raise the
+    /// input size above the new cap), but the helper's loop remains
+    /// correct — partial consumption is the documented contract of
+    /// `Connection::read_tls`, not an implementation accident.
+    #[test]
+    fn bare_read_tls_partially_consumes_large_slice() {
+        let client_config = TlsConfig::builder().danger_no_verify().build().unwrap();
+        let mut client = TlsCodec::new(&client_config, "localhost").unwrap();
+
+        // Larger than rustls's READ_SIZE (4096) per-call cap. Contents
+        // don't need to be valid TLS — `read_tls` only buffers; it does
+        // not validate. (Validation happens in `process_new_packets`,
+        // which we do not call.)
+        let oversize = vec![0u8; 8192];
+
+        let consumed = client
+            .read_tls(&oversize)
+            .expect("read_tls buffers without validating");
+
+        assert!(
+            consumed < oversize.len(),
+            "expected partial consumption (issue #200 surface): \
+             rustls should clamp to its per-call READ_SIZE cap, but \
+             consumed {consumed} of {} bytes in one call",
+            oversize.len(),
+        );
     }
 }

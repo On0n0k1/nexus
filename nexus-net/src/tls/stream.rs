@@ -163,8 +163,7 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> TlsStream<S> {
                         "connection closed during TLS handshake",
                     )));
                 }
-                self.codec.read_tls(&tmp[..n])?;
-                self.codec.process_new_packets()?;
+                self.codec.read_and_process_tls(&tmp[..n])?;
             }
         }
         while self.codec.wants_write() {
@@ -204,8 +203,9 @@ impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncRe
                 if filled == 0 {
                     return std::task::Poll::Ready(Ok(())); // EOF
                 }
-                this.codec.read_tls(&tmp[..filled]).map_err(tls_to_io)?;
-                this.codec.process_new_packets().map_err(tls_to_io)?;
+                this.codec
+                    .read_and_process_tls(&tmp[..filled])
+                    .map_err(tls_to_io)?;
                 let slice = buf.initialize_unfilled();
                 let pn = this.codec.read_plaintext(slice).map_err(tls_to_io)?;
                 if pn > 0 {

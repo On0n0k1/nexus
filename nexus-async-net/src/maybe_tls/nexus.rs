@@ -80,8 +80,10 @@ impl AsyncRead for MaybeTls {
                 match Pin::new(&mut inner.stream).poll_read(cx, &mut tmp) {
                     Poll::Ready(Ok(0)) => Poll::Ready(Ok(0)), // EOF
                     Poll::Ready(Ok(n)) => {
-                        inner.codec.read_tls(&tmp[..n]).map_err(tls_to_io)?;
-                        inner.codec.process_new_packets().map_err(tls_to_io)?;
+                        inner
+                            .codec
+                            .read_and_process_tls(&tmp[..n])
+                            .map_err(tls_to_io)?;
                         let pn = inner.codec.read_plaintext(buf).map_err(tls_to_io)?;
                         if pn > 0 {
                             Poll::Ready(Ok(pn))
