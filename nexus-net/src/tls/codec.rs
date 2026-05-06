@@ -57,11 +57,9 @@ impl TlsCodec {
     /// Returns the number of bytes consumed. **May be less than
     /// `src.len()`** — rustls's deframer can require a
     /// [`process_new_packets`](Self::process_new_packets) call before
-    /// accepting more bytes. Most callers want
-    /// [`read_and_process_tls`](Self::read_and_process_tls), which
-    /// loops until the entire slice is consumed and is the correct
-    /// primitive when bytes have already been read into a buffer
-    /// (async paths, sans-IO pipelines).
+    /// accepting more bytes. If a streaming adapter may receive arbitrary
+    /// application data, it must also give the caller a chance to drain
+    /// plaintext between `process_new_packets` calls.
     pub fn read_tls(&mut self, src: &[u8]) -> Result<usize, TlsError> {
         let mut cursor = io::Cursor::new(src);
         Ok(self.inner.read_tls(&mut cursor)?)
@@ -70,11 +68,13 @@ impl TlsCodec {
     /// Feed buffered TLS bytes through rustls, looping until the entire
     /// slice is consumed.
     ///
-    /// Use this anywhere code reads bytes into a buffer first (async
-    /// paths, IO drivers that don't expose a `Read` trait, sans-IO
-    /// pipelines) and then needs to push them into the codec. Sync paths
-    /// reading directly from a [`Read`](std::io::Read) trait should use
-    /// [`read_tls_from`](Self::read_tls_from) instead — rustls handles
+    /// Use this for bounded buffered input where the caller can tolerate
+    /// plaintext staying inside rustls until the helper returns, such as TLS
+    /// handshakes or tests. Streaming adapters for arbitrary application
+    /// data should feed at most one accepted prefix at a time, return
+    /// plaintext to the caller, and only then feed more ciphertext. Sync
+    /// paths reading directly from a [`Read`](std::io::Read) trait should
+    /// use [`read_tls_from`](Self::read_tls_from) instead — rustls handles
     /// the consume-loop internally there.
     ///
     /// # Why a loop is required

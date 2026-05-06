@@ -29,6 +29,8 @@ pub enum MaybeTls {
 pub struct TlsInner {
     pub(crate) stream: TcpStream,
     pub(crate) codec: nexus_net::tls::TlsCodec,
+    /// Ciphertext read from the transport but not yet accepted by rustls.
+    pending_read: Vec<u8>,
     /// Ciphertext waiting to be flushed to the transport.
     pending_write: Vec<u8>,
 }
@@ -39,6 +41,7 @@ impl TlsInner {
         Self {
             stream,
             codec,
+            pending_read: Vec::with_capacity(8192),
             pending_write: Vec::with_capacity(16_384),
         }
     }
@@ -69,33 +72,35 @@ impl AsyncRead for MaybeTls {
             MaybeTls::Plain(s) => Pin::new(s).poll_read(cx, buf),
             #[cfg(feature = "tls")]
             MaybeTls::Tls(inner) => {
-                // Try already-buffered plaintext first.
-                let n = inner.codec.read_plaintext(buf).map_err(tls_to_io)?;
-                if n > 0 {
-                    return Poll::Ready(Ok(n));
+                if buf.is_empty() {
+                    return Poll::Ready(Ok(0));
                 }
 
-                // Need more ciphertext from the transport.
                 let mut tmp = [0u8; 8192];
-                match Pin::new(&mut inner.stream).poll_read(cx, &mut tmp) {
-                    Poll::Ready(Ok(0)) => Poll::Ready(Ok(0)), // EOF
-                    Poll::Ready(Ok(n)) => {
-                        inner
-                            .codec
-                            .read_and_process_tls(&tmp[..n])
-                            .map_err(tls_to_io)?;
-                        let pn = inner.codec.read_plaintext(buf).map_err(tls_to_io)?;
-                        if pn > 0 {
-                            Poll::Ready(Ok(pn))
-                        } else {
-                            // Non-application TLS record consumed (handshake, alert, etc.).
-                            // Wake self to retry.
-                            cx.waker().wake_by_ref();
-                            Poll::Pending
-                        }
+
+                loop {
+                    // Try already-buffered plaintext first.
+                    let n = inner.codec.read_plaintext(buf).map_err(tls_to_io)?;
+                    if n > 0 {
+                        return Poll::Ready(Ok(n));
                     }
-                    Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
-                    Poll::Pending => Poll::Pending,
+
+                    if !inner.pending_read.is_empty() {
+                        process_pending_tls(&mut inner.codec, &mut inner.pending_read)
+                            .map_err(tls_to_io)?;
+                        continue;
+                    }
+
+                    // Need more ciphertext from the transport.
+                    match Pin::new(&mut inner.stream).poll_read(cx, &mut tmp) {
+                        Poll::Ready(Ok(0)) => return Poll::Ready(Ok(0)), // EOF
+                        Poll::Ready(Ok(n)) => {
+                            feed_tls_input(&mut inner.codec, &mut inner.pending_read, &tmp[..n])
+                                .map_err(tls_to_io)?;
+                        }
+                        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                        Poll::Pending => return Poll::Pending,
+                    }
                 }
             }
         }
@@ -178,6 +183,48 @@ impl AsyncWrite for MaybeTls {
 // Helpers
 // =============================================================================
 
+#[cfg(feature = "tls")]
+fn feed_tls_input(
+    codec: &mut nexus_net::tls::TlsCodec,
+    pending_read: &mut Vec<u8>,
+    input: &[u8],
+) -> Result<(), nexus_net::tls::TlsError> {
+    debug_assert!(pending_read.is_empty());
+
+    let consumed = codec.read_tls(input)?;
+    if consumed == 0 {
+        return Err(nexus_net::tls::TlsError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "TLS codec stopped before consuming buffered input",
+        )));
+    }
+
+    codec.process_new_packets()?;
+    if consumed < input.len() {
+        pending_read.extend_from_slice(&input[consumed..]);
+    }
+
+    Ok(())
+}
+
+#[cfg(feature = "tls")]
+fn process_pending_tls(
+    codec: &mut nexus_net::tls::TlsCodec,
+    pending_read: &mut Vec<u8>,
+) -> Result<(), nexus_net::tls::TlsError> {
+    let consumed = codec.read_tls(pending_read)?;
+    if consumed == 0 {
+        return Err(nexus_net::tls::TlsError::Io(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "TLS codec stopped before consuming buffered input",
+        )));
+    }
+
+    codec.process_new_packets()?;
+    pending_read.drain(..consumed);
+    Ok(())
+}
+
 /// Drain the `pending_write` buffer to the transport, writing as much as the
 /// socket will accept without blocking.
 #[cfg(feature = "tls")]
@@ -206,5 +253,138 @@ fn tls_to_io(e: nexus_net::tls::TlsError) -> io::Error {
     match e {
         nexus_net::tls::TlsError::Io(io_err) => io_err,
         other => io::Error::other(other),
+    }
+}
+
+#[cfg(all(test, feature = "tls"))]
+mod tests {
+    use std::io::{Cursor, Write};
+    use std::sync::Arc;
+
+    use nexus_net::tls::{TlsCodec, TlsConfig};
+
+    use super::{feed_tls_input, process_pending_tls};
+
+    fn generate_self_signed() -> (Vec<rustls::pki_types::CertificateDer<'static>>, Vec<u8>) {
+        let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
+            .expect("cert generation");
+        (
+            vec![rustls::pki_types::CertificateDer::from(
+                cert.cert.der().to_vec(),
+            )],
+            cert.key_pair.serialize_der(),
+        )
+    }
+
+    fn connected_pair() -> (TlsCodec, rustls::ServerConnection) {
+        let (cert_chain, key_der) = generate_self_signed();
+        let key = rustls::pki_types::PrivateKeyDer::try_from(key_der).unwrap();
+        let server_config = Arc::new(
+            rustls::ServerConfig::builder()
+                .with_no_client_auth()
+                .with_single_cert(cert_chain, key)
+                .unwrap(),
+        );
+        let mut server = rustls::ServerConnection::new(server_config).unwrap();
+
+        let client_config = TlsConfig::builder().danger_no_verify().build().unwrap();
+        let mut client = TlsCodec::new(&client_config, "localhost").unwrap();
+
+        let mut c2s = Vec::new();
+        let mut s2c = Vec::new();
+
+        for _ in 0..64 {
+            while client.wants_write() {
+                client.write_tls_to(&mut c2s).unwrap();
+            }
+
+            if !c2s.is_empty() {
+                server.read_tls(&mut Cursor::new(&c2s)).unwrap();
+                server.process_new_packets().unwrap();
+                c2s.clear();
+            }
+
+            while server.wants_write() {
+                server.write_tls(&mut s2c).unwrap();
+            }
+
+            if !s2c.is_empty() {
+                client.read_and_process_tls(&s2c).unwrap();
+                s2c.clear();
+            }
+
+            if !client.is_handshaking() && !server.is_handshaking() {
+                return (client, server);
+            }
+        }
+
+        panic!("TLS handshake did not complete");
+    }
+
+    fn encrypt_server_payload(server: &mut rustls::ServerConnection, payload: &[u8]) -> Vec<u8> {
+        server.writer().write_all(payload).unwrap();
+
+        let mut ciphertext = Vec::new();
+        while server.wants_write() {
+            server.write_tls(&mut ciphertext).unwrap();
+        }
+        ciphertext
+    }
+
+    #[test]
+    fn full_slice_tls_processing_can_hit_plaintext_backpressure() {
+        let (mut client, mut server) = connected_pair();
+        let payload = vec![b'x'; 64 * 1024];
+        let ciphertext = encrypt_server_payload(&mut server, &payload);
+
+        let error = client
+            .read_and_process_tls(&ciphertext)
+            .expect_err("full-slice processing should overfill rustls plaintext");
+
+        assert!(
+            error.to_string().contains("received plaintext buffer full"),
+            "unexpected error: {error}"
+        );
+    }
+
+    #[test]
+    fn pending_read_flow_drains_plaintext_before_more_ciphertext() {
+        let (mut client, mut server) = connected_pair();
+        let payload = vec![b'x'; 64 * 1024];
+        let ciphertext = encrypt_server_payload(&mut server, &payload);
+
+        let mut pending_read = Vec::new();
+        let mut plaintext = Vec::with_capacity(payload.len());
+        let mut offset = 0;
+        let mut dst = [0u8; 1024];
+
+        for _ in 0..100_000 {
+            let n = client.read_plaintext(&mut dst).unwrap();
+            if n > 0 {
+                plaintext.extend_from_slice(&dst[..n]);
+                if plaintext.len() == payload.len() {
+                    break;
+                }
+                continue;
+            }
+
+            if !pending_read.is_empty() {
+                process_pending_tls(&mut client, &mut pending_read).unwrap();
+                continue;
+            }
+
+            if offset < ciphertext.len() {
+                let end = (offset + 8192).min(ciphertext.len());
+                feed_tls_input(&mut client, &mut pending_read, &ciphertext[offset..end]).unwrap();
+                offset = end;
+                continue;
+            }
+
+            break;
+        }
+
+        assert_eq!(plaintext, payload);
+        assert_eq!(offset, ciphertext.len());
+        assert!(pending_read.is_empty());
     }
 }
