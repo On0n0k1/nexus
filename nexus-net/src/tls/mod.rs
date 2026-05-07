@@ -23,22 +23,27 @@
 //! }
 //! ```
 //!
-//! # Choosing an input primitive
+//! # Codec primitives
 //!
-//! [`TlsCodec`] provides three inbound primitives. Pick based on how
-//! the caller produces ciphertext:
-//!
-//! | Primitive | Use when |
-//! |---|---|
-//! | [`TlsCodec::read_tls_step`] | **Streaming app-data adapters** (the common case for async TLS). Caller alternates ciphertext input with plaintext output to avoid overflowing rustls's internal plaintext queue. |
-//! | [`TlsCodec::read_and_process_tls`] | **Bounded handshake input.** Caller tolerates plaintext queuing internally until the helper returns. Do **not** use for streaming app-data — large inputs overflow rustls's plaintext queue mid-call. |
-//! | [`TlsCodec::read_tls`] | **Advanced use only.** Direct rustls wrapper; caller drives [`TlsCodec::process_new_packets`] and tracks partial consumption manually. Use only when neither of the helpers above fits the adapter shape. |
+//! - [`TlsCodec::read_tls`] feeds buffered ciphertext one packet step
+//!   at a time (the canonical streaming path).
+//! - [`TlsCodec::read_tls_from`] drives a sync [`Read`](std::io::Read)
+//!   source directly.
+//! - [`TlsCodec::read_and_process_tls`] loops over a bounded buffer
+//!   (use for in-memory tests or custom adapters that pre-buffer
+//!   known-bounded ciphertext; no production callers in this crate).
+//! - [`TlsCodec::read_plaintext`] / [`TlsCodec::read_plaintext_into`]
+//!   drain decrypted plaintext.
+//! - [`TlsCodec::encrypt`] / [`TlsCodec::write_tls_to`] handle the
+//!   outbound side.
 
+mod capacities;
 mod codec;
 mod config;
 mod error;
 mod stream;
 
+pub use capacities::{TlsBufferCapacities, TlsBufferCapacitiesBuilder};
 pub use codec::TlsCodec;
 pub use config::{TlsConfig, TlsConfigBuilder};
 pub use error::TlsError;

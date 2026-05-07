@@ -35,60 +35,6 @@ async fn write_all_async<S: AsyncWrite + Unpin>(s: &mut S, mut buf: &[u8]) -> io
 }
 
 // =============================================================================
-// TLS handshake (sans-IO codec driven over async transport)
-// =============================================================================
-
-/// Drive the TLS handshake to completion.
-#[cfg(feature = "tls")]
-#[allow(clippy::future_not_send)]
-async fn handshake_tls(
-    stream: &mut TcpStream,
-    codec: &mut nexus_net::tls::TlsCodec,
-) -> Result<(), nexus_net::tls::TlsError> {
-    use nexus_net::tls::TlsError;
-
-    let mut tmp = [0u8; 8192];
-    let mut write_buf = Vec::new();
-
-    while codec.is_handshaking() {
-        if codec.wants_write() {
-            write_buf.clear();
-            codec.write_tls_to(&mut write_buf)?;
-            write_all_async(stream, &write_buf)
-                .await
-                .map_err(TlsError::Io)?;
-            std::future::poll_fn(|cx| Pin::new(&mut *stream).poll_flush(cx))
-                .await
-                .map_err(TlsError::Io)?;
-        }
-        if codec.wants_read() {
-            let n = read_async(stream, &mut tmp).await.map_err(TlsError::Io)?;
-            if n == 0 {
-                return Err(TlsError::Io(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "closed during TLS handshake",
-                )));
-            }
-            codec.read_and_process_tls(&tmp[..n])?;
-        }
-    }
-
-    // Flush any remaining handshake data.
-    if codec.wants_write() {
-        write_buf.clear();
-        codec.write_tls_to(&mut write_buf)?;
-        write_all_async(stream, &write_buf)
-            .await
-            .map_err(TlsError::Io)?;
-        std::future::poll_fn(|cx| Pin::new(&mut *stream).poll_flush(cx))
-            .await
-            .map_err(TlsError::Io)?;
-    }
-
-    Ok(())
-}
-
-// =============================================================================
 // WsStream
 // =============================================================================
 
@@ -456,9 +402,7 @@ pub struct WsStreamBuilder {
     #[cfg(feature = "tls")]
     tls_config: Option<TlsConfig>,
     #[cfg(feature = "tls")]
-    tls_pending_read_capacity: Option<usize>,
-    #[cfg(feature = "tls")]
-    tls_pending_write_capacity: Option<usize>,
+    tls_capacities: Option<nexus_net::tls::TlsBufferCapacities>,
     nodelay: bool,
     connect_timeout: Option<std::time::Duration>,
     #[cfg(feature = "socket-opts")]
@@ -483,9 +427,7 @@ impl WsStreamBuilder {
             #[cfg(feature = "tls")]
             tls_config: None,
             #[cfg(feature = "tls")]
-            tls_pending_read_capacity: None,
-            #[cfg(feature = "tls")]
-            tls_pending_write_capacity: None,
+            tls_capacities: None,
             nodelay: false,
             connect_timeout: None,
             #[cfg(feature = "socket-opts")]
@@ -565,31 +507,20 @@ impl WsStreamBuilder {
         self
     }
 
-    /// Override the TLS adapter's per-connection ciphertext buffer
-    /// capacities. Only applies when the connection is `wss://`.
+    /// Override the TLS adapter's per-connection buffer capacities.
+    /// Only applies when the connection is `wss://`.
     ///
-    /// `pending_read_cap` holds ciphertext read from the transport
-    /// but not yet accepted by rustls. Must be at least
-    /// [`crate::maybe_tls::TlsInner::TMP_SIZE`] (8 KiB).
-    /// Default: 8 KiB.
-    ///
-    /// `pending_write_cap` holds ciphertext rustls has produced but
-    /// not yet flushed. Smaller capacities mean more drain/refill
-    /// cycles for big writes; larger capacities cost per-connection
-    /// memory. Default: 64 KiB.
-    ///
-    /// # Panics
-    /// Panics during [`connect`](Self::connect) if
-    /// `pending_read_cap < TlsInner::TMP_SIZE`.
+    /// Defaults: 8 KiB read chunk + 64 KiB pending_write. Trading
+    /// workloads with small messages can drop the pending_write
+    /// capacity to 8–16 KiB to reduce per-connection footprint.
+    /// See [`TlsBufferCapacities`](nexus_net::tls::TlsBufferCapacities).
     #[cfg(feature = "tls")]
     #[must_use]
     pub fn tls_buffer_capacities(
         mut self,
-        pending_read_cap: usize,
-        pending_write_cap: usize,
+        capacities: nexus_net::tls::TlsBufferCapacities,
     ) -> Self {
-        self.tls_pending_read_capacity = Some(pending_read_cap);
-        self.tls_pending_write_capacity = Some(pending_write_cap);
+        self.tls_capacities = Some(capacities);
         self
     }
 
@@ -682,18 +613,9 @@ impl WsStreamBuilder {
                     None => TlsConfig::new().map_err(WsError::Tls)?,
                 };
 
-                let mut codec = nexus_net::tls::TlsCodec::new(&tls_config, parsed.host)?;
-
-                handshake_tls(&mut tcp, &mut codec).await?;
-
-                let tls_inner = crate::maybe_tls::TlsInner::with_capacities(
-                    tcp,
-                    codec,
-                    self.tls_pending_read_capacity
-                        .unwrap_or(crate::maybe_tls::TlsInner::TMP_SIZE),
-                    self.tls_pending_write_capacity
-                        .unwrap_or(crate::maybe_tls::TlsInner::DEFAULT_PENDING_WRITE_CAPACITY),
-                );
+                let codec = nexus_net::tls::TlsCodec::new(&tls_config, parsed.host)?;
+                let capacities = self.tls_capacities.unwrap_or_default();
+                let tls_inner = crate::maybe_tls::TlsInner::connect(tcp, codec, capacities).await?;
                 MaybeTls::Tls(Box::new(tls_inner))
             }
             #[cfg(not(feature = "tls"))]

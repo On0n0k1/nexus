@@ -212,8 +212,7 @@ impl ClientBuilder {
                 None => TlsConfig::new().map_err(RestError::Tls)?,
             };
             let codec = crate::tls::TlsCodec::new(&config, parsed.host)?;
-            let mut tls = crate::tls::TlsStream::new(tcp, codec);
-            tls.handshake().map_err(RestError::Tls)?;
+            let tls = crate::tls::TlsStream::connect(tcp, codec).map_err(RestError::Tls)?;
             crate::MaybeTls::Tls(Box::new(tls))
         } else {
             crate::MaybeTls::Plain(tcp)

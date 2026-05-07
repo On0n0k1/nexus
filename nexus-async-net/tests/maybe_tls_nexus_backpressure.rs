@@ -44,8 +44,8 @@ const PAYLOAD_LEN: usize = 256 * 1024;
 // =============================================================================
 
 fn make_server_config() -> Arc<rustls::ServerConfig> {
-    let cert_kp = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
-        .expect("cert generation");
+    let cert_kp =
+        rcgen::generate_simple_self_signed(vec!["localhost".to_string()]).expect("cert generation");
     let chain = vec![rustls::pki_types::CertificateDer::from(
         cert_kp.cert.der().to_vec(),
     )];
@@ -203,9 +203,8 @@ fn maybe_tls_handles_large_write_via_chunking() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind");
     let port = listener.local_addr().expect("local_addr").port();
 
-    let server_handle = thread::spawn(move || {
-        run_burst_recv_server(listener, server_config, PAYLOAD_LEN, b'z')
-    });
+    let server_handle =
+        thread::spawn(move || run_burst_recv_server(listener, server_config, PAYLOAD_LEN, b'z'));
 
     let wb = WorldBuilder::new();
     let mut world = wb.build();
@@ -249,9 +248,8 @@ fn maybe_tls_oversize_write_with_tiny_pending_write() {
     // (= TMP_SIZE), the drain loop in poll_write must iterate ~4 times
     // to flush all the ciphertext.
     let payload_len = 32 * 1024;
-    let server_handle = thread::spawn(move || {
-        run_burst_recv_server(listener, server_config, payload_len, b'y')
-    });
+    let server_handle =
+        thread::spawn(move || run_burst_recv_server(listener, server_config, payload_len, b'y'));
 
     let wb = WorldBuilder::new();
     let mut world = wb.build();
@@ -263,17 +261,16 @@ fn maybe_tls_oversize_write_with_tiny_pending_write() {
             .build()
             .expect("client tls config");
 
-        // pending_write_cap = TMP_SIZE (8 KiB) forces the
-        // drain-and-refill loop to iterate multiple times. Hardcoded
-        // here because `TlsInner::TMP_SIZE` is `pub(crate)` — the
-        // const is internally enforced by an assert in
-        // `with_capacities`, so this literal can't drift from the
-        // real value without the construct panicking.
-        let tiny_cap = 8192;
+        // 8 KiB pending_write forces the drain-and-refill loop in
+        // poll_write to iterate multiple times for the 32 KiB binary
+        // frame.
+        let capacities = nexus_net::tls::TlsBufferCapacities::builder()
+            .pending_write(8 * 1024)
+            .build();
         let mut ws = WsStreamBuilder::new()
             .tls(&tls_config)
             .write_buffer_capacity(payload_len + 1024)
-            .tls_buffer_capacities(tiny_cap, tiny_cap)
+            .tls_buffer_capacities(capacities)
             .connect_timeout(Duration::from_secs(15))
             .connect(&format!("wss://127.0.0.1:{port}/"))
             .await
@@ -289,4 +286,3 @@ fn maybe_tls_oversize_write_with_tiny_pending_write() {
 
     server_handle.join().expect("server join");
 }
-

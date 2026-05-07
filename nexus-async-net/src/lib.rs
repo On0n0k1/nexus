@@ -21,7 +21,12 @@
 #[cfg(all(feature = "tokio-rt", feature = "nexus"))]
 compile_error!("features `tokio-rt` and `nexus` are mutually exclusive — pick one async runtime");
 
-pub(crate) mod maybe_tls;
+// `maybe_tls` is implementation surface for the connection builders;
+// exposed publicly only so integration tests in this crate's
+// `tests/` directory can construct `TlsInner` directly (the test
+// binary is a separate compilation unit).
+#[doc(hidden)]
+pub mod maybe_tls;
 pub mod rest;
 pub mod ws;
 

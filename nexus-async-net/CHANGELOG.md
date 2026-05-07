@@ -5,6 +5,64 @@ All notable changes to nexus-async-net are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0]
+
+The "TLS adapter architectural refactor" release. Companion to
+[nexus-net 0.7.0](../nexus-net/CHANGELOG.md). The `MaybeTls` /
+`TlsInner` adapter for the nexus-async-rt backend is rebuilt: atomic
+construction + handshake, single ciphertext FIFO instead of two,
+no separate scratch tmp, allocation-free past initial buffer
+construction, structurally correct TLS 1.3 handshake-piggyback
+handling.
+
+### Breaking
+
+- **`TlsInner::new` / `TlsInner::with_capacities`** removed. Replaced
+  by `TlsInner::connect(stream, codec, capacities)` — async,
+  constructs the adapter and drives the TLS handshake atomically.
+  A `TlsInner` value is always post-handshake.
+- **`TlsInner::TMP_SIZE` / `TlsInner::DEFAULT_PENDING_WRITE_CAPACITY`
+  consts** removed. Capacities are configured via
+  `nexus_net::tls::TlsBufferCapacities`.
+- **`WsStreamBuilder::tls_buffer_capacities` /
+  `HttpConnectionBuilder::tls_buffer_capacities`**: signature
+  changed. Now takes a single `TlsBufferCapacities` value (was
+  positional `(usize, usize)`):
+  ```rust
+  // 0.6.2
+  builder.tls_buffer_capacities(8192, 65_536)
+  // 0.7.0
+  builder.tls_buffer_capacities(TlsBufferCapacities::default())
+  builder.tls_buffer_capacities(
+      TlsBufferCapacities::builder().pending_write(16 * 1024).build()
+  )
+  ```
+- **The free-function `handshake_tls`** in
+  `nexus_async_net::ws::nexus` and `nexus_async_net::rest::nexus` is
+  gone. Handshake driving is folded into `TlsInner::connect`.
+- **The `tmp: Box<[u8; 8192]>` field on `TlsInner`** is gone. The
+  poll_read path reads directly into `pending_read.spare()` —
+  ~8 KiB less per TLS connection.
+
+### Fixed
+
+- **TLS 1.3 handshake-piggyback: structurally correct.** When the
+  server sends app-data records in the same TCP burst as
+  `ServerFinished` (TLS 1.3 allows this), `drive_handshake` stops
+  stepping at the handshake transition and the post-handshake
+  remainder stays in `pending_read` for the streaming reader. The
+  0.6.2 `const_assert!(TMP_SIZE <= 16 KiB)` guard is gone — the
+  fix is structural, not a workaround.
+
+### Migration
+
+| 0.6.2 | 0.7.0 |
+|---|---|
+| `TlsInner::with_capacities(stream, codec, r, w)` | `TlsInner::connect(stream, codec, capacities).await?` |
+| `TlsInner::TMP_SIZE` const | `TlsBufferCapacities::default().read_chunk()` |
+| `TlsInner::DEFAULT_PENDING_WRITE_CAPACITY` const | `TlsBufferCapacities::default().pending_write()` |
+| `.tls_buffer_capacities(8192, 65_536)` | `.tls_buffer_capacities(TlsBufferCapacities::default())` |
+
 ## [0.6.2] — 2026-05-07
 
 The "TLS plaintext-backpressure + steady-state hardening" release.

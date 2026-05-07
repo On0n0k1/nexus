@@ -1,11 +1,11 @@
-//! Stream that may or may not be wrapped in TLS.
+//! Stream that may or may not be wrapped in TLS (sync only).
 //!
-//! Implements `Read + Write` (and `AsyncRead + AsyncWrite` when an
-//! async runtime feature is enabled) by delegating to either the plain
+//! Implements `Read + Write` by delegating to either the plain
 //! stream or the `TlsStream` wrapper (requires `tls` feature).
 //!
 //! Protocol clients use `MaybeTls<S>` as their stream type when the
-//! TLS decision happens at runtime (`ws://` vs `wss://`).
+//! TLS decision happens at runtime (`ws://` vs `wss://`). For async
+//! TLS, see `nexus-async-net::maybe_tls`.
 
 use std::io::{self, Read, Write};
 
@@ -64,64 +64,6 @@ impl<S: Read + Write> Write for MaybeTls<S> {
             Self::Plain(s) => s.flush(),
             #[cfg(feature = "tls")]
             Self::Tls(s) => s.flush(),
-        }
-    }
-}
-
-// =============================================================================
-// AsyncRead + AsyncWrite (tokio)
-// =============================================================================
-
-#[cfg(feature = "tokio")]
-impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncRead for MaybeTls<S> {
-    fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<io::Result<()>> {
-        match self.get_mut() {
-            MaybeTls::Plain(s) => std::pin::Pin::new(s).poll_read(cx, buf),
-            #[cfg(feature = "tls")]
-            MaybeTls::Tls(s) => std::pin::Pin::new(&mut **s).poll_read(cx, buf),
-        }
-    }
-}
-
-#[cfg(feature = "tokio")]
-impl<S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite
-    for MaybeTls<S>
-{
-    fn poll_write(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<io::Result<usize>> {
-        match self.get_mut() {
-            MaybeTls::Plain(s) => std::pin::Pin::new(s).poll_write(cx, buf),
-            #[cfg(feature = "tls")]
-            MaybeTls::Tls(s) => std::pin::Pin::new(&mut **s).poll_write(cx, buf),
-        }
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<io::Result<()>> {
-        match self.get_mut() {
-            MaybeTls::Plain(s) => std::pin::Pin::new(s).poll_flush(cx),
-            #[cfg(feature = "tls")]
-            MaybeTls::Tls(s) => std::pin::Pin::new(&mut **s).poll_flush(cx),
-        }
-    }
-
-    fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<io::Result<()>> {
-        match self.get_mut() {
-            MaybeTls::Plain(s) => std::pin::Pin::new(s).poll_shutdown(cx),
-            #[cfg(feature = "tls")]
-            MaybeTls::Tls(s) => std::pin::Pin::new(&mut **s).poll_shutdown(cx),
         }
     }
 }

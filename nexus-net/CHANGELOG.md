@@ -5,6 +5,87 @@ All notable changes to nexus-net are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0]
+
+The "TLS adapter architectural refactor" release. Five rounds of
+patches across PR #205 + PR #206 closed real bugs but left iteration
+scars: deprecated primitives shipping alongside replacements, a
+const_assert holding a latent bug at bay, three-way duplicated
+handshake drivers, decision-matrix module docs. 0.7.0 collapses the
+TLS surface to a small set of correct-by-construction primitives.
+
+### Breaking
+
+- **`TlsCodec::read_tls`** removed (was deprecated in 0.6.2). The
+  former `read_tls_step` is renamed to `read_tls` — same single-packet
+  semantics. No-progress now returns `Ok(0)` (was
+  `Err(InvalidData)`); matches the `Read::read` idiom and lets caller
+  loops detect stuck state.
+- **`TlsCodec::encrypt`** all-or-nothing variant removed (was
+  deprecated in 0.6.2). The former `try_encrypt` is renamed to
+  `encrypt` — chunked, returns bytes accepted.
+- **`TlsCodec::process_new_packets`** removed from the public API.
+  Folded into `read_tls` and `read_tls_from`.
+- **`TlsCodec::process_into`** renamed to `read_plaintext_into`.
+- **`TlsCodec::read_tls_from`**: behavior change. Now does
+  read + process internally (was read-only; caller had to call
+  `process_new_packets` separately). Return type is
+  `Result<usize, TlsError>` (was `io::Result<usize>`).
+- **`TlsStream<S>` tokio impl removed.** `TlsStream` is now sync
+  only. Async TLS lives in `nexus-async-net::maybe_tls::TlsInner`,
+  which is the canonical sans-IO async TLS adapter for the workspace.
+- **`TlsStream::new` / `TlsStream::handshake` / `TlsStream::with_capacities`**
+  removed from the public API. The new entry point is
+  `TlsStream::connect(stream, codec)` — it constructs and drives the
+  handshake atomically. Fewer half-states, no two-step ceremony.
+- **`TlsStream::TMP_SIZE` and `TlsStream::DEFAULT_PENDING_WRITE_CAPACITY`
+  consts** removed (no longer relevant; the read chunk size is owned
+  by the adapter, not the stream type).
+
+### Added
+
+- **`TlsBufferCapacities`** + builder. Per-connection TLS buffer
+  sizing for adapters that need to tune memory footprint. Construct
+  via `TlsBufferCapacities::builder().pending_write(16 * 1024).build()`
+  or `TlsBufferCapacities::default()` for the standard 8 KiB read
+  chunk + 64 KiB pending_write. Builder gives forward-compat headroom
+  for future axes.
+- `TlsCodec::read_plaintext_into(&mut FrameReader)` — renamed from
+  `process_into`. Direct-feed path, one fewer copy than reading into
+  an intermediate slice.
+
+### Changed
+
+- Module-level `nexus_net::tls` doc simplified — the decision-matrix
+  for input primitives is gone (two clearly-named primitives don't
+  need a triage table).
+- `TlsCodec::read_and_process_tls` — kept but its docs now describe
+  the bounded-input contract clearly. Use for handshake bytes /
+  in-memory tests; **do not** use for streaming app-data.
+
+### Removed
+
+- The latent-bug `const_assert!(TMP_SIZE <= 16 KiB)` is gone — the
+  handshake-piggyback fix is structural now (the handshake driver
+  reads directly into `pending_read.spare()` and stops stepping at
+  the handshake transition).
+- All deprecated 0.6.2 primitives (see Breaking above).
+
+### Migration
+
+| 0.6.2 | 0.7.0 |
+|---|---|
+| `read_tls(&[u8])` (deprecated) | `read_tls(&[u8])` (new safe step semantics) |
+| `read_tls_step(&[u8])` | `read_tls(&[u8])` |
+| `read_and_process_tls(&[u8])` | unchanged (kept as bounded-input helper) |
+| `process_new_packets()` | removed; folded into `read_tls`/`read_tls_from` |
+| `read_tls_from<R>(&mut R)` (read-only) | `read_tls_from<R>(&mut R)` (read + process) |
+| `process_into(&mut FrameReader)` | `read_plaintext_into(&mut FrameReader)` |
+| `encrypt(&[u8])` (deprecated, all-or-nothing) | use `encrypt` (chunked) |
+| `try_encrypt(&[u8])` | `encrypt(&[u8])` |
+| `TlsStream::new + handshake` | `TlsStream::connect` |
+| `TlsStream::with_capacities` (tokio) | removed; use `nexus-async-net::TlsInner::connect` for async |
+
 ## [0.6.2] — 2026-05-07
 
 The "TLS plaintext-backpressure + steady-state hardening" release.
