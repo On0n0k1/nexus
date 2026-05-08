@@ -13,6 +13,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use std::time::{Duration, Instant};
 
+use nexus_async_net::NexusAsyncReadAdapter;
 use nexus_async_rt::{AsyncRead, AsyncWrite};
 
 // =============================================================================
@@ -126,11 +127,9 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
     let waker = noop_waker();
     let mut cx = Context::from_waker(&waker);
     let mut f = std::pin::pin!(f);
-    loop {
-        match f.as_mut().poll(&mut cx) {
-            Poll::Ready(v) => return v,
-            Poll::Pending => panic!("future returned Pending with synchronous mock"),
-        }
+    match f.as_mut().poll(&mut cx) {
+        Poll::Ready(v) => v,
+        Poll::Pending => panic!("future returned Pending with synchronous mock"),
     }
 }
 
@@ -142,7 +141,7 @@ fn bench_inmemory(wire: &[u8], msg_count: u64) -> (Duration, u64) {
     use nexus_async_net::ws::WsStream;
     use nexus_net::ws::{FrameReader, FrameWriter, Message, Role};
 
-    let mock = MockAsyncReader { data: wire, pos: 0 };
+    let mock = NexusAsyncReadAdapter::new(MockAsyncReader { data: wire, pos: 0 });
     let reader = FrameReader::builder()
         .role(Role::Client)
         .buffer_capacity(64 * 1024)

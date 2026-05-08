@@ -5,14 +5,27 @@
 //!
 //! For `current_thread` runtime + `LocalSet`.
 
+use std::future::poll_fn;
+use std::pin::Pin;
+
 use nexus_net::http::ResponseReader;
 use nexus_net::rest::{RequestWriter, RestError};
 #[cfg(feature = "tls")]
 use nexus_net::tls::TlsConfig;
 use nexus_pool::local::{Pool, Pooled};
+use tokio::io::AsyncWrite;
 
 use super::connection::{HttpConnection, HttpConnectionBuilder};
 use crate::maybe_tls::MaybeTls;
+
+/// Drive `poll_shutdown` on a healthy connection during pool-build
+/// cleanup when a later slot fails — sends TLS `close_notify` + TCP
+/// FIN gracefully so the peer doesn't see a truncation alert. Errors
+/// are ignored: best-effort cleanup on an already-failing path.
+async fn graceful_shutdown(conn: &mut HttpConnection<MaybeTls>) {
+    let stream = conn.stream_mut();
+    let _ = poll_fn(|cx| Pin::new(&mut *stream).poll_shutdown(cx)).await;
+}
 
 // =============================================================================
 // ClientSlot — the item stored in the pool
@@ -397,47 +410,65 @@ impl ClientPoolBuilder {
         };
 
         // Connect all slots sequentially (cold path — startup only).
-        let mut initial_slots = Vec::with_capacity(self.connections);
+        // If a later slot fails, gracefully shut down the already-built
+        // healthy slots so the peer doesn't see TCP FIN without TLS
+        // close_notify (which rustls peers log as a truncation alert).
+        let mut initial_slots: Vec<ClientSlot> = Vec::with_capacity(self.connections);
         for _ in 0..self.connections {
-            let mut builder = HttpConnectionBuilder::new();
-            #[cfg(feature = "tls")]
-            if let Some(ref tls) = self.tls_config {
-                builder = builder.tls(tls);
-            }
-            if self.nodelay {
-                builder = builder.disable_nagle();
-            }
-            #[cfg(feature = "socket-opts")]
-            {
-                if let Some(idle) = self.tcp_keepalive {
-                    builder = builder.tcp_keepalive(idle);
+            let slot_result: Result<ClientSlot, RestError> = async {
+                let mut builder = HttpConnectionBuilder::new();
+                #[cfg(feature = "tls")]
+                if let Some(ref tls) = self.tls_config {
+                    builder = builder.tls(tls);
                 }
-                if let Some(size) = self.recv_buf_size {
-                    builder = builder.recv_buffer_size(size);
+                if self.nodelay {
+                    builder = builder.disable_nagle();
                 }
-                if let Some(size) = self.send_buf_size {
-                    builder = builder.send_buffer_size(size);
+                #[cfg(feature = "socket-opts")]
+                {
+                    if let Some(idle) = self.tcp_keepalive {
+                        builder = builder.tcp_keepalive(idle);
+                    }
+                    if let Some(size) = self.recv_buf_size {
+                        builder = builder.recv_buffer_size(size);
+                    }
+                    if let Some(size) = self.send_buf_size {
+                        builder = builder.send_buffer_size(size);
+                    }
+                }
+                let conn = builder.connect(&self.url).await?;
+
+                let mut writer = RequestWriter::new(&host_header)?;
+                if !self.base_path.is_empty() {
+                    writer.set_base_path(&self.base_path)?;
+                }
+                writer.set_write_buffer_capacity(self.write_buffer_capacity);
+                for (name, value) in &self.default_headers {
+                    writer.default_header(name, value)?;
+                }
+
+                let reader = ResponseReader::new(self.response_buffer_capacity)
+                    .max_body_size(self.max_body_size);
+
+                Ok(ClientSlot {
+                    writer,
+                    reader,
+                    conn: Some(conn),
+                })
+            }
+            .await;
+
+            match slot_result {
+                Ok(slot) => initial_slots.push(slot),
+                Err(e) => {
+                    for slot in &mut initial_slots {
+                        if let Some(ref mut c) = slot.conn {
+                            graceful_shutdown(c).await;
+                        }
+                    }
+                    return Err(e);
                 }
             }
-            let conn = builder.connect(&self.url).await?;
-
-            let mut writer = RequestWriter::new(&host_header)?;
-            if !self.base_path.is_empty() {
-                writer.set_base_path(&self.base_path)?;
-            }
-            writer.set_write_buffer_capacity(self.write_buffer_capacity);
-            for (name, value) in &self.default_headers {
-                writer.default_header(name, value)?;
-            }
-
-            let reader = ResponseReader::new(self.response_buffer_capacity)
-                .max_body_size(self.max_body_size);
-
-            initial_slots.push(ClientSlot {
-                writer,
-                reader,
-                conn: Some(conn),
-            });
         }
 
         // Create pool with factory + reset.

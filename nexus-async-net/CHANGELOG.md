@@ -5,6 +5,84 @@ All notable changes to nexus-async-net are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.7.0]
+
+The "TLS adapter architectural refactor" release. Companion to
+[nexus-net 0.7.0](../nexus-net/CHANGELOG.md). The `MaybeTls` /
+`TlsInner` adapter for the nexus-async-rt backend is rebuilt: atomic
+construction + handshake, single ciphertext FIFO instead of two,
+no separate scratch tmp, allocation-free past initial buffer
+construction, structurally correct TLS 1.3 handshake-piggyback
+handling. Phase 2 introduces a `WireStream` composition seam so the
+nexus-async-rt TLS path delivers plaintext directly into the parser's
+buffer (one fewer memcpy per recv).
+
+### Added
+
+- **`AsyncReadAdapter<S>`** (under `feature = "tokio-rt"`) — wraps a
+  `tokio::io::AsyncRead + AsyncWrite` source as a `WireStream`.
+- **`NexusAsyncReadAdapter<S>`** (under `feature = "nexus"`) — same
+  for `nexus_async_rt::AsyncRead + AsyncWrite` sources.
+  Use either at the `WsStream::connect_with` / `accept` /
+  `HttpConnection::new` call site to plug a custom transport into the
+  WireStream-based API.
+
+### Breaking
+
+- **`WsStream<S>` / `HttpConnection<S>`**: trait bound changed from
+  `S: AsyncRead + AsyncWrite + Unpin` to `S: WireStream + Unpin` (in
+  both backends). Callers passing `MaybeTls` are unaffected. Custom
+  transports must wrap in `AsyncReadAdapter` / `NexusAsyncReadAdapter`.
+- **`TlsInner::new` / `TlsInner::with_capacities`** removed. Replaced
+  by `TlsInner::connect(stream, codec, capacities)` — async,
+  constructs the adapter and drives the TLS handshake atomically.
+  A `TlsInner` value is always post-handshake.
+- **`TlsInner::TMP_SIZE` / `TlsInner::DEFAULT_PENDING_WRITE_CAPACITY`
+  consts** removed. Capacities are configured via
+  `nexus_net::tls::TlsBufferCapacities`.
+- **`WsStreamBuilder::tls_buffer_capacities` /
+  `HttpConnectionBuilder::tls_buffer_capacities`**: signature
+  changed. Now takes a single `TlsBufferCapacities` value (was
+  positional `(usize, usize)`):
+  ```rust
+  // 0.6.2
+  builder.tls_buffer_capacities(8192, 65_536)
+  // 0.7.0
+  builder.tls_buffer_capacities(TlsBufferCapacities::default())
+  builder.tls_buffer_capacities(
+      TlsBufferCapacities::builder().pending_write(16 * 1024).build()
+  )
+  ```
+- **The free-function `handshake_tls`** in
+  `nexus_async_net::ws::nexus` and `nexus_async_net::rest::nexus` is
+  gone. Handshake driving is folded into `TlsInner::connect`.
+- **The `tmp: Box<[u8; 8192]>` field on `TlsInner`** is gone. The
+  poll_read path reads directly into `pending_read.spare()` —
+  ~8 KiB less per TLS connection.
+
+### Fixed
+
+- **TLS 1.3 handshake-piggyback: structurally correct.** When the
+  server sends app-data records in the same TCP burst as
+  `ServerFinished` (TLS 1.3 allows this), `drive_handshake` stops
+  stepping at the handshake transition and the post-handshake
+  remainder stays in `pending_read` for the streaming reader. The
+  0.6.2 `const_assert!(TMP_SIZE <= 16 KiB)` guard is gone — the
+  fix is structural, not a workaround.
+
+### Migration
+
+| 0.6.2 | 0.7.0 |
+|---|---|
+| `TlsInner::with_capacities(stream, codec, r, w)` | `TlsInner::connect(stream, codec, capacities).await?` |
+| `TlsInner::TMP_SIZE` const | `TlsBufferCapacities::default().read_chunk()` |
+| `TlsInner::DEFAULT_PENDING_WRITE_CAPACITY` const | `TlsBufferCapacities::default().pending_write()` |
+| `.tls_buffer_capacities(8192, 65_536)` | `.tls_buffer_capacities(TlsBufferCapacities::default())` |
+| `WsStream::connect_with(my_tokio_tcp, url)` | `WsStream::connect_with(AsyncReadAdapter::new(my_tokio_tcp), url)` |
+| `WsStream::accept(my_tokio_tcp)` | `WsStream::accept(AsyncReadAdapter::new(my_tokio_tcp))` |
+| `WsStream::connect_with(my_nexus_tcp, url)` (nexus backend) | `WsStream::connect_with(NexusAsyncReadAdapter::new(my_nexus_tcp), url)` |
+| `HttpConnection::new(my_tokio_tcp)` | `HttpConnection::new(AsyncReadAdapter::new(my_tokio_tcp))` |
+
 ## [0.6.2] — 2026-05-07
 
 The "TLS plaintext-backpressure + steady-state hardening" release.

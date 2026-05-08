@@ -714,6 +714,21 @@ fn validate_utf8_incremental(data: &[u8], is_final: bool) -> Result<u8, Protocol
     }
 }
 
+/// Lets a [`WireStream`](crate::WireStream) feed bytes directly into
+/// the FrameReader's spare region — one fewer copy than going through
+/// a slice intermediary.
+impl crate::ParserSink for FrameReader {
+    #[inline]
+    fn spare(&mut self) -> &mut [u8] {
+        FrameReader::spare(self)
+    }
+
+    #[inline]
+    fn filled(&mut self, n: usize) {
+        FrameReader::filled(self, n);
+    }
+}
+
 impl FrameReaderBuilder {
     /// ReadBuf capacity. Default: 1MB.
     #[must_use]
@@ -1688,9 +1703,7 @@ mod tests {
         let mut data = make_frame(true, 0x2, &[0xAA; 600]);
         data.extend_from_slice(&make_frame(true, 0x2, &[0xBB; 10]));
         r.read(&data).unwrap();
-        let msg = r.next().unwrap();
-        assert!(msg.is_some());
-        drop(msg); // release borrow
+        assert!(r.next().unwrap().is_some());
         // Trigger deferred cleanup — advances head past first frame.
         let _ = r.poll().unwrap();
         // consumed ~604 > 512 (50% of 1024) → should compact.
@@ -1726,9 +1739,7 @@ mod tests {
         let mut data = make_frame(true, 0x2, &[0xCC; 10]);
         data.extend_from_slice(&make_frame(true, 0x2, &[0xDD; 5]));
         r.read(&data).unwrap();
-        let msg = r.next().unwrap();
-        assert!(msg.is_some());
-        drop(msg);
+        assert!(r.next().unwrap().is_some());
         let _ = r.poll().unwrap(); // deferred advance
         // Now consumed > 0 and threshold is 0 — should compact.
         assert!(r.should_compact());
@@ -1748,9 +1759,7 @@ mod tests {
         let mut data = make_frame(true, 0x2, &[0xDD; 10]);
         data.extend_from_slice(&make_frame(true, 0x2, &[0xEE; 5]));
         r.read(&data).unwrap();
-        let msg = r.next().unwrap();
-        assert!(msg.is_some());
-        drop(msg);
+        assert!(r.next().unwrap().is_some());
         let _ = r.poll().unwrap(); // deferred advance
         // consumed (12) >= 7 (ceil threshold) → should compact.
         assert!(r.should_compact());

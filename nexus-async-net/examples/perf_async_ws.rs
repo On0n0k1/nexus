@@ -17,6 +17,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
 
+use nexus_async_net::AsyncReadAdapter;
 use serde::Deserialize;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -127,7 +128,7 @@ async fn bench_inmemory_nexus(wire: &[u8], msg_count: u64) -> (Duration, u64) {
     use nexus_async_net::ws::WsStream;
     use nexus_net::ws::{FrameReader, FrameWriter, Message, Role};
 
-    let mock = MockAsyncReader { data: wire, pos: 0 };
+    let mock = AsyncReadAdapter::new(MockAsyncReader { data: wire, pos: 0 });
     let reader = FrameReader::builder()
         .role(Role::Client)
         .buffer_capacity(64 * 1024)
@@ -271,7 +272,7 @@ async fn bench_json_nexus<T: for<'de> Deserialize<'de>>(
 ) -> (Duration, u64) {
     use nexus_net::ws::{FrameReader, FrameWriter, Message, Role};
 
-    let mock = MockAsyncReader { data: wire, pos: 0 };
+    let mock = AsyncReadAdapter::new(MockAsyncReader { data: wire, pos: 0 });
     let reader = FrameReader::builder()
         .role(Role::Client)
         .buffer_capacity(64 * 1024)
@@ -345,7 +346,7 @@ async fn bench_stream_nexus(wire: &[u8], msg_count: u64) -> (Duration, u64) {
     use futures_util::StreamExt;
     use nexus_net::ws::{FrameReader, FrameWriter, Role};
 
-    let mock = MockAsyncReader { data: wire, pos: 0 };
+    let mock = AsyncReadAdapter::new(MockAsyncReader { data: wire, pos: 0 });
     let reader = FrameReader::builder()
         .role(Role::Client)
         .buffer_capacity(64 * 1024)
@@ -399,9 +400,12 @@ async fn bench_loopback_nexus(port: u16, wire: Vec<u8>, msg_count: u64) -> (Dura
         .await
         .unwrap();
     tcp.set_nodelay(true).unwrap();
-    let mut ws = WsStream::connect_with(tcp, &format!("ws://127.0.0.1:{port}/"))
-        .await
-        .unwrap();
+    let mut ws = WsStream::connect_with(
+        AsyncReadAdapter::new(tcp),
+        &format!("ws://127.0.0.1:{port}/"),
+    )
+    .await
+    .unwrap();
 
     let start = Instant::now();
     let mut received = 0u64;
@@ -828,7 +832,7 @@ async fn bench_tls_loopback_nexus(port: u16, wire: Vec<u8>, msg_count: u64) -> (
         .to_owned();
     let tls_stream = connector.connect(server_name, tcp).await.unwrap();
 
-    let mut ws = WsStream::connect_with(tls_stream, "ws://localhost/")
+    let mut ws = WsStream::connect_with(AsyncReadAdapter::new(tls_stream), "ws://localhost/")
         .await
         .unwrap();
 
@@ -922,8 +926,7 @@ fn bench_tls_loopback_blocking(port: u16, wire: Vec<u8>, msg_count: u64) -> (Dur
         .build()
         .unwrap();
     let codec = nexus_net::tls::TlsCodec::new(&tls_config, "localhost").unwrap();
-    let mut tls = nexus_net::tls::TlsStream::new(tcp, codec);
-    tls.handshake().unwrap();
+    let tls = nexus_net::tls::TlsStream::connect(tcp, codec).unwrap();
 
     let mut ws = nexus_net::ws::ClientBuilder::new()
         .connect_with(tls, "wss://localhost/")

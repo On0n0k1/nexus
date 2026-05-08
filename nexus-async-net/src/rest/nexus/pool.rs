@@ -3,6 +3,10 @@
 //! Uses [`nexus_pool::local::Pool`] for LIFO acquire/release with RAII guards.
 //! Inline reconnect on acquire when a connection dies.
 
+use std::future::poll_fn;
+use std::pin::Pin;
+
+use nexus_async_rt::AsyncWrite;
 use nexus_net::http::ResponseReader;
 use nexus_net::rest::{RequestWriter, RestError};
 #[cfg(feature = "tls")]
@@ -11,6 +15,18 @@ use nexus_pool::local::{Pool, Pooled};
 
 use super::connection::{HttpConnection, HttpConnectionBuilder};
 use crate::maybe_tls::MaybeTls;
+
+/// Drive `poll_shutdown` on a healthy connection during pool-build
+/// cleanup when a later slot fails — sends TLS `close_notify` + TCP
+/// FIN gracefully so the peer doesn't see a truncation alert. Errors
+/// are ignored; this is best-effort cleanup on an already-failing path.
+///
+/// `!Send` because `nexus_async_rt::TcpStream` is intentionally !Send.
+#[allow(clippy::future_not_send)]
+async fn graceful_shutdown(conn: &mut HttpConnection<MaybeTls>) {
+    let stream = conn.stream_mut();
+    let _ = poll_fn(|cx| Pin::new(&mut *stream).poll_shutdown(cx)).await;
+}
 
 // =============================================================================
 // ClientSlot -- the item stored in the pool
@@ -98,6 +114,8 @@ struct ReconnectConfig {
     url: String,
     #[cfg(feature = "tls")]
     tls_config: Option<TlsConfig>,
+    #[cfg(feature = "tls")]
+    tls_capacities: Option<nexus_net::tls::TlsBufferCapacities>,
     nodelay: bool,
     #[cfg(feature = "socket-opts")]
     tcp_keepalive: Option<std::time::Duration>,
@@ -190,6 +208,10 @@ impl ClientPool {
         if let Some(ref tls) = config.tls_config {
             builder = builder.tls(tls);
         }
+        #[cfg(feature = "tls")]
+        if let Some(caps) = config.tls_capacities {
+            builder = builder.tls_buffer_capacities(caps);
+        }
         if config.nodelay {
             builder = builder.disable_nagle();
         }
@@ -221,6 +243,8 @@ pub struct ClientPoolBuilder {
     connections: usize,
     #[cfg(feature = "tls")]
     tls_config: Option<TlsConfig>,
+    #[cfg(feature = "tls")]
+    tls_capacities: Option<nexus_net::tls::TlsBufferCapacities>,
     nodelay: bool,
     #[cfg(feature = "socket-opts")]
     tcp_keepalive: Option<std::time::Duration>,
@@ -243,6 +267,8 @@ impl ClientPoolBuilder {
             connections: 1,
             #[cfg(feature = "tls")]
             tls_config: None,
+            #[cfg(feature = "tls")]
+            tls_capacities: None,
             nodelay: false,
             #[cfg(feature = "socket-opts")]
             tcp_keepalive: None,
@@ -294,6 +320,22 @@ impl ClientPoolBuilder {
     #[cfg(feature = "tls")]
     pub fn tls(mut self, config: &TlsConfig) -> Self {
         self.tls_config = Some(config.clone());
+        self
+    }
+
+    /// Per-connection TLS buffer sizing applied to every pooled
+    /// connection. Only relevant when the URL is `https://`.
+    /// See [`TlsBufferCapacities`](nexus_net::tls::TlsBufferCapacities).
+    /// Default sizing (`TlsBufferCapacities::default()`) is ~35 KiB
+    /// resident per connection; a 64-connection pool runs ~2.2 MiB
+    /// at steady-state and up to ~6.3 MiB worst-case.
+    #[must_use]
+    #[cfg(feature = "tls")]
+    pub fn tls_buffer_capacities(
+        mut self,
+        capacities: nexus_net::tls::TlsBufferCapacities,
+    ) -> Self {
+        self.tls_capacities = Some(capacities);
         self
     }
 
@@ -366,6 +408,8 @@ impl ClientPoolBuilder {
             url: self.url.clone(),
             #[cfg(feature = "tls")]
             tls_config: self.tls_config.clone(),
+            #[cfg(feature = "tls")]
+            tls_capacities: self.tls_capacities,
             nodelay: self.nodelay,
             #[cfg(feature = "socket-opts")]
             tcp_keepalive: self.tcp_keepalive,
@@ -376,47 +420,69 @@ impl ClientPoolBuilder {
         };
 
         // Connect all slots sequentially (cold path -- startup only).
-        let mut initial_slots = Vec::with_capacity(self.connections);
+        // If a later slot fails, gracefully shut down the already-built
+        // healthy slots so the peer doesn't see TCP FIN without TLS
+        // close_notify (which rustls peers log as a truncation alert).
+        let mut initial_slots: Vec<ClientSlot> = Vec::with_capacity(self.connections);
         for _ in 0..self.connections {
-            let mut builder = HttpConnectionBuilder::new();
-            #[cfg(feature = "tls")]
-            if let Some(ref tls) = self.tls_config {
-                builder = builder.tls(tls);
-            }
-            if self.nodelay {
-                builder = builder.disable_nagle();
-            }
-            #[cfg(feature = "socket-opts")]
-            {
-                if let Some(idle) = self.tcp_keepalive {
-                    builder = builder.tcp_keepalive(idle);
+            let slot_result: Result<ClientSlot, RestError> = async {
+                let mut builder = HttpConnectionBuilder::new();
+                #[cfg(feature = "tls")]
+                if let Some(ref tls) = self.tls_config {
+                    builder = builder.tls(tls);
                 }
-                if let Some(size) = self.recv_buf_size {
-                    builder = builder.recv_buffer_size(size);
+                #[cfg(feature = "tls")]
+                if let Some(caps) = self.tls_capacities {
+                    builder = builder.tls_buffer_capacities(caps);
                 }
-                if let Some(size) = self.send_buf_size {
-                    builder = builder.send_buffer_size(size);
+                if self.nodelay {
+                    builder = builder.disable_nagle();
+                }
+                #[cfg(feature = "socket-opts")]
+                {
+                    if let Some(idle) = self.tcp_keepalive {
+                        builder = builder.tcp_keepalive(idle);
+                    }
+                    if let Some(size) = self.recv_buf_size {
+                        builder = builder.recv_buffer_size(size);
+                    }
+                    if let Some(size) = self.send_buf_size {
+                        builder = builder.send_buffer_size(size);
+                    }
+                }
+                let conn = builder.connect(&self.url).await?;
+
+                let mut writer = RequestWriter::new(&host_header)?;
+                if !self.base_path.is_empty() {
+                    writer.set_base_path(&self.base_path)?;
+                }
+                writer.set_write_buffer_capacity(self.write_buffer_capacity);
+                for (name, value) in &self.default_headers {
+                    writer.default_header(name, value)?;
+                }
+
+                let reader = ResponseReader::new(self.response_buffer_capacity)
+                    .max_body_size(self.max_body_size);
+
+                Ok(ClientSlot {
+                    writer,
+                    reader,
+                    conn: Some(conn),
+                })
+            }
+            .await;
+
+            match slot_result {
+                Ok(slot) => initial_slots.push(slot),
+                Err(e) => {
+                    for slot in &mut initial_slots {
+                        if let Some(ref mut c) = slot.conn {
+                            graceful_shutdown(c).await;
+                        }
+                    }
+                    return Err(e);
                 }
             }
-            let conn = builder.connect(&self.url).await?;
-
-            let mut writer = RequestWriter::new(&host_header)?;
-            if !self.base_path.is_empty() {
-                writer.set_base_path(&self.base_path)?;
-            }
-            writer.set_write_buffer_capacity(self.write_buffer_capacity);
-            for (name, value) in &self.default_headers {
-                writer.default_header(name, value)?;
-            }
-
-            let reader = ResponseReader::new(self.response_buffer_capacity)
-                .max_body_size(self.max_body_size);
-
-            initial_slots.push(ClientSlot {
-                writer,
-                reader,
-                conn: Some(conn),
-            });
         }
 
         // Create pool with factory + reset.

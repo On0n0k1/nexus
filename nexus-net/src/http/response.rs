@@ -171,6 +171,21 @@ impl ResponseReader {
         Ok(())
     }
 
+    /// Writable region for direct in-buffer writes. Pair with
+    /// [`filled()`](Self::filled) to commit bytes after the write.
+    /// Used by [`crate::WireStream`] to deliver bytes from a transport
+    /// without a slice intermediate.
+    #[inline]
+    pub fn spare(&mut self) -> &mut [u8] {
+        self.buf.spare()
+    }
+
+    /// Commit `n` bytes written into [`spare()`](Self::spare).
+    #[inline]
+    pub fn filled(&mut self, n: usize) {
+        self.buf.filled(n);
+    }
+
     /// Read bytes from a source directly into the internal buffer.
     ///
     /// Returns bytes read, or 0 on EOF.
@@ -387,6 +402,21 @@ impl ResponseReader {
             Err(httparse::Error::TooManyHeaders) => Err(HttpError::TooManyHeaders),
             Err(_) => Err(HttpError::Malformed("httparse rejected response")),
         }
+    }
+}
+
+/// Lets a [`WireStream`](crate::WireStream) feed bytes directly into
+/// the ResponseReader's spare region — one fewer copy than going
+/// through a slice intermediary.
+impl crate::ParserSink for ResponseReader {
+    #[inline]
+    fn spare(&mut self) -> &mut [u8] {
+        ResponseReader::spare(self)
+    }
+
+    #[inline]
+    fn filled(&mut self, n: usize) {
+        ResponseReader::filled(self, n);
     }
 }
 

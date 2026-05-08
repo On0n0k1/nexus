@@ -27,7 +27,22 @@ pub enum RestError {
     InvalidUrl(String),
     /// `https://` URL used without the `tls` feature enabled.
     TlsNotEnabled,
-    /// TLS error.
+    /// TLS error during connection setup (handshake, certificate
+    /// validation, hostname resolution).
+    ///
+    /// **Steady-state TLS protocol errors** (decrypt failure, peer
+    /// alert, malformed record received during a request) on the
+    /// async `nexus-async-net` paths surface as
+    /// [`RestError::Io`](Self::Io) instead — the underlying
+    /// [`TlsError`](crate::tls::TlsError) is wrapped via
+    /// `io::Error::other` and reachable via `io_err.source()` or
+    /// `io_err.get_ref()`. This asymmetry stems from the
+    /// `WireStream` trait returning `io::Result` for poll
+    /// methods. Sync REST surfaces `Tls` directly because its
+    /// `TlsStream` exposes `TlsError` natively. Pattern-match on
+    /// both `Io` and `Tls` if you need to distinguish TLS-protocol
+    /// failures from generic transport failures across both
+    /// surfaces.
     #[cfg(feature = "tls")]
     Tls(crate::tls::TlsError),
 }

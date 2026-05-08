@@ -346,8 +346,6 @@ socket and `FrameReader` without changing either.
 
 ```bash
 cargo test -p nexus-net                          # sync (200 tests)
-cargo test -p nexus-net --features nexus-rt      # nexus-async-rt (180 tests)
-cargo test -p nexus-net --features tokio         # tokio (174 tests)
 cargo test -p nexus-net --features tls           # sync + TLS
 
 # WebSocket: Autobahn conformance (requires Podman)

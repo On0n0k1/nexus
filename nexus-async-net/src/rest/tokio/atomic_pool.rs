@@ -5,14 +5,26 @@
 //!
 //! For multi-threaded tokio runtime.
 
+use std::future::poll_fn;
+use std::pin::Pin;
+
 use nexus_net::http::ResponseReader;
 use nexus_net::rest::{RequestWriter, RestError};
 #[cfg(feature = "tls")]
 use nexus_net::tls::TlsConfig;
 use nexus_pool::sync::{Pool, Pooled};
+use tokio::io::AsyncWrite;
 
 use super::connection::{HttpConnection, HttpConnectionBuilder};
 use crate::maybe_tls::MaybeTls;
+
+/// Drive `poll_shutdown` on a healthy connection during pool-build
+/// cleanup when a later slot fails — sends TLS `close_notify` + TCP
+/// FIN gracefully so the peer doesn't see a truncation alert.
+async fn graceful_shutdown(conn: &mut HttpConnection<MaybeTls>) {
+    let stream = conn.stream_mut();
+    let _ = poll_fn(|cx| Pin::new(&mut *stream).poll_shutdown(cx)).await;
+}
 
 // =============================================================================
 // AtomicClientSlot
@@ -374,11 +386,9 @@ impl AtomicClientPoolBuilder {
         );
 
         // Replace disconnected slots with connected ones.
+        let mut built = 0usize;
         for _ in 0..self.connections {
-            {
-                let mut slot = pool
-                    .try_acquire()
-                    .expect("pool should have slots during initial setup");
+            let connect_result: Result<HttpConnection<MaybeTls>, RestError> = async {
                 let mut builder = HttpConnectionBuilder::new();
                 #[cfg(feature = "tls")]
                 if let Some(ref tls) = self.tls_config {
@@ -399,9 +409,32 @@ impl AtomicClientPoolBuilder {
                         builder = builder.send_buffer_size(size);
                     }
                 }
-                let conn = builder.connect(&self.url).await?;
-                slot.conn = Some(conn);
-                // Drop returns it to the pool (reset runs but conn is healthy).
+                builder.connect(&self.url).await
+            }
+            .await;
+
+            match connect_result {
+                Ok(conn) => {
+                    let mut slot = pool
+                        .try_acquire()
+                        .expect("pool should have slots during initial setup");
+                    slot.conn = Some(conn);
+                    built += 1;
+                    // Drop returns it to the pool with the healthy conn.
+                }
+                Err(e) => {
+                    // Shutdown the already-built slots before propagating.
+                    // Re-acquire each one (they returned to the pool when
+                    // their guards dropped above), shutdown the conn, drop.
+                    for _ in 0..built {
+                        if let Some(mut slot) = pool.try_acquire() {
+                            if let Some(ref mut c) = slot.conn {
+                                graceful_shutdown(c).await;
+                            }
+                        }
+                    }
+                    return Err(e);
+                }
             }
         }
 

@@ -30,9 +30,6 @@ mod error;
 mod request;
 mod response;
 
-#[cfg(feature = "tokio")]
-mod async_tokio;
-
 pub use connection::{Client, ClientBuilder, ParsedUrl, parse_base_url};
 pub use error::RestError;
 pub use request::{

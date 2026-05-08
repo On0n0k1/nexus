@@ -123,7 +123,7 @@ fn bench_round_trip(c: &mut Criterion) {
         b.iter(|| {
             conn.stream_mut().reset();
             let req = writer.get("/test").finish().unwrap();
-            let resp = conn.send(&req, &mut reader).unwrap();
+            let resp = conn.send(req, &mut reader).unwrap();
             black_box(resp.status());
         });
     });
@@ -153,7 +153,7 @@ fn bench_round_trip(c: &mut Criterion) {
                 .body(body)
                 .finish()
                 .unwrap();
-            let resp = conn.send(&req, &mut reader).unwrap();
+            let resp = conn.send(req, &mut reader).unwrap();
             black_box(resp.status());
         });
     });
@@ -167,7 +167,7 @@ fn bench_round_trip(c: &mut Criterion) {
         b.iter(|| {
             conn.stream_mut().reset();
             let req = writer.get("/test").finish().unwrap();
-            let resp = conn.send(&req, &mut reader).unwrap();
+            let resp = conn.send(req, &mut reader).unwrap();
             black_box(resp.body());
         });
     });
@@ -202,7 +202,7 @@ fn bench_throughput(c: &mut Criterion) {
                 } else {
                     writer.post("/test").finish().unwrap()
                 };
-                let resp = conn.send(&req, &mut reader).unwrap();
+                let resp = conn.send(req, &mut reader).unwrap();
                 black_box(resp.status());
             });
         });
@@ -301,7 +301,7 @@ fn bench_loopback(c: &mut Criterion) {
             .body(order_body)
             .finish()
             .unwrap();
-        let resp = conn.send(&req, &mut reader).unwrap();
+        let resp = conn.send(req, &mut reader).unwrap();
         black_box(resp.status());
     }
 
@@ -316,7 +316,7 @@ fn bench_loopback(c: &mut Criterion) {
                 .body(order_body)
                 .finish()
                 .unwrap();
-            let resp = conn.send(&req, &mut reader).unwrap();
+            let resp = conn.send(req, &mut reader).unwrap();
             black_box(resp.status());
         });
     });

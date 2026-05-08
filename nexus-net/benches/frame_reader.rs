@@ -70,7 +70,6 @@ fn bench_text_unmasked(c: &mut Criterion) {
                 reader.read(frame).unwrap();
                 let msg = reader.next().unwrap().unwrap();
                 black_box(&msg);
-                drop(msg);
             });
         });
     }
@@ -92,7 +91,6 @@ fn bench_binary_unmasked(c: &mut Criterion) {
                 reader.read(frame).unwrap();
                 let msg = reader.next().unwrap().unwrap();
                 black_box(&msg);
-                drop(msg);
             });
         });
     }
@@ -115,7 +113,6 @@ fn bench_text_masked(c: &mut Criterion) {
                 reader.read(frame).unwrap();
                 let msg = reader.next().unwrap().unwrap();
                 black_box(&msg);
-                drop(msg);
             });
         });
     }
@@ -143,7 +140,6 @@ fn bench_assembly_2_fragments(c: &mut Criterion) {
                 reader.read(wire).unwrap();
                 let msg = reader.next().unwrap().unwrap();
                 black_box(&msg);
-                drop(msg);
             });
         });
     }

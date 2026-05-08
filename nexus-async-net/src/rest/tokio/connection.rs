@@ -1,13 +1,70 @@
 //! Async HTTP/1.1 keep-alive connection — pure transport.
 
+use std::io;
+use std::pin::Pin;
+
 use nexus_net::http::{HttpError, ResponseReader};
 use nexus_net::rest::{Request, RestError, RestResponse};
 #[cfg(feature = "tls")]
 use nexus_net::tls::TlsConfig;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use nexus_net::{ParserSink, WireStream};
 use tokio::net::TcpStream;
 
 use crate::maybe_tls::MaybeTls;
+
+// =============================================================================
+// Async I/O helpers (poll_fn wrappers over WireStream)
+// =============================================================================
+
+async fn fill_async<W: WireStream + Unpin, P: ParserSink>(
+    s: &mut W,
+    sink: &mut P,
+    max: usize,
+) -> io::Result<usize> {
+    std::future::poll_fn(|cx| Pin::new(&mut *s).poll_fill_into(cx, sink, max)).await
+}
+
+async fn write_all_async<W: WireStream + Unpin>(s: &mut W, mut buf: &[u8]) -> io::Result<()> {
+    while !buf.is_empty() {
+        let n = std::future::poll_fn(|cx| Pin::new(&mut *s).poll_write(cx, buf)).await?;
+        if n == 0 {
+            return Err(io::Error::new(io::ErrorKind::WriteZero, "write returned 0"));
+        }
+        buf = &buf[n..];
+    }
+    Ok(())
+}
+
+async fn flush_async<W: WireStream + Unpin>(s: &mut W) -> io::Result<()> {
+    std::future::poll_fn(|cx| Pin::new(&mut *s).poll_flush(cx)).await
+}
+
+/// Tiny `ParserSink` over a `&mut [u8]`, used when bytes need to land
+/// in a stack buffer (e.g. chunked-body decoding) before further processing.
+struct SliceSink<'a> {
+    buf: &'a mut [u8],
+    filled: usize,
+}
+
+impl<'a> SliceSink<'a> {
+    fn new(buf: &'a mut [u8]) -> Self {
+        Self { buf, filled: 0 }
+    }
+
+    fn data(&self) -> &[u8] {
+        &self.buf[..self.filled]
+    }
+}
+
+impl ParserSink for SliceSink<'_> {
+    fn spare(&mut self) -> &mut [u8] {
+        &mut self.buf[self.filled..]
+    }
+
+    fn filled(&mut self, n: usize) {
+        self.filled += n;
+    }
+}
 
 // =============================================================================
 // Builder
@@ -152,7 +209,7 @@ impl HttpConnectionBuilder {
     }
 
     /// Connect with a pre-connected async stream.
-    pub fn connect_with<S: AsyncRead + AsyncWrite + Unpin>(self, stream: S) -> HttpConnection<S> {
+    pub fn connect_with<S: WireStream + Unpin>(self, stream: S) -> HttpConnection<S> {
         HttpConnection {
             stream,
             poisoned: false,
@@ -220,7 +277,7 @@ pub struct HttpConnection<S> {
 
 // MaybeTls connections are created exclusively through `HttpConnectionBuilder`.
 
-impl<S: AsyncRead + AsyncWrite + Unpin> HttpConnection<S> {
+impl<S: WireStream + Unpin> HttpConnection<S> {
     /// Wrap a pre-connected async stream.
     pub fn new(stream: S) -> Self {
         Self {
@@ -249,24 +306,32 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HttpConnection<S> {
             return Err(RestError::ConnectionPoisoned);
         }
 
+        // Cancel-safety: assume failure for the entire body of `send`.
+        // Cleared only on the success-return path. If this future is
+        // dropped at any `.await` (timeout, runtime cancel, select!
+        // arm not chosen), poison stays set — pool eviction prevents
+        // a mid-stream connection from corrupting the next request's
+        // bytes. The explicit `self.poisoned = true` on each error
+        // path below is now redundant but kept as documentation.
+        self.poisoned = true;
+
         // Send request bytes
-        if let Err(e) = self.stream.write_all(req.as_bytes()).await {
-            self.poisoned = true;
+        if let Err(e) = write_all_async(&mut self.stream, req.as_bytes()).await {
             return Err(RestError::Io(e));
         }
-        if let Err(e) = self.stream.flush().await {
-            self.poisoned = true;
+        if let Err(e) = flush_async(&mut self.stream).await {
             return Err(RestError::Io(e));
         }
 
-        // Read response — poison on any error, diagnose timeouts.
-        match self.read_response(reader).await {
-            Ok(resp) => Ok(resp),
-            Err(e) => {
-                self.poisoned = true;
-                Err(self.diagnose_error(e))
-            }
-        }
+        // Read response.
+        let resp = match self.read_response(reader).await {
+            Ok(resp) => resp,
+            Err(e) => return Err(self.diagnose_error(e)),
+        };
+
+        // Full success — clear poison so the slot returns clean to the pool.
+        self.poisoned = false;
+        Ok(resp)
     }
 
     /// Whether the connection is poisoned.
@@ -312,8 +377,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HttpConnection<S> {
     ) -> Result<RestResponse<'r>, RestError> {
         reader.consume_response();
 
-        // Read until headers are complete.
-        let mut tmp = [0u8; 4096];
+        // Read until headers are complete. ResponseReader is itself a
+        // ParserSink — bytes land directly in its internal buffer.
         loop {
             match reader.next() {
                 Ok(Some(_)) => break,
@@ -323,19 +388,24 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HttpConnection<S> {
                     return Err(e.into());
                 }
             }
-            match self.stream.read(&mut tmp).await {
+            // Pre-check the WireStream::poll_fill_into precondition
+            // (sink.spare() non-empty). If full without a parsed
+            // response head, the head exceeds the reader's capacity —
+            // surface as a parse error, not as I/O.
+            if reader.spare().is_empty() {
+                self.poisoned = true;
+                return Err(RestError::Http(HttpError::Malformed(
+                    "response head exceeds reader capacity",
+                )));
+            }
+            match fill_async(&mut self.stream, reader, 4096).await {
                 Ok(0) => {
                     self.poisoned = true;
                     return Err(RestError::ConnectionClosed(
                         "server closed before response headers",
                     ));
                 }
-                Ok(n) => {
-                    if let Err(e) = reader.read(&tmp[..n]) {
-                        self.poisoned = true;
-                        return Err(e.into());
-                    }
-                }
+                Ok(_) => {}
                 Err(e) => {
                     self.poisoned = true;
                     return Err(RestError::Io(e));
@@ -385,19 +455,25 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HttpConnection<S> {
 
         // Read remaining body bytes (Content-Length delimited).
         while reader.body_remaining() < content_length {
-            match self.stream.read(&mut tmp).await {
+            // Pre-check WireStream's spare-non-empty precondition.
+            // If the body needs more bytes than the reader can hold,
+            // surface as BufferFull rather than I/O.
+            if reader.spare().is_empty() {
+                self.poisoned = true;
+                let needed = content_length - reader.body_remaining();
+                return Err(RestError::Http(HttpError::BufferFull {
+                    needed,
+                    available: 0,
+                }));
+            }
+            match fill_async(&mut self.stream, reader, 4096).await {
                 Ok(0) => {
                     self.poisoned = true;
                     return Err(RestError::ConnectionClosed(
                         "server closed during body read",
                     ));
                 }
-                Ok(n) => {
-                    if let Err(e) = reader.read(&tmp[..n]) {
-                        self.poisoned = true;
-                        return Err(e.into());
-                    }
-                }
+                Ok(_) => {}
                 Err(e) => {
                     self.poisoned = true;
                     return Err(RestError::Io(e));
@@ -444,7 +520,9 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HttpConnection<S> {
         }
 
         while !decoder.is_done() {
-            let n = match self.stream.read(&mut wire_buf).await {
+            let mut sink = SliceSink::new(&mut wire_buf);
+            let cap = sink.spare().len();
+            let n = match fill_async(&mut self.stream, &mut sink, cap).await {
                 Ok(0) => {
                     self.poisoned = true;
                     return Err(RestError::ConnectionClosed(
@@ -458,10 +536,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HttpConnection<S> {
                 }
             };
 
+            let chunk = &sink.data()[..n];
             let mut pos = 0;
             while pos < n && !decoder.is_done() {
                 let (consumed, produced) = decoder
-                    .decode(&wire_buf[pos..n], &mut decode_buf)
+                    .decode(&chunk[pos..n], &mut decode_buf)
                     .map_err(RestError::Http)?;
                 pos += consumed;
                 if produced > 0 {
@@ -491,10 +570,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin> HttpConnection<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AsyncReadAdapter;
     use std::io::Cursor;
     use std::pin::Pin;
     use std::task::{Context, Poll};
-    use tokio::io::ReadBuf;
+    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
     struct MockAsyncStream {
         written: Vec<u8>,
@@ -556,7 +636,7 @@ mod tests {
     async fn async_get_request() {
         use nexus_net::rest::RequestWriter;
 
-        let mock = MockAsyncStream::new(&ok_response(r#"{"ok":true}"#));
+        let mock = AsyncReadAdapter::new(MockAsyncStream::new(&ok_response(r#"{"ok":true}"#)));
         let mut writer = RequestWriter::new("api.example.com").unwrap();
         let mut reader = ResponseReader::new(4096);
         let mut conn = HttpConnection::new(mock);
@@ -566,7 +646,7 @@ mod tests {
         assert_eq!(resp.status(), 200);
         assert_eq!(resp.body_str().unwrap(), r#"{"ok":true}"#);
 
-        let written = conn.stream().written_str();
+        let written = conn.stream().get_ref().written_str();
         assert!(written.starts_with("GET /status HTTP/1.1\r\n"));
         assert!(written.contains("Host: api.example.com\r\n"));
     }
@@ -575,7 +655,7 @@ mod tests {
     async fn async_post_with_body() {
         use nexus_net::rest::RequestWriter;
 
-        let mock = MockAsyncStream::new(&ok_response(r#"{"filled":true}"#));
+        let mock = AsyncReadAdapter::new(MockAsyncStream::new(&ok_response(r#"{"filled":true}"#)));
         let mut writer = RequestWriter::new("api.example.com").unwrap();
         let mut reader = ResponseReader::new(4096);
         let mut conn = HttpConnection::new(mock);
@@ -585,7 +665,7 @@ mod tests {
         let resp = conn.send(req, &mut reader).await.unwrap();
         assert_eq!(resp.status(), 200);
 
-        let written = conn.stream().written_str();
+        let written = conn.stream().get_ref().written_str();
         assert!(written.contains(&format!("Content-Length: {}\r\n", body.len())));
         assert!(written.ends_with(std::str::from_utf8(body).unwrap()));
     }
@@ -595,7 +675,7 @@ mod tests {
         use nexus_net::rest::RequestWriter;
 
         let resp_bytes = b"HTTP/1.1 200 OK\r\nX-Request-Id: abc\r\nContent-Length: 2\r\n\r\n{}";
-        let mock = MockAsyncStream::new(resp_bytes);
+        let mock = AsyncReadAdapter::new(MockAsyncStream::new(resp_bytes));
         let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
         let mut conn = HttpConnection::new(mock);
@@ -611,7 +691,7 @@ mod tests {
 
         // Response with Content-Length: 100 but only partial body → EOF
         let resp_bytes = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial";
-        let mock = MockAsyncStream::new(resp_bytes);
+        let mock = AsyncReadAdapter::new(MockAsyncStream::new(resp_bytes));
         let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
         let mut conn = HttpConnection::new(mock);
@@ -631,7 +711,7 @@ mod tests {
 
         let resp_bytes =
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
-        let mock = MockAsyncStream::new(resp_bytes);
+        let mock = AsyncReadAdapter::new(MockAsyncStream::new(resp_bytes));
         let mut writer = RequestWriter::new("host").unwrap();
         let mut reader = ResponseReader::new(4096);
         let mut conn = HttpConnection::new(mock);

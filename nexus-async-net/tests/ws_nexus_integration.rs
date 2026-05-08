@@ -7,6 +7,7 @@
 
 #![cfg(feature = "nexus")]
 
+use nexus_async_net::NexusAsyncReadAdapter;
 use nexus_async_net::ws::{WsStream, WsStreamBuilder};
 use nexus_async_rt::{Runtime, TcpListener, TcpStream, spawn_boxed};
 use nexus_net::ws::{CloseCode, Message};
@@ -32,7 +33,9 @@ fn text_echo_loopback() {
         // Server
         let server = spawn_boxed(async move {
             let (tcp, _) = listener.accept().await.unwrap();
-            let mut ws = WsStream::accept(tcp).await.unwrap();
+            let mut ws = WsStream::accept(NexusAsyncReadAdapter::new(tcp))
+                .await
+                .unwrap();
             match ws.recv().await.unwrap().unwrap() {
                 Message::Text(s) => assert_eq!(s, "hello from client"),
                 other => panic!("server expected Text, got {other:?}"),
@@ -44,7 +47,7 @@ fn text_echo_loopback() {
         let tcp = TcpStream::connect(local_addr, nexus_async_rt::io()).unwrap();
         let url = format!("ws://127.0.0.1:{}/ws", local_addr.port());
         let mut ws = WsStreamBuilder::new()
-            .connect_with(tcp, &url)
+            .connect_with(NexusAsyncReadAdapter::new(tcp), &url)
             .await
             .unwrap();
 
@@ -55,7 +58,7 @@ fn text_echo_loopback() {
             other => panic!("client expected Text, got {other:?}"),
         }
 
-        let _ = server.await;
+        server.await;
     });
 }
 
@@ -76,7 +79,9 @@ fn binary_roundtrip_loopback() {
 
         let server = spawn_boxed(async move {
             let (tcp, _) = listener.accept().await.unwrap();
-            let mut ws = WsStream::accept(tcp).await.unwrap();
+            let mut ws = WsStream::accept(NexusAsyncReadAdapter::new(tcp))
+                .await
+                .unwrap();
             match ws.recv().await.unwrap().unwrap() {
                 Message::Binary(b) => {
                     assert_eq!(b.len(), 256);
@@ -90,7 +95,7 @@ fn binary_roundtrip_loopback() {
         let tcp = TcpStream::connect(local_addr, nexus_async_rt::io()).unwrap();
         let url = format!("ws://127.0.0.1:{}/ws", local_addr.port());
         let mut ws = WsStreamBuilder::new()
-            .connect_with(tcp, &url)
+            .connect_with(NexusAsyncReadAdapter::new(tcp), &url)
             .await
             .unwrap();
 
@@ -104,7 +109,7 @@ fn binary_roundtrip_loopback() {
             other => panic!("client expected Binary, got {other:?}"),
         }
 
-        let _ = server.await;
+        server.await;
     });
 }
 
@@ -125,7 +130,9 @@ fn ping_pong_loopback() {
 
         let server = spawn_boxed(async move {
             let (tcp, _) = listener.accept().await.unwrap();
-            let mut ws = WsStream::accept(tcp).await.unwrap();
+            let mut ws = WsStream::accept(NexusAsyncReadAdapter::new(tcp))
+                .await
+                .unwrap();
             // Receive ping
             let ping_data = match ws.recv().await.unwrap().unwrap() {
                 Message::Ping(p) => {
@@ -141,7 +148,7 @@ fn ping_pong_loopback() {
         let tcp = TcpStream::connect(local_addr, nexus_async_rt::io()).unwrap();
         let url = format!("ws://127.0.0.1:{}/ws", local_addr.port());
         let mut ws = WsStreamBuilder::new()
-            .connect_with(tcp, &url)
+            .connect_with(NexusAsyncReadAdapter::new(tcp), &url)
             .await
             .unwrap();
 
@@ -152,7 +159,7 @@ fn ping_pong_loopback() {
             other => panic!("client expected Pong, got {other:?}"),
         }
 
-        let _ = server.await;
+        server.await;
     });
 }
 
@@ -173,7 +180,9 @@ fn close_handshake_loopback() {
 
         let server = spawn_boxed(async move {
             let (tcp, _) = listener.accept().await.unwrap();
-            let mut ws = WsStream::accept(tcp).await.unwrap();
+            let mut ws = WsStream::accept(NexusAsyncReadAdapter::new(tcp))
+                .await
+                .unwrap();
             match ws.recv().await.unwrap().unwrap() {
                 Message::Close(cf) => {
                     assert_eq!(cf.code, CloseCode::Normal);
@@ -186,12 +195,12 @@ fn close_handshake_loopback() {
         let tcp = TcpStream::connect(local_addr, nexus_async_rt::io()).unwrap();
         let url = format!("ws://127.0.0.1:{}/ws", local_addr.port());
         let mut ws = WsStreamBuilder::new()
-            .connect_with(tcp, &url)
+            .connect_with(NexusAsyncReadAdapter::new(tcp), &url)
             .await
             .unwrap();
 
         ws.close(CloseCode::Normal, "done").await.unwrap();
 
-        let _ = server.await;
+        server.await;
     });
 }

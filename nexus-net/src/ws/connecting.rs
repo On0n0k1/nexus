@@ -10,7 +10,7 @@ use super::stream::{Client, ClientBuilder, Error, parse_ws_url};
 use crate::buf::WriteBuf;
 
 #[cfg(feature = "tls")]
-use crate::tls::TlsCodec;
+use crate::tls::{TlsCodec, TlsError};
 
 /// A WebSocket connection in the handshake phase.
 ///
@@ -185,12 +185,21 @@ impl<S: Read + Write> Connecting<S> {
                         .as_mut()
                         .expect("TLS codec must exist in TLS handshake state");
                     match tls.read_tls_from(&mut *self.stream) {
-                        Ok(0) => return Err(Error::Handshake(HandshakeError::MalformedHttp)),
+                        Ok(0) => {
+                            // Peer closed mid-TLS-handshake — not a
+                            // malformed-HTTP condition (we haven't sent
+                            // the HTTP upgrade yet).
+                            return Err(Error::Io(io::Error::new(
+                                io::ErrorKind::UnexpectedEof,
+                                "connection closed during TLS handshake",
+                            )));
+                        }
                         Ok(_) => {}
-                        Err(e) if e.kind() == io::ErrorKind::WouldBlock => return Ok(None),
+                        Err(TlsError::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => {
+                            return Ok(None);
+                        }
                         Err(e) => return Err(e.into()),
                     }
-                    tls.process_new_packets()?;
                     if tls.wants_write() {
                         self.state = ConnectState::TlsWrite;
                     } else if !tls.is_handshaking() {
@@ -207,17 +216,19 @@ impl<S: Read + Write> Connecting<S> {
 
                     #[cfg(feature = "tls")]
                     if let Some(tls) = &mut self.tls {
-                        // TLS path: encrypt ALL remaining plaintext at once,
-                        // then flush ciphertext. encrypt() consumes everything;
-                        // write_tls_to may partially flush. The HTTP upgrade
-                        // request is small (always under rustls's plaintext
-                        // queue cap), so the all-or-nothing `encrypt` shape
-                        // is correct here — async streaming uses try_encrypt.
-                        if self.req_offset < self.req_buf.len() {
+                        // TLS path: feed plaintext chunks until the
+                        // request is consumed. The HTTP upgrade is
+                        // small (always under rustls's 64 KiB plaintext
+                        // queue cap) so a single `encrypt` typically
+                        // accepts everything; the loop guards against
+                        // partial acceptance defensively.
+                        while self.req_offset < self.req_buf.len() {
                             let data = &self.req_buf[self.req_offset..];
-                            #[allow(deprecated)]
-                            tls.encrypt(data)?;
-                            self.req_offset = self.req_buf.len(); // all plaintext consumed
+                            let n = tls.encrypt(data)?;
+                            if n == 0 {
+                                break; // queue full; drain ciphertext below
+                            }
+                            self.req_offset += n;
                         }
                         // Flush whatever ciphertext we can
                         match tls.write_tls_to(&mut *self.stream) {
@@ -391,16 +402,22 @@ impl<S: Read + Write> Connecting<S> {
     fn read_bytes(&mut self, dst: &mut [u8]) -> Result<usize, Error> {
         #[cfg(feature = "tls")]
         if let Some(tls) = &mut self.tls {
+            // Drain any plaintext rustls already has decrypted from a
+            // prior read. Skipping this and always reading more
+            // ciphertext first risks overflowing rustls's plaintext
+            // queue on bursty servers.
+            let n = tls.read_plaintext(dst).map_err(Error::Tls)?;
+            if n > 0 {
+                return Ok(n);
+            }
+            // No buffered plaintext — pull more ciphertext.
             return match tls.read_tls_from(&mut *self.stream) {
                 Ok(0) => Err(Error::Io(io::Error::new(
                     io::ErrorKind::UnexpectedEof,
                     "connection closed during TLS handshake",
                 ))),
-                Ok(_) => {
-                    tls.process_new_packets()?;
-                    tls.read_plaintext(dst).map_err(Error::Tls)
-                }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(0),
+                Ok(_) => tls.read_plaintext(dst).map_err(Error::Tls),
+                Err(TlsError::Io(e)) if e.kind() == io::ErrorKind::WouldBlock => Ok(0),
                 Err(e) => Err(e.into()),
             };
         }
