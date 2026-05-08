@@ -19,9 +19,9 @@ macro_rules! impl_parse_int {
             ///
             /// ```
             /// # use nexus_ascii::*;
-            /// let s: AsciiString<32> = AsciiString::try_from("255")?;
+            /// let s: AsciiString<32> = AsciiString::try_from("255").unwrap();
             /// assert_eq!(s.parse_u8()?, 255u8);
-            /// # Ok::<(), Box<dyn std::error::Error>>(())
+            /// # Ok::<(), core::num::ParseIntError>(())
             /// ```
             #[inline]
             pub fn parse_u8(&self) -> Result<u8, core::num::ParseIntError> {
@@ -46,9 +46,9 @@ macro_rules! impl_parse_int {
             ///
             /// ```
             /// # use nexus_ascii::*;
-            /// let s: AsciiString<32> = AsciiString::try_from("12345678901234")?;
+            /// let s: AsciiString<32> = AsciiString::try_from("12345678901234").unwrap();
             /// assert_eq!(s.parse_u64()?, 12345678901234u64);
-            /// # Ok::<(), Box<dyn std::error::Error>>(())
+            /// # Ok::<(), core::num::ParseIntError>(())
             /// ```
             #[inline]
             pub fn parse_u64(&self) -> Result<u64, core::num::ParseIntError> {
@@ -73,9 +73,9 @@ macro_rules! impl_parse_int {
             ///
             /// ```
             /// # use nexus_ascii::*;
-            /// let s: AsciiString<32> = AsciiString::try_from("-128")?;
+            /// let s: AsciiString<32> = AsciiString::try_from("-128").unwrap();
             /// assert_eq!(s.parse_i8()?, -128i8);
-            /// # Ok::<(), Box<dyn std::error::Error>>(())
+            /// # Ok::<(), core::num::ParseIntError>(())
             /// ```
             #[inline]
             pub fn parse_i8(&self) -> Result<i8, core::num::ParseIntError> {
@@ -100,9 +100,9 @@ macro_rules! impl_parse_int {
             ///
             /// ```
             /// # use nexus_ascii::*;
-            /// let s: AsciiString<32> = AsciiString::try_from("-12345678901234")?;
+            /// let s: AsciiString<32> = AsciiString::try_from("-12345678901234").unwrap();
             /// assert_eq!(s.parse_i64()?, -12345678901234i64);
-            /// # Ok::<(), Box<dyn std::error::Error>>(())
+            /// # Ok::<(), core::num::ParseIntError>(())
             /// ```
             #[inline]
             pub fn parse_i64(&self) -> Result<i64, core::num::ParseIntError> {
@@ -157,9 +157,9 @@ macro_rules! impl_parse_int_generic {
             ///
             /// ```
             /// # use nexus_ascii::*;
-            /// let s: AsciiString<32> = AsciiString::try_from("12345678901234")?;
+            /// let s: AsciiString<32> = AsciiString::try_from("12345678901234").unwrap();
             /// assert_eq!(s.parse_u64()?, 12345678901234u64);
-            /// # Ok::<(), Box<dyn std::error::Error>>(())
+            /// # Ok::<(), core::num::ParseIntError>(())
             /// ```
             #[inline]
             pub fn parse_u64(&self) -> Result<u64, core::num::ParseIntError> {

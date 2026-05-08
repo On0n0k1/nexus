@@ -1521,6 +1521,7 @@ mod tests {
         assert_eq!(text.as_str(), "Hello");
     }
 
+    #[cfg(feature = "std")]
     #[test]
     fn test_try_from_trait_string() {
         let text: AsciiText<32> = AsciiText::try_from(String::from("Hello")).unwrap();

@@ -98,7 +98,7 @@ macro_rules! impl_format_int_generic {
             /// # use nexus_ascii::*;
             /// let s: AsciiString<8> = AsciiString::from_u8(255)?;
             /// assert_eq!(s.as_str(), "255");
-            /// # Ok::<(), Box<dyn std::error::Error>>(())
+            /// # Ok::<(), nexus_ascii::IntegerTooLarge>(())
             /// ```
             #[inline]
             pub fn from_u8(value: u8) -> Result<Self, crate::format::IntegerTooLarge> {
@@ -150,7 +150,7 @@ macro_rules! impl_format_int_generic {
             /// # use nexus_ascii::*;
             /// let s: AsciiString<32> = AsciiString::from_u64(12345678901234)?;
             /// assert_eq!(s.as_str(), "12345678901234");
-            /// # Ok::<(), Box<dyn std::error::Error>>(())
+            /// # Ok::<(), nexus_ascii::IntegerTooLarge>(())
             /// ```
             #[inline]
             pub fn from_u64(value: u64) -> Result<Self, crate::format::IntegerTooLarge> {
@@ -201,7 +201,7 @@ macro_rules! impl_format_int_generic {
             /// # use nexus_ascii::*;
             /// let s: AsciiString<8> = AsciiString::from_i8(-128)?;
             /// assert_eq!(s.as_str(), "-128");
-            /// # Ok::<(), Box<dyn std::error::Error>>(())
+            /// # Ok::<(), nexus_ascii::IntegerTooLarge>(())
             /// ```
             #[inline]
             pub fn from_i8(value: i8) -> Result<Self, crate::format::IntegerTooLarge> {
@@ -252,7 +252,7 @@ macro_rules! impl_format_int_generic {
             /// # use nexus_ascii::*;
             /// let s: AsciiString<32> = AsciiString::from_i64(-12345678901234)?;
             /// assert_eq!(s.as_str(), "-12345678901234");
-            /// # Ok::<(), Box<dyn std::error::Error>>(())
+            /// # Ok::<(), nexus_ascii::IntegerTooLarge>(())
             /// ```
             #[inline]
             pub fn from_i64(value: i64) -> Result<Self, crate::format::IntegerTooLarge> {
