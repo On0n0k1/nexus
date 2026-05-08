@@ -352,6 +352,7 @@ impl<T> Drop for Pool<T> {
 ///
 /// The object is always returned to the pool when the guard is dropped.
 /// There is no way to "take" the object out permanently.
+#[must_use = "dropping the guard immediately returns the object to the pool"]
 pub struct Pooled<T> {
     value: ManuallyDrop<T>,
     inner: Weak<Inner<T>>,
