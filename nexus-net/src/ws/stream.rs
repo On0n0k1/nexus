@@ -6,14 +6,11 @@ use super::error::ProtocolError;
 use super::frame::Role;
 use super::frame_reader::{FrameReader, FrameReaderBuilder};
 use super::frame_writer::FrameWriter;
-#[cfg(not(feature = "tokio"))]
 use super::message::{CloseCode, Message};
 use crate::buf::WriteBuf;
 
-#[cfg(not(feature = "tokio"))]
 use super::handshake;
 use super::handshake::HandshakeError;
-#[cfg(not(feature = "tokio"))]
 use std::io::{self, Read, Write};
 
 #[cfg(feature = "tls")]
@@ -195,7 +192,6 @@ impl From<TlsError> for Error {
 pub struct ClientBuilder {
     pub(crate) reader_builder: FrameReaderBuilder,
     pub(crate) write_buf_capacity: usize,
-    #[cfg_attr(feature = "tokio", allow(dead_code))]
     pub(crate) write_buf_headroom: usize,
     #[cfg(feature = "tls")]
     pub(crate) tls_config: Option<TlsConfig>,
@@ -312,7 +308,7 @@ impl ClientBuilder {
     /// regardless of scheme — `ws://` uses `MaybeTls::Plain`, `wss://` uses
     /// `MaybeTls::Tls`. Without the `tls` feature, returns `Client<TcpStream>`
     /// and errors on `wss://`.
-    #[cfg(all(not(feature = "tokio"), feature = "tls"))]
+    #[cfg(feature = "tls")]
     pub fn connect(self, url: &str) -> Result<Client<crate::MaybeTls<std::net::TcpStream>>, Error> {
         let parsed = parse_ws_url(url)?;
         let addr = format!("{}:{}", parsed.host, parsed.port);
@@ -357,7 +353,7 @@ impl ClientBuilder {
     }
 
     /// Connect to a WebSocket server (blocking, no TLS feature).
-    #[cfg(all(not(feature = "tokio"), not(feature = "tls")))]
+    #[cfg(not(feature = "tls"))]
     pub fn connect(self, url: &str) -> Result<Client<std::net::TcpStream>, Error> {
         let parsed = parse_ws_url(url)?;
         if parsed.tls {
@@ -397,7 +393,6 @@ impl ClientBuilder {
     /// The stream must already handle TLS if connecting to `wss://`.
     /// For example, pass a `TlsStream<TcpStream>` or `MaybeTls<TcpStream>`.
     /// This method only performs the HTTP upgrade handshake.
-    #[cfg(not(feature = "tokio"))]
     pub fn connect_with<S: Read + Write>(self, stream: S, url: &str) -> Result<Client<S>, Error> {
         let parsed = parse_ws_url(url)?;
         let host_header = parsed.host_header();
@@ -412,7 +407,6 @@ impl ClientBuilder {
     }
 
     /// Accept an incoming WebSocket connection (server-side).
-    #[cfg(not(feature = "tokio"))]
     pub fn accept<S: Read + Write>(self, stream: S) -> Result<Client<S>, Error> {
         Client::accept_impl(
             stream,
@@ -422,7 +416,6 @@ impl ClientBuilder {
         )
     }
 
-    #[cfg(not(feature = "tokio"))]
     fn apply_socket_opts(&self, tcp: &std::net::TcpStream) -> Result<(), Error> {
         if self.tcp_nodelay {
             tcp.set_nodelay(true)?;
@@ -509,7 +502,6 @@ impl<S> Client<S> {
     }
 
     /// Internal constructor with all fields. Used by Connecting::finish().
-    #[cfg(not(feature = "tokio"))]
     pub(crate) fn from_parts_internal(
         stream: S,
         reader: FrameReader,
@@ -556,7 +548,6 @@ impl<S> Client<S> {
 
 // -- Blocking I/O impl --------------------------------------------------------
 
-#[cfg(not(feature = "tokio"))]
 impl<S: Read + Write> Client<S> {
     /// Connect using a pre-connected socket with default configuration.
     ///
@@ -851,7 +842,6 @@ pub fn pair_with(role: Role, reader_builder: FrameReaderBuilder) -> (FrameReader
     (reader_builder.role(role).build(), FrameWriter::new(role))
 }
 
-#[cfg(not(feature = "tokio"))]
 fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
     haystack
         .as_bytes()
@@ -907,10 +897,9 @@ mod tests {
     }
 
     // =========================================================================
-    // Blocking Client tests (gated off when nexus-rt is enabled)
+    // Blocking Client tests
     // =========================================================================
 
-    #[cfg(not(feature = "tokio"))]
     mod sync_tests {
         use super::*;
         use std::io::{self, Read, Write};

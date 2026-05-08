@@ -4,7 +4,6 @@ use rustls::ClientConnection;
 use rustls::pki_types::ServerName;
 
 use super::{TlsConfig, TlsError};
-use crate::ws::FrameReader;
 
 /// Sans-IO TLS codec. Decrypts inbound bytes, encrypts outbound bytes.
 ///
@@ -20,8 +19,9 @@ use crate::ws::FrameReader;
 ///   [`read_and_process_tls`](Self::read_and_process_tls) loops over
 ///   bounded input.
 /// - **Drain plaintext:** [`read_plaintext`](Self::read_plaintext) into
-///   a slice; [`read_plaintext_into`](Self::read_plaintext_into) feeds
-///   a [`FrameReader`] with one fewer copy.
+///   a slice; [`drain_plaintext_into`](Self::drain_plaintext_into) feeds
+///   any [`ParserSink`](crate::ParserSink) (e.g. `FrameReader`) with
+///   one fewer copy.
 /// - **Outbound:** [`encrypt`](Self::encrypt) returns bytes accepted
 ///   (chunked); [`write_tls_to`](Self::write_tls_to) drains ciphertext
 ///   to a writer.
@@ -55,7 +55,7 @@ impl TlsCodec {
     /// Returns the number of ciphertext bytes consumed from `src`. The
     /// caller drains any plaintext between calls (via
     /// [`read_plaintext`](Self::read_plaintext) or
-    /// [`read_plaintext_into`](Self::read_plaintext_into)) — feeding
+    /// [`drain_plaintext_into`](Self::drain_plaintext_into)) — feeding
     /// more ciphertext while plaintext is queued can overflow rustls's
     /// internal plaintext buffer. This is the canonical primitive for
     /// streaming app-data adapters (poll socket → step codec → drain
@@ -161,15 +161,23 @@ impl TlsCodec {
         Ok(n)
     }
 
-    /// Drain decrypted plaintext into a [`FrameReader`].
+    /// Drain decrypted plaintext into a [`ParserSink`].
     ///
-    /// Direct-feed path: one fewer copy than reading into an
-    /// intermediate slice and then writing into the FrameReader.
-    /// Returns the number of plaintext bytes fed.
-    pub fn read_plaintext_into(&mut self, reader: &mut FrameReader) -> Result<usize, TlsError> {
-        // Use BufRead::fill_buf to avoid ChunkVecBuffer::read overhead.
-        // fill_buf returns a reference to buffered plaintext — one fewer
-        // copy than Read::read which copies into an intermediate buffer.
+    /// Direct-feed path: uses `BufRead::fill_buf` to borrow rustls's
+    /// internal plaintext queue and copy directly into `sink.spare()`,
+    /// skipping the intermediate `&mut [u8]` that the
+    /// [`read_plaintext`](Self::read_plaintext) shape requires. Returns
+    /// the number of plaintext bytes delivered.
+    ///
+    /// Implements the zero-copy seam between rustls and parsers
+    /// (`FrameReader` for WebSocket framing, `ResponseReader` for
+    /// HTTP). Used by adapters' `WireStream::poll_fill_into` to fold
+    /// plaintext draining into the same call that drives ciphertext
+    /// reads.
+    pub fn drain_plaintext_into<P: crate::ParserSink>(
+        &mut self,
+        sink: &mut P,
+    ) -> Result<usize, TlsError> {
         let mut rd = self.inner.reader();
         let chunk = match std::io::BufRead::fill_buf(&mut rd) {
             Ok(chunk) => chunk,
@@ -179,12 +187,15 @@ impl TlsCodec {
         if chunk.is_empty() {
             return Ok(0);
         }
-        let n = chunk.len();
-        if let Err(e) = reader.read(chunk) {
-            return Err(TlsError::Io(io::Error::other(format!(
-                "FrameReader buffer full: {e}"
-            ))));
+        let spare = sink.spare();
+        let n = chunk.len().min(spare.len());
+        if n == 0 {
+            // Sink has no room; caller must drain the parser before
+            // we can deliver more plaintext.
+            return Ok(0);
         }
+        spare[..n].copy_from_slice(&chunk[..n]);
+        sink.filled(n);
         std::io::BufRead::consume(&mut rd, n);
         Ok(n)
     }
@@ -696,9 +707,10 @@ mod tests {
                 Ok(n) => consumed += n,
                 Err(e) => break e,
             }
-            if consumed >= ciphertext.len() {
-                panic!("expected error before consuming entire slice");
-            }
+            assert!(
+                consumed < ciphertext.len(),
+                "expected error before consuming entire slice"
+            );
         };
         assert!(
             error.to_string().contains("received plaintext buffer full"),
@@ -731,7 +743,9 @@ mod tests {
         let (mut client, _server) = connected_pair();
         client.set_buffer_limit(None);
 
-        let n = client.encrypt(&[b'x'; 256 * 1024]).unwrap();
+        // Heap-allocated to avoid a 256 KiB stack frame in this test.
+        let payload = vec![b'x'; 256 * 1024];
+        let n = client.encrypt(&payload).unwrap();
         assert_eq!(
             n,
             256 * 1024,
@@ -739,11 +753,24 @@ mod tests {
         );
     }
 
-    /// `read_plaintext_into` direct-feeds a [`FrameReader`] without
-    /// the intermediate slice copy. Pins the zero-copy path the WS
-    /// client uses on its hot path.
+    /// `drain_plaintext_into` direct-feeds a [`ParserSink`] without
+    /// the intermediate slice copy. Pins the zero-copy path that
+    /// `WireStream::poll_fill_into` uses on TLS adapters.
     #[test]
-    fn read_plaintext_into_zero_copy_path() {
+    fn drain_plaintext_into_zero_copy_path() {
+        struct CaptureSink {
+            buf: Vec<u8>,
+            committed: usize,
+        }
+        impl crate::ParserSink for CaptureSink {
+            fn spare(&mut self) -> &mut [u8] {
+                &mut self.buf[self.committed..]
+            }
+            fn filled(&mut self, n: usize) {
+                self.committed += n;
+            }
+        }
+
         let (mut client, mut server) = connected_pair();
         let payload = b"hello-frames";
         let ciphertext = encrypt_server_payload(&mut server, payload);
@@ -754,14 +781,18 @@ mod tests {
             consumed += client.read_tls(&ciphertext[consumed..]).unwrap();
         }
 
-        let mut reader = FrameReader::builder().build();
+        let mut sink = CaptureSink {
+            buf: vec![0u8; 64],
+            committed: 0,
+        };
         let n = client
-            .read_plaintext_into(&mut reader)
-            .expect("read_plaintext_into must succeed");
+            .drain_plaintext_into(&mut sink)
+            .expect("drain_plaintext_into must succeed");
         assert_eq!(n, payload.len(), "must feed all queued plaintext");
+        assert_eq!(&sink.buf[..n], payload);
 
         // Idempotent on empty queue.
-        let n = client.read_plaintext_into(&mut reader).unwrap();
+        let n = client.drain_plaintext_into(&mut sink).unwrap();
         assert_eq!(n, 0, "no more plaintext → Ok(0)");
     }
 

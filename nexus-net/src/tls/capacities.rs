@@ -11,17 +11,17 @@
 /// ```
 /// use nexus_net::tls::TlsBufferCapacities;
 ///
-/// // Defaults: 8 KiB read chunk, 64 KiB pending_write.
+/// // Defaults: 16 KiB on both sides.
 /// let _ = TlsBufferCapacities::default();
 ///
 /// // Override one knob:
 /// let _ = TlsBufferCapacities::builder()
-///     .pending_write(16 * 1024)
+///     .pending_write(64 * 1024)
 ///     .build();
 ///
 /// // Both:
 /// let _ = TlsBufferCapacities::builder()
-///     .read_chunk(4 * 1024)
+///     .read_chunk(32 * 1024)
 ///     .pending_write(8 * 1024)
 ///     .build();
 /// ```
@@ -32,11 +32,18 @@ pub struct TlsBufferCapacities {
 }
 
 impl TlsBufferCapacities {
-    /// Builder with sane defaults (8 KiB read chunk, 64 KiB pending_write).
+    /// Builder with sane defaults: 16 KiB on both sides.
+    ///
+    /// 16 KiB matches rustls's maximum plaintext record size, so a
+    /// single record fits in one transport read — minimizes
+    /// `pending_read` compactions under bursty inbound. Symmetric
+    /// outbound capacity covers typical small-message workloads
+    /// (order entry, control messages) without per-connection bloat.
+    /// Total ~32 KiB resident per connection.
     pub const fn builder() -> TlsBufferCapacitiesBuilder {
         TlsBufferCapacitiesBuilder {
-            read_chunk: 8 * 1024,
-            pending_write: 64 * 1024,
+            read_chunk: 16 * 1024,
+            pending_write: 16 * 1024,
         }
     }
 
@@ -71,22 +78,25 @@ pub struct TlsBufferCapacitiesBuilder {
 impl TlsBufferCapacitiesBuilder {
     /// Inbound `pending_read` buffer capacity. Doubles as the
     /// transport read chunk size — the adapter reads directly into
-    /// `pending_read.spare()`. Default 8 KiB suffices for any
-    /// well-formed TLS stream: rustls's deframer accumulates state
-    /// across calls, so a single TLS record larger than `read_chunk`
-    /// (max plaintext record = 16 KiB) is consumed across multiple
-    /// transport reads without overflowing the buffer. Larger
-    /// `read_chunk` reduces syscall count for bulk-transfer workloads
-    /// at the cost of per-connection memory.
+    /// `pending_read.spare()`. Default 16 KiB matches rustls's max
+    /// plaintext record size, so a single record fits in one transport
+    /// read and `pending_read` compactions become rare under bursty
+    /// inbound. Smaller values still work — rustls's deframer
+    /// accumulates state across calls, so a record larger than
+    /// `read_chunk` is consumed across multiple reads. Larger values
+    /// further reduce syscall count for bulk-transfer workloads at
+    /// the cost of per-connection memory.
     pub const fn read_chunk(mut self, bytes: usize) -> Self {
         self.read_chunk = bytes;
         self
     }
 
-    /// Outbound `pending_write` buffer capacity. 64 KiB matches
-    /// rustls's `DEFAULT_BUFFER_LIMIT`. Trading workloads with small
-    /// messages can drop this to 8–16 KiB to reduce per-connection
-    /// footprint.
+    /// Outbound `pending_write` buffer capacity. Default 16 KiB
+    /// suffices for typical small-message workloads (order entry,
+    /// market-data subscriptions, control messages). Bulk-transfer
+    /// workloads (large snapshots, file uploads over TLS) may benefit
+    /// from raising this to 32–64 KiB to reduce drain/refill cycles
+    /// in [`encrypt`](super::TlsCodec::encrypt).
     pub const fn pending_write(mut self, bytes: usize) -> Self {
         self.pending_write = bytes;
         self
@@ -110,8 +120,8 @@ mod tests {
         let b = TlsBufferCapacities::builder().build();
         assert_eq!(a.read_chunk(), b.read_chunk());
         assert_eq!(a.pending_write(), b.pending_write());
-        assert_eq!(a.read_chunk(), 8 * 1024);
-        assert_eq!(a.pending_write(), 64 * 1024);
+        assert_eq!(a.read_chunk(), 16 * 1024);
+        assert_eq!(a.pending_write(), 16 * 1024);
     }
 
     #[test]

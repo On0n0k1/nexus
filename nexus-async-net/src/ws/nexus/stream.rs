@@ -4,7 +4,7 @@ use std::io;
 use std::net::ToSocketAddrs;
 use std::pin::Pin;
 
-use nexus_async_rt::{AsyncRead, AsyncWrite, TcpStream};
+use nexus_async_rt::TcpStream;
 use nexus_net::buf::WriteBuf;
 #[cfg(feature = "tls")]
 use nexus_net::tls::TlsConfig;
@@ -12,18 +12,24 @@ use nexus_net::ws::{
     CloseCode, Error as WsError, FrameReader, FrameReaderBuilder, FrameWriter, HandshakeError,
     Message, Role, parse_ws_url,
 };
+use nexus_net::{ParserSink, WireStream};
 
 use crate::maybe_tls::MaybeTls;
 
 // =============================================================================
-// Async I/O helpers (poll_fn wrappers)
+// Async I/O helpers (poll_fn wrappers over WireStream)
 // =============================================================================
 
-async fn read_async<S: AsyncRead + Unpin>(s: &mut S, buf: &mut [u8]) -> io::Result<usize> {
-    std::future::poll_fn(|cx| Pin::new(&mut *s).poll_read(cx, buf)).await
+/// Drive a single `poll_fill_into` call on the stream.
+async fn fill_async<W: WireStream + Unpin, P: ParserSink>(
+    s: &mut W,
+    sink: &mut P,
+    max: usize,
+) -> io::Result<usize> {
+    std::future::poll_fn(|cx| Pin::new(&mut *s).poll_fill_into(cx, sink, max)).await
 }
 
-async fn write_all_async<S: AsyncWrite + Unpin>(s: &mut S, mut buf: &[u8]) -> io::Result<()> {
+async fn write_all_async<W: WireStream + Unpin>(s: &mut W, mut buf: &[u8]) -> io::Result<()> {
     while !buf.is_empty() {
         let n = std::future::poll_fn(|cx| Pin::new(&mut *s).poll_write(cx, buf)).await?;
         if n == 0 {
@@ -69,9 +75,9 @@ pub struct WsStream<S> {
     max_read_size: usize,
 }
 
-// -- Generic impl for any async stream ---------------------------------------
+// -- Generic impl for any WireStream-bearing transport ----------------------
 
-impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
+impl<S: WireStream + Unpin> WsStream<S> {
     /// Connect with a pre-connected async stream.
     pub async fn connect_with(stream: S, url: &str) -> Result<Self, WsError> {
         WsStreamBuilder::new().connect_with(stream, url).await
@@ -117,13 +123,13 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
                 }
             }
 
-            let spare = self.reader.spare();
-            let cap = spare.len().min(self.max_read_size);
-            let n = read_async(&mut self.stream, &mut spare[..cap]).await?;
+            // poll_fill_into delivers bytes directly into reader.spare()
+            // and commits via reader.filled(n) — zero-copy on adapters
+            // that support it (nexus-async-rt TLS).
+            let n = fill_async(&mut self.stream, &mut self.reader, self.max_read_size).await?;
             if n == 0 {
                 return Ok(None); // EOF
             }
-            self.reader.filled(n);
         }
     }
 
@@ -232,16 +238,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
 
         write_all_async(&mut stream, &req_buf[..n]).await?;
 
+        // Feed bytes directly into resp_reader's spare region via
+        // WireStream — one fewer copy than reading into a tmp slice
+        // and pushing through resp_reader.read().
         let mut resp_reader = nexus_net::http::ResponseReader::new(4096);
-        let mut tmp = [0u8; 4096];
         loop {
-            let n = read_async(&mut stream, &mut tmp).await?;
+            let n = fill_async(&mut stream, &mut resp_reader, 4096).await?;
             if n == 0 {
                 return Err(HandshakeError::MalformedHttp.into());
             }
-            resp_reader
-                .read(&tmp[..n])
-                .map_err(|_| HandshakeError::MalformedHttp)?;
             match resp_reader.next() {
                 Ok(Some(resp)) => {
                     if resp.status != 101 {
@@ -303,17 +308,15 @@ impl<S: AsyncRead + AsyncWrite + Unpin> WsStream<S> {
         max_read_size: usize,
     ) -> Result<Self, WsError> {
         let mut req_reader = nexus_net::http::RequestReader::new(4096);
-        let mut tmp = [0u8; 4096];
 
         let ws_key;
         loop {
-            let n = read_async(&mut stream, &mut tmp).await?;
+            // Direct-feed via WireStream — bytes land in
+            // req_reader.spare() without a tmp slice intermediate.
+            let n = fill_async(&mut stream, &mut req_reader, 4096).await?;
             if n == 0 {
                 return Err(HandshakeError::MalformedHttp.into());
             }
-            req_reader
-                .read(&tmp[..n])
-                .map_err(|_| HandshakeError::MalformedHttp)?;
             match req_reader.next() {
                 Ok(Some(req)) => {
                     if req.method != "GET" {
@@ -638,7 +641,7 @@ impl WsStreamBuilder {
     }
 
     /// Connect with a pre-connected async stream.
-    pub async fn connect_with<S: AsyncRead + AsyncWrite + Unpin>(
+    pub async fn connect_with<S: WireStream + Unpin>(
         self,
         stream: S,
         url: &str,
@@ -655,10 +658,7 @@ impl WsStreamBuilder {
     }
 
     /// Accept an incoming WebSocket connection (server-side).
-    pub async fn accept<S: AsyncRead + AsyncWrite + Unpin>(
-        self,
-        stream: S,
-    ) -> Result<WsStream<S>, WsError> {
+    pub async fn accept<S: WireStream + Unpin>(self, stream: S) -> Result<WsStream<S>, WsError> {
         let max_read_size = self.resolved_max_read_size();
         WsStream::accept_impl(
             stream,
@@ -706,6 +706,9 @@ mod tests {
     use std::io::Cursor;
     use std::pin::Pin;
     use std::task::{Context, Poll};
+
+    use crate::NexusAsyncReadAdapter;
+    use nexus_async_rt::{AsyncRead, AsyncWrite};
 
     /// Mock async stream backed by a byte buffer.
     struct MockStream {
@@ -765,9 +768,8 @@ mod tests {
         let mut f = std::pin::pin!(f);
 
         for _ in 0..1000 {
-            match f.as_mut().poll(&mut cx) {
-                Poll::Ready(v) => return v,
-                Poll::Pending => continue,
+            if let Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+                return v;
             }
         }
         panic!("mock future did not resolve within 1000 polls");
@@ -790,8 +792,8 @@ mod tests {
         frame
     }
 
-    fn ws_from_bytes(data: Vec<u8>) -> WsStream<MockStream> {
-        let mock = MockStream::from_bytes(data);
+    fn ws_from_bytes(data: Vec<u8>) -> WsStream<NexusAsyncReadAdapter<MockStream>> {
+        let mock = NexusAsyncReadAdapter::new(MockStream::from_bytes(data));
         let reader = FrameReader::builder().role(Role::Client).build();
         let writer = FrameWriter::new(Role::Client);
         WsStream::from_parts(mock, reader, writer)
@@ -921,8 +923,8 @@ mod tests {
         block_on(async {
             ws.send_text("hello").await.unwrap();
         });
-        // Verify bytes were written to the mock
-        assert!(!ws.stream.written.is_empty());
+        // Verify bytes were written to the mock (peek through the adapter).
+        assert!(!ws.stream.get_ref().written.is_empty());
     }
 
     #[test]
@@ -931,12 +933,13 @@ mod tests {
         block_on(async {
             ws.send_binary(&[1, 2, 3]).await.unwrap();
         });
-        assert!(!ws.stream.written.is_empty());
+        assert!(!ws.stream.get_ref().written.is_empty());
     }
 
     #[test]
     fn from_parts_construction() {
-        let mock = MockStream::from_bytes(make_frame(true, 0x1, b"test"));
+        let mock =
+            NexusAsyncReadAdapter::new(MockStream::from_bytes(make_frame(true, 0x1, b"test")));
         let reader = FrameReader::builder().role(Role::Client).build();
         let writer = FrameWriter::new(Role::Client);
         let mut ws = WsStream::from_parts(mock, reader, writer);
@@ -984,7 +987,7 @@ mod tests {
 
     #[test]
     fn send_on_broken_stream_returns_error() {
-        let mock = BrokenWriteStream(Cursor::new(Vec::new()));
+        let mock = NexusAsyncReadAdapter::new(BrokenWriteStream(Cursor::new(Vec::new())));
         let reader = FrameReader::builder().role(Role::Client).build();
         let writer = FrameWriter::new(Role::Client);
         let mut ws = WsStream::from_parts(mock, reader, writer);

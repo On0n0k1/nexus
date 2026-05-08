@@ -26,7 +26,11 @@ TLS surface to a small set of correct-by-construction primitives.
   `encrypt` — chunked, returns bytes accepted.
 - **`TlsCodec::process_new_packets`** removed from the public API.
   Folded into `read_tls` and `read_tls_from`.
-- **`TlsCodec::process_into`** renamed to `read_plaintext_into`.
+- **`TlsCodec::process_into`** renamed to
+  `drain_plaintext_into<P: ParserSink>`. Generalized over the new
+  `ParserSink` trait — works with `FrameReader`, `ResponseReader`,
+  `RequestReader`, and any third-party parser implementing `spare` /
+  `filled`. (Phase 2: composition seam between TLS and parsers.)
 - **`TlsCodec::read_tls_from`**: behavior change. Now does
   read + process internally (was read-only; caller had to call
   `process_new_packets` separately). Return type is
@@ -34,6 +38,14 @@ TLS surface to a small set of correct-by-construction primitives.
 - **`TlsStream<S>` tokio impl removed.** `TlsStream` is now sync
   only. Async TLS lives in `nexus-async-net::maybe_tls::TlsInner`,
   which is the canonical sans-IO async TLS adapter for the workspace.
+- **The `tokio` feature is gone.** nexus-net is sans-IO + sync only.
+  The async impls on `Client` (in the deleted `ws/async_tokio.rs` and
+  `rest/async_tokio.rs`) were duplicates of
+  `nexus_async_net::ws::WsStream` / `nexus_async_net::rest::HttpConnection`
+  — every method on the deleted impls (`connect_with`, `accept`,
+  `recv`, `send_*`, `close`, async `send`) is provided by the
+  `nexus-async-net` types. Layer cleanup: async lives in
+  `nexus-async-net`, period.
 - **`TlsStream::new` / `TlsStream::handshake` / `TlsStream::with_capacities`**
   removed from the public API. The new entry point is
   `TlsStream::connect(stream, codec)` — it constructs and drives the
@@ -46,13 +58,34 @@ TLS surface to a small set of correct-by-construction primitives.
 
 - **`TlsBufferCapacities`** + builder. Per-connection TLS buffer
   sizing for adapters that need to tune memory footprint. Construct
-  via `TlsBufferCapacities::builder().pending_write(16 * 1024).build()`
-  or `TlsBufferCapacities::default()` for the standard 8 KiB read
-  chunk + 64 KiB pending_write. Builder gives forward-compat headroom
-  for future axes.
-- `TlsCodec::read_plaintext_into(&mut FrameReader)` — renamed from
-  `process_into`. Direct-feed path, one fewer copy than reading into
-  an intermediate slice.
+  via `TlsBufferCapacities::builder().pending_write(64 * 1024).build()`
+  or `TlsBufferCapacities::default()` for the standard 16 KiB on
+  both sides (~33 KiB resident per connection including rustls
+  state). 16 KiB inbound matches rustls's max plaintext record so a
+  single record fits in one transport read. Builder gives
+  forward-compat headroom for future axes.
+- **`WireStream`** trait — composition seam consumed by
+  `WsStream`/`HttpConnection`. Bidirectional byte stream with a
+  `poll_fill_into<P: ParserSink>` method that delivers bytes directly
+  into the parser's spare region. Implemented by `MaybeTls` (in
+  `nexus-async-net`) and by user-provided transports via the
+  `AsyncReadAdapter` types (also in `nexus-async-net`, one per
+  runtime). The nexus-async-rt TLS variant uses the trait to skip the
+  `&mut [u8]` intermediate that `AsyncRead` requires — one fewer
+  memcpy per recv from rustls's plaintext queue.
+- **`ParserSink`** trait — `spare(&mut self) -> &mut [u8]` +
+  `filled(&mut self, n: usize)`. Implemented by `FrameReader`,
+  `ResponseReader`, and `RequestReader`. Any parser following the
+  `spare`/`filled` discipline can plug into the WireStream path.
+- **`WireStream::poll_fill_into` precondition contract.** Caller
+  must pass `max > 0` and a sink with non-empty
+  `spare()`. Implementations return `Err(InvalidInput)` if either
+  precondition is violated; with the preconditions met, `Ok(0)`
+  unambiguously signals EOF. This removes the ambiguity where
+  `Ok(0)` previously could mean either EOF or "no buffer space."
+- `TlsCodec::drain_plaintext_into(&mut P: ParserSink)` — renamed
+  from `process_into` and generalized. Direct-feed path, one fewer
+  copy than reading into an intermediate slice.
 
 ### Changed
 
@@ -80,11 +113,16 @@ TLS surface to a small set of correct-by-construction primitives.
 | `read_and_process_tls(&[u8])` | unchanged (kept as bounded-input helper) |
 | `process_new_packets()` | removed; folded into `read_tls`/`read_tls_from` |
 | `read_tls_from<R>(&mut R)` (read-only) | `read_tls_from<R>(&mut R)` (read + process) |
-| `process_into(&mut FrameReader)` | `read_plaintext_into(&mut FrameReader)` |
+| `process_into(&mut FrameReader)` | `drain_plaintext_into(&mut sink)` (any `ParserSink`) |
 | `encrypt(&[u8])` (deprecated, all-or-nothing) | use `encrypt` (chunked) |
 | `try_encrypt(&[u8])` | `encrypt(&[u8])` |
 | `TlsStream::new + handshake` | `TlsStream::connect` |
 | `TlsStream::with_capacities` (tokio) | removed; use `nexus-async-net::TlsInner::connect` for async |
+| `nexus_net::ws::Client::recv().await` (under `--features tokio`) | `nexus_async_net::ws::WsStream::recv().await` |
+| `nexus_net::ws::Client::send_text(...).await` (under `--features tokio`) | `nexus_async_net::ws::WsStream::send_text(...).await` |
+| `nexus_net::ws::ClientBuilder::connect_with(s, url).await` (under `--features tokio`) | `nexus_async_net::ws::WsStreamBuilder::connect_with(...).await` |
+| `nexus_net::rest::Client::send(req, &mut reader).await` (under `--features tokio`) | `nexus_async_net::rest::HttpConnection::send(req, &mut reader).await` |
+| `--features tokio` on `nexus-net` | removed; use `nexus-async-net` for async |
 
 ## [0.6.2] — 2026-05-07
 

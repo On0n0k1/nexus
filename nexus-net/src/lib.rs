@@ -17,6 +17,8 @@ pub mod maybe_tls;
 pub mod rest;
 #[cfg(feature = "tls")]
 pub mod tls;
+pub mod wire;
 pub mod ws;
 
 pub use maybe_tls::MaybeTls;
+pub use wire::{ParserSink, WireStream};

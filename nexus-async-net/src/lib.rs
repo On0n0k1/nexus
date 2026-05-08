@@ -17,6 +17,24 @@
 //!   Both backends provide `recv()`/`send_*()`. The tokio backend also
 //!   implements `Stream`/`Sink` for ecosystem integration.
 //! - [`rest`] — Async HTTP REST client (wraps RequestWriter/ResponseReader)
+//!
+//! # Custom transports
+//!
+//! `WsStream<S>` / `HttpConnection<S>` consume a
+//! [`WireStream`](nexus_net::WireStream) — the canonical `MaybeTls`
+//! transport implements it directly. To plug a custom
+//! `AsyncRead+AsyncWrite` transport into the same API, wrap it at
+//! the call site:
+//!
+//! - tokio (`feature = "tokio-rt"`): [`AsyncReadAdapter`]
+//! - nexus-async-rt (`feature = "nexus"`): [`NexusAsyncReadAdapter`]
+//!
+//! ```ignore
+//! let tcp = tokio::net::TcpStream::connect(addr).await?;
+//! let ws = WsStreamBuilder::new()
+//!     .connect_with(AsyncReadAdapter::new(tcp), url)
+//!     .await?;
+//! ```
 
 #[cfg(all(feature = "tokio-rt", feature = "nexus"))]
 compile_error!("features `tokio-rt` and `nexus` are mutually exclusive — pick one async runtime");
@@ -28,7 +46,13 @@ compile_error!("features `tokio-rt` and `nexus` are mutually exclusive — pick 
 #[doc(hidden)]
 pub mod maybe_tls;
 pub mod rest;
+mod wire;
 pub mod ws;
+
+#[cfg(feature = "tokio-rt")]
+pub use wire::AsyncReadAdapter;
+#[cfg(feature = "nexus")]
+pub use wire::NexusAsyncReadAdapter;
 
 // Re-export nexus-net types for convenience
 pub use nexus_net;

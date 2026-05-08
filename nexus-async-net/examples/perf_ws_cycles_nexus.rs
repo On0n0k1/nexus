@@ -13,6 +13,7 @@ use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
+use nexus_async_net::NexusAsyncReadAdapter;
 use nexus_async_net::ws::WsStream;
 use nexus_async_rt::{AsyncRead, AsyncWrite};
 use nexus_net::ws::{FrameReader, FrameWriter, Role};
@@ -194,8 +195,8 @@ fn wire_bytes(payload_size: usize, count: usize) -> usize {
     frame_len * count
 }
 
-fn make_ws(wire: &[u8], total_bytes: usize) -> WsStream<MockStream<'_>> {
-    let mock = MockStream::new(wire, total_bytes);
+fn make_ws(wire: &[u8], total_bytes: usize) -> WsStream<NexusAsyncReadAdapter<MockStream<'_>>> {
+    let mock = NexusAsyncReadAdapter::new(MockStream::new(wire, total_bytes));
     let reader = FrameReader::builder()
         .role(Role::Client)
         .buffer_capacity(256 * 1024)

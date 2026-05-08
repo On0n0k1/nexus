@@ -13,10 +13,26 @@ The "TLS adapter architectural refactor" release. Companion to
 construction + handshake, single ciphertext FIFO instead of two,
 no separate scratch tmp, allocation-free past initial buffer
 construction, structurally correct TLS 1.3 handshake-piggyback
-handling.
+handling. Phase 2 introduces a `WireStream` composition seam so the
+nexus-async-rt TLS path delivers plaintext directly into the parser's
+buffer (one fewer memcpy per recv).
+
+### Added
+
+- **`AsyncReadAdapter<S>`** (under `feature = "tokio-rt"`) — wraps a
+  `tokio::io::AsyncRead + AsyncWrite` source as a `WireStream`.
+- **`NexusAsyncReadAdapter<S>`** (under `feature = "nexus"`) — same
+  for `nexus_async_rt::AsyncRead + AsyncWrite` sources.
+  Use either at the `WsStream::connect_with` / `accept` /
+  `HttpConnection::new` call site to plug a custom transport into the
+  WireStream-based API.
 
 ### Breaking
 
+- **`WsStream<S>` / `HttpConnection<S>`**: trait bound changed from
+  `S: AsyncRead + AsyncWrite + Unpin` to `S: WireStream + Unpin` (in
+  both backends). Callers passing `MaybeTls` are unaffected. Custom
+  transports must wrap in `AsyncReadAdapter` / `NexusAsyncReadAdapter`.
 - **`TlsInner::new` / `TlsInner::with_capacities`** removed. Replaced
   by `TlsInner::connect(stream, codec, capacities)` — async,
   constructs the adapter and drives the TLS handshake atomically.
@@ -62,6 +78,10 @@ handling.
 | `TlsInner::TMP_SIZE` const | `TlsBufferCapacities::default().read_chunk()` |
 | `TlsInner::DEFAULT_PENDING_WRITE_CAPACITY` const | `TlsBufferCapacities::default().pending_write()` |
 | `.tls_buffer_capacities(8192, 65_536)` | `.tls_buffer_capacities(TlsBufferCapacities::default())` |
+| `WsStream::connect_with(my_tokio_tcp, url)` | `WsStream::connect_with(AsyncReadAdapter::new(my_tokio_tcp), url)` |
+| `WsStream::accept(my_tokio_tcp)` | `WsStream::accept(AsyncReadAdapter::new(my_tokio_tcp))` |
+| `WsStream::connect_with(my_nexus_tcp, url)` (nexus backend) | `WsStream::connect_with(NexusAsyncReadAdapter::new(my_nexus_tcp), url)` |
+| `HttpConnection::new(my_tokio_tcp)` | `HttpConnection::new(AsyncReadAdapter::new(my_tokio_tcp))` |
 
 ## [0.6.2] — 2026-05-07
 

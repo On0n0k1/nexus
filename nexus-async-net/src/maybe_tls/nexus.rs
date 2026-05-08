@@ -24,6 +24,16 @@ use nexus_net::tls::{TlsBufferCapacities, TlsCodec, TlsError};
 ///
 /// Created by connection builders based on the URL scheme.
 ///
+/// # Composition
+///
+/// Implements [`nexus_net::WireStream`] in addition to
+/// [`AsyncRead`] / [`AsyncWrite`]. The `WireStream` impl fast-paths
+/// the TLS variant by feeding rustls's plaintext queue directly
+/// into a [`ParserSink`](nexus_net::ParserSink) — one fewer memcpy
+/// per recv than the AsyncRead path. `WsStream` and
+/// `HttpConnection` consume `MaybeTls` through `WireStream` to pick
+/// up the fast path automatically.
+///
 /// # Shutdown (TLS variant)
 ///
 /// `poll_shutdown` queues a TLS `close_notify` alert, flushes the
@@ -41,20 +51,20 @@ use nexus_net::tls::{TlsBufferCapacities, TlsCodec, TlsError};
 ///
 /// # Memory (TLS variant)
 ///
-/// Each TLS-wrapped connection allocates approximately 73 KiB of
+/// Each TLS-wrapped connection allocates approximately 33 KiB of
 /// heap-resident buffers:
 ///
 /// | Buffer | Default size | Purpose |
 /// |---|---|---|
-/// | `pending_read` | 8 KiB | Inbound ciphertext FIFO (transport read target + codec input) |
-/// | `pending_write` | 64 KiB | Outbound ciphertext FIFO (drains to socket) |
+/// | `pending_read` | 16 KiB | Inbound ciphertext FIFO (transport read target + codec input) |
+/// | `pending_write` | 16 KiB | Outbound ciphertext FIFO (drains to socket) |
 /// | rustls state | ~1 KiB | Crypto state + small fixed buffers |
 ///
-/// Trading workloads with small frequent messages can reduce the
-/// `pending_write` capacity via the connection builder's
-/// `tls_buffer_capacities` setter (takes a [`TlsBufferCapacities`])
-/// — 8–16 KiB is sufficient for most order-entry and market-data
-/// clients.
+/// 16 KiB inbound matches rustls's max plaintext record size — a
+/// single record fits in one transport read. Bulk-transfer workloads
+/// (large snapshots, file uploads) can raise `pending_write` via the
+/// connection builder's `tls_buffer_capacities` setter (takes a
+/// [`TlsBufferCapacities`]) to reduce drain/refill cycles.
 pub enum MaybeTls {
     /// Plain TCP (ws://, http://).
     Plain(TcpStream),
@@ -395,6 +405,158 @@ impl AsyncWrite for MaybeTls {
                 Pin::new(&mut inner.stream).poll_shutdown(cx)
             }
         }
+    }
+}
+
+// =============================================================================
+// WireStream — zero-copy parser feed
+// =============================================================================
+
+impl nexus_net::WireStream for MaybeTls {
+    fn poll_fill_into<P: nexus_net::ParserSink>(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        sink: &mut P,
+        max: usize,
+    ) -> Poll<io::Result<usize>> {
+        if max == 0 || sink.spare().is_empty() {
+            return Poll::Ready(Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "poll_fill_into called with no buffer space \
+                 (max == 0 or sink.spare() is empty)",
+            )));
+        }
+        match self.get_mut() {
+            MaybeTls::Plain(s) => fill_via_nexus_async_read(Pin::new(s), cx, sink, max),
+            #[cfg(feature = "tls")]
+            MaybeTls::Tls(inner) => {
+                loop {
+                    // 1. Fast path: drain plaintext rustls already
+                    //    decrypted. Direct copy from rustls's queue
+                    //    into sink.spare() — no &mut [u8] intermediate.
+                    let mut limited = LimitedSink::new(sink, max);
+                    let n = inner
+                        .codec
+                        .drain_plaintext_into(&mut limited)
+                        .map_err(tls_to_io)?;
+                    if n > 0 {
+                        return Poll::Ready(Ok(n));
+                    }
+
+                    // 2. Step buffered ciphertext one packet at a time.
+                    if !inner.pending_read.is_empty() {
+                        let consumed = inner
+                            .codec
+                            .read_tls(inner.pending_read.data())
+                            .map_err(tls_to_io)?;
+                        if consumed == 0 {
+                            // Deframer needs more bytes; fall through to
+                            // the transport-read branch.
+                        } else {
+                            // State invariant: every error leg above this
+                            // line MUST return before reaching here.
+                            inner.pending_read.advance(consumed);
+                            continue;
+                        }
+                    }
+
+                    // 3. Pull fresh ciphertext into pending_read.spare().
+                    if inner.pending_read.spare().is_empty() {
+                        return Poll::Ready(Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            "pending_read full but rustls cannot decode \
+                             a record",
+                        )));
+                    }
+                    match Pin::new(&mut inner.stream).poll_read(cx, inner.pending_read.spare()) {
+                        Poll::Ready(Ok(0)) => return Poll::Ready(Ok(0)), // EOF
+                        Poll::Ready(Ok(filled)) => {
+                            inner.pending_read.filled(filled);
+                        }
+                        Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                        Poll::Pending => return Poll::Pending,
+                    }
+                }
+            }
+        }
+    }
+
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        <Self as AsyncWrite>::poll_write(self, cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        <Self as AsyncWrite>::poll_flush(self, cx)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        <Self as AsyncWrite>::poll_shutdown(self, cx)
+    }
+}
+
+/// Wraps a `ParserSink` to cap the spare region — used by
+/// `poll_fill_into` to enforce the `max` argument when delegating
+/// to `drain_plaintext_into`.
+#[cfg(feature = "tls")]
+struct LimitedSink<'a, P: nexus_net::ParserSink> {
+    inner: &'a mut P,
+    remaining: usize,
+}
+
+#[cfg(feature = "tls")]
+impl<'a, P: nexus_net::ParserSink> LimitedSink<'a, P> {
+    fn new(inner: &'a mut P, max: usize) -> Self {
+        Self {
+            inner,
+            remaining: max,
+        }
+    }
+}
+
+#[cfg(feature = "tls")]
+impl<P: nexus_net::ParserSink> nexus_net::ParserSink for LimitedSink<'_, P> {
+    fn spare(&mut self) -> &mut [u8] {
+        let s = self.inner.spare();
+        let n = s.len().min(self.remaining);
+        &mut s[..n]
+    }
+    fn filled(&mut self, n: usize) {
+        self.inner.filled(n);
+        self.remaining = self.remaining.saturating_sub(n);
+    }
+}
+
+/// Slow-path helper: drive a nexus-async-rt `AsyncRead` source
+/// directly into `sink.spare()`, capped at `max`.
+///
+/// Caller (the `WireStream::poll_fill_into` impl above) already
+/// validated `max > 0` and `sink.spare()` non-empty per the trait
+/// contract — no need to re-check.
+fn fill_via_nexus_async_read<S, P>(
+    stream: Pin<&mut S>,
+    cx: &mut Context<'_>,
+    sink: &mut P,
+    max: usize,
+) -> Poll<io::Result<usize>>
+where
+    S: AsyncRead + ?Sized,
+    P: nexus_net::ParserSink,
+{
+    let spare = sink.spare();
+    let cap = spare.len().min(max);
+    match stream.poll_read(cx, &mut spare[..cap]) {
+        Poll::Ready(Ok(n)) => {
+            if n > 0 {
+                sink.filled(n);
+            }
+            Poll::Ready(Ok(n))
+        }
+        Poll::Ready(Err(e)) => Poll::Ready(Err(e)),
+        Poll::Pending => Poll::Pending,
     }
 }
 

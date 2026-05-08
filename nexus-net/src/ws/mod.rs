@@ -8,7 +8,6 @@
 //! Use `FrameReader`/`FrameWriter` directly for sans-IO integration.
 //! Use `Client` for the convenience path with built-in HTTP upgrade.
 
-#[cfg(not(feature = "tokio"))]
 mod connecting;
 mod error;
 pub(crate) mod frame;
@@ -19,11 +18,7 @@ pub(crate) mod mask;
 mod message;
 mod stream;
 
-#[cfg(feature = "tokio")]
-mod async_tokio;
-
 // User-facing types
-#[cfg(not(feature = "tokio"))]
 pub use connecting::Connecting;
 pub use error::ProtocolError;
 pub use frame::Role;
