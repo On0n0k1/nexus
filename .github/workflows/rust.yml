@@ -26,10 +26,6 @@ jobs:
       run: cargo test -p nexus-net --verbose
     - name: Test nexus-net (sync + TLS)
       run: cargo test -p nexus-net --features tls --verbose
-    - name: Test nexus-net (tokio)
-      run: cargo test -p nexus-net --lib --features tokio --verbose
-    - name: Test nexus-net (tokio + TLS)
-      run: cargo test -p nexus-net --lib --features tokio,tls --verbose
     - name: Test nexus-async-net (tokio-rt + tls, default)
       run: cargo test -p nexus-async-net --verbose
     - name: Test nexus-async-net (nexus + tls)
