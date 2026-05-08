@@ -1113,4 +1113,30 @@ mod tests {
         let result = "hello\x01".parse::<FlatAsciiText<32>>();
         assert!(result.is_err());
     }
+
+    // =========================================================================
+    // CAP=4 coverage (non-multiple-of-8 capacity, post-1.6.0)
+    // =========================================================================
+
+    #[test]
+    fn flat_text_cap4_empty() {
+        let t: FlatAsciiText<4> = FlatAsciiText::empty();
+        assert!(t.is_empty());
+        assert_eq!(t.len(), 0);
+        assert_eq!(t.as_str(), "");
+    }
+
+    #[test]
+    fn flat_text_cap4_from_static() {
+        const TAG: FlatAsciiText<4> = FlatAsciiText::from_static("MM01");
+        assert_eq!(TAG.as_str(), "MM01");
+        assert_eq!(TAG.len(), 4);
+    }
+
+    #[test]
+    fn flat_text_cap4_try_from_partial() {
+        let t: FlatAsciiText<4> = FlatAsciiText::try_from("AB").unwrap();
+        assert_eq!(t.as_str(), "AB");
+        assert_eq!(t.len(), 2);
+    }
 }

@@ -87,6 +87,8 @@ pub type AsciiText64 = AsciiText<64>;
 /// 128-byte capacity printable ASCII text.
 pub type AsciiText128 = AsciiText<128>;
 
+/// 4-byte capacity flat ASCII string.
+pub type FlatAsciiString4 = FlatAsciiString<4>;
 /// 8-byte capacity flat ASCII string.
 pub type FlatAsciiString8 = FlatAsciiString<8>;
 /// 16-byte capacity flat ASCII string.
@@ -100,6 +102,8 @@ pub type FlatAsciiString128 = FlatAsciiString<128>;
 /// 256-byte capacity flat ASCII string.
 pub type FlatAsciiString256 = FlatAsciiString<256>;
 
+/// 4-byte capacity flat printable ASCII text.
+pub type FlatAsciiText4 = FlatAsciiText<4>;
 /// 8-byte capacity flat printable ASCII text.
 pub type FlatAsciiText8 = FlatAsciiText<8>;
 /// 16-byte capacity flat printable ASCII text.

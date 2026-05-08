@@ -45,11 +45,8 @@ pub struct FlatAsciiString<const CAP: usize>(pub(crate) [u8; CAP]);
 // =============================================================================
 
 impl<const CAP: usize> FlatAsciiString<CAP> {
-    /// Compile-time assertion that CAP is >= 8 and a multiple of 8.
-    pub(crate) const _CAP_ASSERT: () = assert!(
-        CAP >= 8 && CAP % 8 == 0,
-        "FlatAsciiString CAP must be >= 8 and a multiple of 8"
-    );
+    /// Compile-time assertion that CAP is >= 1.
+    pub(crate) const _CAP_ASSERT: () = assert!(CAP >= 1, "FlatAsciiString CAP must be >= 1");
 
     /// Creates an empty flat ASCII string (all zeros).
     ///
@@ -657,7 +654,7 @@ impl<const CAP: usize> FlatAsciiString<CAP> {
     ///
     /// # Panics
     ///
-    /// Panics at compile time if `NEW_CAP < CAP` or `NEW_CAP % 8 != 0`.
+    /// Panics at compile time if `NEW_CAP < CAP`.
     ///
     /// # Example
     ///
@@ -668,9 +665,17 @@ impl<const CAP: usize> FlatAsciiString<CAP> {
     /// let wide: FlatAsciiString<32> = s.widen();
     /// assert_eq!(wide.as_str(), "hello");
     /// ```
+    ///
+    /// Invalid `NEW_CAP=0` is rejected at compile time:
+    ///
+    /// ```compile_fail
+    /// use nexus_ascii::FlatAsciiString;
+    /// let s: FlatAsciiString<4> = FlatAsciiString::empty();
+    /// let _bad: FlatAsciiString<0> = s.widen();
+    /// ```
     #[inline]
     pub fn widen<const NEW_CAP: usize>(self) -> FlatAsciiString<NEW_CAP> {
-        const { assert!(NEW_CAP % 8 == 0, "NEW_CAP must be a multiple of 8") };
+        let () = FlatAsciiString::<NEW_CAP>::_CAP_ASSERT;
 
         // Runtime check (can't do CAP comparison in const block with two generics)
         // This will be optimized away since both are const
@@ -700,9 +705,17 @@ impl<const CAP: usize> FlatAsciiString<CAP> {
     /// let tight: FlatAsciiString<8> = s.tighten().unwrap();
     /// assert_eq!(tight.as_str(), "hello");
     /// ```
+    ///
+    /// Invalid `NEW_CAP=0` is rejected at compile time:
+    ///
+    /// ```compile_fail
+    /// use nexus_ascii::FlatAsciiString;
+    /// let s: FlatAsciiString<8> = FlatAsciiString::empty();
+    /// let _bad: Result<FlatAsciiString<0>, _> = s.tighten();
+    /// ```
     #[inline]
     pub fn tighten<const NEW_CAP: usize>(self) -> Result<FlatAsciiString<NEW_CAP>, AsciiError> {
-        const { assert!(NEW_CAP % 8 == 0, "NEW_CAP must be a multiple of 8") };
+        let () = FlatAsciiString::<NEW_CAP>::_CAP_ASSERT;
 
         let len = self.len();
         if len > NEW_CAP {
@@ -2049,5 +2062,122 @@ mod tests {
     fn from_str_invalid() {
         let result = "héllo".parse::<FlatAsciiString<32>>();
         assert!(result.is_err());
+    }
+
+    // =========================================================================
+    // CAP=4 coverage (non-multiple-of-8 capacity, post-1.6.0)
+    // =========================================================================
+
+    #[test]
+    fn flat_string_cap4_empty() {
+        let s: FlatAsciiString<4> = FlatAsciiString::empty();
+        assert!(s.is_empty());
+        assert_eq!(s.len(), 0);
+        assert_eq!(s.as_str(), "");
+    }
+
+    #[test]
+    fn flat_string_cap4_from_static() {
+        const TAG: FlatAsciiString<4> = FlatAsciiString::from_static("MM01");
+        assert_eq!(TAG.as_str(), "MM01");
+        assert_eq!(TAG.len(), 4);
+    }
+
+    #[test]
+    fn flat_string_cap4_partial_fill() {
+        let s: FlatAsciiString<4> = FlatAsciiString::try_from("AB").unwrap();
+        assert_eq!(s.as_str(), "AB");
+        assert_eq!(s.len(), 2);
+    }
+
+    #[test]
+    fn flat_string_cap4_too_long() {
+        let r: Result<FlatAsciiString<4>, _> = FlatAsciiString::try_from("TOOLONG");
+        assert!(matches!(r, Err(AsciiError::TooLong { len: 7, cap: 4 })));
+    }
+
+    #[test]
+    fn flat_string_cap4_eq_and_cmp() {
+        let a: FlatAsciiString<4> = FlatAsciiString::try_from("MM01").unwrap();
+        let b: FlatAsciiString<4> = FlatAsciiString::try_from("MM01").unwrap();
+        let c: FlatAsciiString<4> = FlatAsciiString::try_from("MM02").unwrap();
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+        assert!(a < c);
+    }
+
+    #[test]
+    fn flat_string_cap4_hashmap() {
+        use std::collections::HashMap;
+        let mut m: HashMap<FlatAsciiString<4>, i32> = HashMap::new();
+        let k: FlatAsciiString<4> = FlatAsciiString::try_from("MM01").unwrap();
+        m.insert(k, 42);
+        assert_eq!(m.get(&k), Some(&42));
+    }
+
+    #[test]
+    fn flat_string_cap4_display() {
+        let s: FlatAsciiString<4> = FlatAsciiString::try_from("AB").unwrap();
+        assert_eq!(format!("{}", s), "AB");
+    }
+
+    #[test]
+    fn flat_string_cap4_widen_to_8() {
+        let s: FlatAsciiString<4> = FlatAsciiString::try_from("AB").unwrap();
+        let w: FlatAsciiString<8> = s.widen();
+        assert_eq!(w.as_str(), "AB");
+    }
+
+    #[test]
+    fn flat_string_cap8_tighten_to_4() {
+        let s: FlatAsciiString<8> = FlatAsciiString::try_from("AB").unwrap();
+        let t: FlatAsciiString<4> = s.tighten().unwrap();
+        assert_eq!(t.as_str(), "AB");
+    }
+
+    #[test]
+    fn flat_string_cap8_tighten_to_4_too_long() {
+        let s: FlatAsciiString<8> = FlatAsciiString::try_from("ABCDEF").unwrap();
+        let t: Result<FlatAsciiString<4>, _> = s.tighten();
+        assert!(matches!(t, Err(AsciiError::TooLong { len: 6, cap: 4 })));
+    }
+
+    #[test]
+    fn flat_string_cap4_as_raw_mut() {
+        let mut s: FlatAsciiString<4> = FlatAsciiString::empty();
+        // SAFETY: writing valid ASCII into the buffer
+        unsafe {
+            let buf = s.as_raw_mut();
+            buf[0] = b'M';
+            buf[1] = b'M';
+            buf[2] = b'0';
+            buf[3] = b'1';
+        }
+        assert_eq!(s.as_str(), "MM01");
+    }
+
+    // CAP=3 coverage — odd, sub-8 capacity. Sanity check that the
+    // length-dispatched copy_short path handles non-power-of-2 small CAPs.
+    #[test]
+    fn flat_string_cap3_partial_fill() {
+        let s: FlatAsciiString<3> = FlatAsciiString::try_from("AB").unwrap();
+        assert_eq!(s.as_str(), "AB");
+        assert_eq!(s.len(), 2);
+    }
+
+    #[test]
+    fn flat_string_cap3_full_fill() {
+        let s: FlatAsciiString<3> = FlatAsciiString::try_from("ABC").unwrap();
+        assert_eq!(s.as_str(), "ABC");
+        assert_eq!(s.len(), 3);
+    }
+
+    // CAP=12 coverage — non-multiple-of-8 above 8. Tests the >=8 path
+    // through copy_short / find_null_byte without the legacy CAP%8 invariant.
+    #[test]
+    fn flat_string_cap12_full_fill() {
+        let s: FlatAsciiString<12> = FlatAsciiString::try_from("ABCDEFGHIJKL").unwrap();
+        assert_eq!(s.as_str(), "ABCDEFGHIJKL");
+        assert_eq!(s.len(), 12);
     }
 }
