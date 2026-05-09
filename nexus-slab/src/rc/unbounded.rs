@@ -32,6 +32,8 @@ impl<T> Slab<T> {
 
     /// Frees a handle. Decrements refcount; deallocates on last free.
     #[inline]
+    // Consumes the handle by design — refcount-decrementing free, the
+    // handle cannot be used after this call.
     #[allow(clippy::needless_pass_by_value)]
     pub fn free(&self, handle: RcSlot<T>) {
         let count = handle.dec_ref();

@@ -1,5 +1,10 @@
 // Builder return types use complex generics for compile-time edge validation.
 #![allow(clippy::type_complexity)]
+// Handler arity is architecturally required by the Param trait — handlers
+// take N typed parameters and the macro-generated dispatch impls expand
+// per-arity into call_inner functions with N + Input arguments. Module-level
+// allow rather than one inline attribute per arity expansion.
+#![allow(clippy::too_many_arguments)]
 
 //! DAG pipeline — monomorphized data-flow graphs with fan-out and merge.
 //!
@@ -213,6 +218,7 @@ pub trait IntoMergeStep<Inputs, Out, Params> {
 pub struct MergeStep<F, Params: crate::handler::Param> {
     f: F,
     state: Params::State,
+    // Retained for future diagnostic/tracing use (step name in error messages).
     #[allow(dead_code)]
     name: &'static str,
 }
@@ -258,7 +264,6 @@ macro_rules! impl_merge2_step {
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, world: &mut World, inputs: (&A, &B)) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<$($P,)+ IA, IB, Output>(
                     mut f: impl FnMut($($P,)+ &IA, &IB) -> Output,
                     $($P: $P,)+
@@ -342,7 +347,6 @@ macro_rules! impl_merge3_step {
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, world: &mut World, inputs: (&A, &B, &C)) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<$($P,)+ IA, IB, IC, Output>(
                     mut f: impl FnMut($($P,)+ &IA, &IB, &IC) -> Output,
                     $($P: $P,)+
@@ -424,7 +428,6 @@ macro_rules! impl_merge4_step {
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, world: &mut World, i: (&A, &B, &C, &D)) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<$($P,)+ IA, IB, IC, ID, Output>(
                     mut f: impl FnMut($($P,)+ &IA, &IB, &IC, &ID) -> Output,
                     $($P: $P,)+ a: &IA, b: &IB, c: &IC, d: &ID,
@@ -494,7 +497,6 @@ macro_rules! impl_merge5_step {
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, world: &mut World, i: (&A, &B, &C, &D, &E)) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<$($P,)+ IA, IB, IC, ID, IE, Output>(
                     mut f: impl FnMut($($P,)+ &IA, &IB, &IC, &ID, &IE) -> Output,
                     $($P: $P,)+ a: &IA, b: &IB, c: &IC, d: &ID, e: &IE,

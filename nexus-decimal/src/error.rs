@@ -4,6 +4,19 @@
 //! `checked_*` methods return `Option` (std convention).
 //! `try_*` and fallible constructors return `Result` with the
 //! narrowest error type for that operation.
+//!
+//! ## Error shape convention
+//!
+//! Error shapes in this crate match the number of distinct runtime states:
+//!
+//! - **Single-state errors are unit structs** (e.g., [`OverflowError`]).
+//!   Match arms are `Err(OverflowError)`, no variant pattern needed.
+//! - **Multi-state errors are enums** (e.g., [`DivError`], [`ParseError`]).
+//!   Each variant represents an actually-distinct runtime outcome.
+//!
+//! When adding a new error type, pick the shape that matches its actual
+//! runtime states. Don't make a unit struct into an enum "in case we add
+//! variants later" — bump the type when that case actually arrives.
 
 use core::fmt;
 

@@ -70,14 +70,18 @@ impl<const D: u8> Decimal<i32, D> {
     /// Reads little-endian bytes from `buf`. Panics if `buf.len() < 4`.
     #[inline]
     pub fn read_le_bytes(buf: &[u8]) -> Self {
-        let bytes: [u8; 4] = buf[..4].try_into().unwrap();
+        let bytes: [u8; 4] = buf[..4]
+            .try_into()
+            .expect("buf[..4] always yields a 4-byte slice");
         Self::from_le_bytes(bytes)
     }
 
     /// Reads big-endian bytes from `buf`. Panics if `buf.len() < 4`.
     #[inline]
     pub fn read_be_bytes(buf: &[u8]) -> Self {
-        let bytes: [u8; 4] = buf[..4].try_into().unwrap();
+        let bytes: [u8; 4] = buf[..4]
+            .try_into()
+            .expect("buf[..4] always yields a 4-byte slice");
         Self::from_be_bytes(bytes)
     }
 }
@@ -147,14 +151,18 @@ impl<const D: u8> Decimal<i64, D> {
     /// Reads little-endian bytes from `buf`. Panics if `buf.len() < 8`.
     #[inline]
     pub fn read_le_bytes(buf: &[u8]) -> Self {
-        let bytes: [u8; 8] = buf[..8].try_into().unwrap();
+        let bytes: [u8; 8] = buf[..8]
+            .try_into()
+            .expect("buf[..8] always yields an 8-byte slice");
         Self::from_le_bytes(bytes)
     }
 
     /// Reads big-endian bytes from `buf`. Panics if `buf.len() < 8`.
     #[inline]
     pub fn read_be_bytes(buf: &[u8]) -> Self {
-        let bytes: [u8; 8] = buf[..8].try_into().unwrap();
+        let bytes: [u8; 8] = buf[..8]
+            .try_into()
+            .expect("buf[..8] always yields an 8-byte slice");
         Self::from_be_bytes(bytes)
     }
 }
@@ -224,14 +232,18 @@ impl<const D: u8> Decimal<i128, D> {
     /// Reads little-endian bytes from `buf`. Panics if `buf.len() < 16`.
     #[inline]
     pub fn read_le_bytes(buf: &[u8]) -> Self {
-        let bytes: [u8; 16] = buf[..16].try_into().unwrap();
+        let bytes: [u8; 16] = buf[..16]
+            .try_into()
+            .expect("buf[..16] always yields a 16-byte slice");
         Self::from_le_bytes(bytes)
     }
 
     /// Reads big-endian bytes from `buf`. Panics if `buf.len() < 16`.
     #[inline]
     pub fn read_be_bytes(buf: &[u8]) -> Self {
-        let bytes: [u8; 16] = buf[..16].try_into().unwrap();
+        let bytes: [u8; 16] = buf[..16]
+            .try_into()
+            .expect("buf[..16] always yields a 16-byte slice");
         Self::from_be_bytes(bytes)
     }
 }

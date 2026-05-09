@@ -119,6 +119,12 @@
 //! }
 //! ```
 
+// Handler arity is architecturally required by the Param trait — handlers
+// take N typed parameters and the macro-generated dispatch impls expand
+// per-arity into call_inner functions with N + Input arguments. Module-level
+// allow rather than one inline attribute per arity expansion.
+#![allow(clippy::too_many_arguments)]
+
 use std::any::{Any, TypeId};
 use std::hash::Hash;
 
@@ -138,6 +144,14 @@ use crate::world::{Registry, Resource, ResourceId, World};
 ///
 /// Registered via [`ReactorNotify::register_source`]. Event handlers
 /// mark data sources via [`ReactorNotify::mark`] to wake subscribed reactors.
+///
+/// # Type-tag intent
+///
+/// `DataSource` is a `usize` newtype with no invariants beyond what the
+/// underlying integer provides. The newtype exists purely to prevent
+/// accidentally passing some other identifier where a `DataSource` is
+/// expected. Don't reduce it to a type alias and don't add invariants
+/// the rest of the crate doesn't enforce.
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub struct DataSource(pub usize);
 
@@ -643,7 +657,6 @@ macro_rules! impl_into_reactor {
         {
             #[allow(non_snake_case)]
             fn run(&mut self, world: &mut World) {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<Ctx, $($P,)+>(
                     mut f: impl FnMut(&mut Ctx, $($P,)+),
                     ctx: &mut Ctx,

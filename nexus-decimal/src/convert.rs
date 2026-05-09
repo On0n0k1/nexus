@@ -60,7 +60,9 @@ fn parse_digits_u64(bytes: &[u8]) -> Result<u64, ParseError> {
 
     // SWAR fast path: 8 digits at a time
     while pos + 8 <= bytes.len() {
-        let chunk: &[u8; 8] = bytes[pos..pos + 8].try_into().unwrap();
+        let chunk: &[u8; 8] = bytes[pos..pos + 8]
+            .try_into()
+            .expect("loop invariant: pos + 8 <= bytes.len()");
         let val = parse_8_digits(chunk).ok_or(ParseError::InvalidFormat)?;
         result = result
             .checked_mul(100_000_000)
@@ -91,7 +93,9 @@ fn parse_digits_wide(bytes: &[u8]) -> Result<i128, ParseError> {
     let mut pos = 0;
 
     while pos + 8 <= bytes.len() {
-        let chunk: &[u8; 8] = bytes[pos..pos + 8].try_into().unwrap();
+        let chunk: &[u8; 8] = bytes[pos..pos + 8]
+            .try_into()
+            .expect("loop invariant: pos + 8 <= bytes.len()");
         let val = parse_8_digits(chunk).ok_or(ParseError::InvalidFormat)?;
         result = result
             .checked_mul(100_000_000)

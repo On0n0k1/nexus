@@ -45,6 +45,21 @@
 //!     // record dropped here -> zeros region, advances head
 //! }
 //! ```
+//!
+//! # Error shape convention
+//!
+//! Error shapes in this crate match the number of distinct runtime states:
+//!
+//! - **Single-state errors are unit structs** (e.g., [`BufferFull`],
+//!   [`channel::spsc::ChannelClosed`]). Match arms are
+//!   `Err(BufferFull)`, no variant pattern needed.
+//! - **Multi-state errors are enums** (e.g.,
+//!   [`channel::spsc::TrySendError`], [`channel::spsc::RecvError`]).
+//!   Each variant represents an actually-distinct runtime outcome.
+//!
+//! When adding a new error type, pick the shape that matches its actual
+//! runtime states. Don't make a unit struct into an enum "in case we add
+//! variants later" — bump the type when that case actually arrives.
 
 #![warn(missing_docs)]
 

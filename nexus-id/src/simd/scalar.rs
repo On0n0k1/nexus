@@ -5,7 +5,9 @@
 
 /// Lookup table for byte-to-hex conversion.
 /// Each entry is the 2-char lowercase hex representation of that byte.
-#[allow(dead_code)] // Used when SSSE3 is not available
+// Production fallback when SSSE3 is unavailable, and reference implementation
+// for parity tests in `super::ssse3` on x86_64+ssse3 builds.
+#[allow(dead_code)]
 const HEX_TABLE: [[u8; 2]; 256] = {
     let mut table = [[0u8; 2]; 256];
     let hex_chars = b"0123456789abcdef";
@@ -19,7 +21,9 @@ const HEX_TABLE: [[u8; 2]; 256] = {
 };
 
 /// Encode a u64 as 16 lowercase hex bytes.
-#[allow(dead_code)] // Used when SSSE3 is not available
+// Production fallback when SSSE3 is unavailable, and reference implementation
+// for parity tests in `super::ssse3` on x86_64+ssse3 builds.
+#[allow(dead_code)]
 #[inline]
 pub fn hex_encode_u64(value: u64) -> [u8; 16] {
     let bytes = value.to_be_bytes();
@@ -37,7 +41,9 @@ pub fn hex_encode_u64(value: u64) -> [u8; 16] {
 }
 
 /// Encode two u64s as 32 lowercase hex bytes.
-#[allow(dead_code)] // Used when SSSE3 is not available
+// Production fallback when SSSE3 is unavailable, and reference implementation
+// for parity tests in `super::ssse3` on x86_64+ssse3 builds.
+#[allow(dead_code)]
 #[inline]
 pub fn hex_encode_u128(hi: u64, lo: u64) -> [u8; 32] {
     let hi_bytes = hi.to_be_bytes();
@@ -65,7 +71,9 @@ pub fn hex_encode_u128(hi: u64, lo: u64) -> [u8; 32] {
 
 /// Decode a hex nibble value from an ASCII byte.
 /// Returns 0-15 for valid hex, 0xFF for invalid.
-#[allow(dead_code)] // Used on non-x86_64 targets
+// Production path on non-x86_64, and reference implementation for parity
+// tests in `super::sse2` on x86_64 builds.
+#[allow(dead_code)]
 #[inline(always)]
 const fn hex_nibble(b: u8) -> u8 {
     match b {
@@ -78,7 +86,9 @@ const fn hex_nibble(b: u8) -> u8 {
 
 /// Decode 16 hex chars to u64.
 /// Returns Err(position) on first invalid character.
-#[allow(dead_code)] // Used on non-x86_64 targets
+// Production path on non-x86_64, and reference implementation for parity
+// tests in `super::sse2` on x86_64 builds.
+#[allow(dead_code)]
 #[inline]
 pub fn hex_decode_16(bytes: &[u8; 16]) -> Result<u64, usize> {
     let mut value: u64 = 0;
@@ -96,7 +106,9 @@ pub fn hex_decode_16(bytes: &[u8; 16]) -> Result<u64, usize> {
 
 /// Decode 32 hex chars to (hi, lo) u64 pair.
 /// Returns Err(position) on first invalid character.
-#[allow(dead_code)] // Used on non-x86_64 targets
+// Production path on non-x86_64, and reference implementation for parity
+// tests in `super::sse2` on x86_64 builds.
+#[allow(dead_code)]
 #[inline]
 pub fn hex_decode_32(bytes: &[u8; 32]) -> Result<(u64, u64), usize> {
     let mut hi: u64 = 0;

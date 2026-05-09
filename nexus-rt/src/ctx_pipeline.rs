@@ -1,6 +1,11 @@
 // Builder return types are necessarily complex — each combinator returns
 // CtxPipelineChain<C, In, Out, NodeType<Chain, ...>>. Same pattern as iterator adapters.
 #![allow(clippy::type_complexity)]
+// Handler arity is architecturally required by the Param trait — handlers
+// take N typed parameters and the macro-generated dispatch impls expand
+// per-arity into call_inner functions with N + Input arguments. Module-level
+// allow rather than one inline attribute per arity expansion.
+#![allow(clippy::too_many_arguments)]
 
 //! Context-aware pipeline dispatch.
 //!
@@ -168,7 +173,6 @@ macro_rules! impl_into_ctx_step {
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, ctx: &mut C, world: &mut World, input: In) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<Ctx, $($P,)+ Input, Output>(
                     mut f: impl FnMut(&mut Ctx, $($P,)+ Input) -> Output,
                     ctx: &mut Ctx,
@@ -336,7 +340,6 @@ macro_rules! impl_into_ctx_ref_step {
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, ctx: &mut C, world: &mut World, input: &In) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<Ctx, $($P,)+ Input: ?Sized, Output>(
                     mut f: impl FnMut(&mut Ctx, $($P,)+ &Input) -> Output,
                     ctx: &mut Ctx,
@@ -393,6 +396,7 @@ all_tuples!(impl_into_ctx_ref_step);
 #[doc(hidden)]
 pub struct CtxOpaqueRefStep<F> {
     f: F,
+    // Retained for future diagnostic/tracing use (step name in error messages).
     #[allow(dead_code)]
     name: &'static str,
 }
@@ -495,7 +499,6 @@ macro_rules! impl_into_ctx_producer {
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, ctx: &mut C, world: &mut World) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<Ctx, $($P,)+ Output>(
                     mut f: impl FnMut(&mut Ctx, $($P,)+) -> Output,
                     ctx: &mut Ctx,
@@ -551,6 +554,7 @@ all_tuples!(impl_into_ctx_producer);
 #[doc(hidden)]
 pub struct CtxOpaqueProducer<F> {
     f: F,
+    // Retained for future diagnostic/tracing use (step name in error messages).
     #[allow(dead_code)]
     name: &'static str,
 }

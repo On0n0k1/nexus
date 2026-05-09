@@ -27,6 +27,12 @@
 //!   for [`World::run_startup`] and systems that unconditionally
 //!   propagate.
 
+// Handler arity is architecturally required by the Param trait — handlers
+// take N typed parameters and the macro-generated dispatch impls expand
+// per-arity into call_inner functions with N + Input arguments. Module-level
+// allow rather than one inline attribute per arity expansion.
+#![allow(clippy::too_many_arguments)]
+
 use crate::handler::Param;
 use crate::world::{Registry, World};
 
@@ -261,7 +267,6 @@ macro_rules! impl_into_system {
         {
             #[allow(non_snake_case)]
             fn run(&mut self, world: &mut World) -> bool {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<$($P),+>(
                     mut f: impl FnMut($($P),+) -> bool,
                     $($P: $P,)+
@@ -331,7 +336,6 @@ macro_rules! impl_into_system_void {
         {
             #[allow(non_snake_case)]
             fn run(&mut self, world: &mut World) -> bool {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<$($P),+>(
                     mut f: impl FnMut($($P),+),
                     $($P: $P,)+

@@ -26,6 +26,14 @@ use nexus_queue::mpsc;
 /// let from_usize = Token::from(7usize);
 /// assert_eq!(from_usize.index(), 7);
 /// ```
+///
+/// # Type-tag intent
+///
+/// `Token` is a `usize` newtype with no invariants beyond what the
+/// underlying integer provides. The newtype exists purely to prevent
+/// accidentally passing some other identifier (slab key, array index,
+/// raw `usize`) where a `Token` is expected. Don't reduce it to a type
+/// alias and don't add invariants the rest of the crate doesn't enforce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Token(usize);
 

@@ -186,10 +186,29 @@ impl Sender {
         let backoff = Backoff::new();
 
         loop {
-            // SAFETY: We only return the claim when we get one, at which point
-            // the loop terminates. The borrow checker can't prove this, but there
-            // is never a second mutable borrow while the first is alive.
-            // This is a known borrow checker limitation that Polonius handles.
+            // Polonius / NLL successor workaround.
+            //
+            // The naive form
+            //   `if let Ok(claim) = self.inner.try_claim(len) { return Ok(claim); }`
+            // fails to compile because the borrow checker holds the
+            // `&mut self.inner` borrow for the entire `if let` body — and
+            // therefore for the whole loop iteration — even on the
+            // early-return path. Without the early-return-as-narrowing
+            // analysis Polonius provides, the compiler can't see that the
+            // borrow is dead at the `return` statement, so the next loop
+            // iteration's `try_claim` is rejected as a conflicting reborrow.
+            //
+            // The transmute<'a, 'a> here is a runtime no-op — same type,
+            // same lifetime — that bypasses the borrow checker for a
+            // pattern that is actually sound. When Polonius lands in
+            // stable rustc, this can be rewritten to the natural form and
+            // the unsafe block deleted.
+            //
+            // SAFETY: The transmute is between two identical types with
+            // identical lifetimes. The early return guarantees the
+            // original `&mut self.inner` borrow is dead before the
+            // returned claim is used, and the loop only re-borrows after
+            // the previous iteration's borrow has fully expired.
             unsafe {
                 let inner_ptr: *mut queue::Producer = &raw mut self.inner;
                 if let Ok(claim) = (*inner_ptr).try_claim(len) {
@@ -330,10 +349,9 @@ impl Receiver {
     pub fn recv(&mut self, timeout: Option<Duration>) -> Result<queue::ReadClaim<'_>, RecvError> {
         // Fast path for zero timeout - single try, no spinning
         if timeout == Some(Duration::ZERO) {
-            // SAFETY: We only return the claim when we get one, at which point
-            // the function returns. The borrow checker can't prove this, but there
-            // is never a second mutable borrow while the first is alive.
-            // This is a known borrow checker limitation that Polonius handles.
+            // SAFETY: see Polonius pattern at the top of `Sender::send` in
+            // this file. Same shape: early return frees the borrow before
+            // any reuse.
             unsafe {
                 let inner_ptr: *mut queue::Consumer = &raw mut self.inner;
                 if let Some(claim) = (*inner_ptr).try_claim() {
@@ -353,10 +371,9 @@ impl Receiver {
         let backoff = Backoff::new();
 
         loop {
-            // SAFETY: We only return the claim when we get one, at which point
-            // the loop terminates. The borrow checker can't prove this, but there
-            // is never a second mutable borrow while the first is alive.
-            // This is a known borrow checker limitation that Polonius handles.
+            // SAFETY: see Polonius pattern at the top of `Sender::send` in
+            // this file. Same shape: early return frees the borrow before
+            // the next loop iteration reuses it.
             unsafe {
                 let inner_ptr: *mut queue::Consumer = &raw mut self.inner;
                 if let Some(claim) = (*inner_ptr).try_claim() {
@@ -385,8 +402,9 @@ impl Receiver {
             // For Some(timeout), only park once then return Timeout
             // For None, loop back and try again
             if timeout.is_some() {
-                // Final try after park
-                // SAFETY: Same as above - borrow checker limitation workaround.
+                // Final try after park.
+                // SAFETY: see Polonius pattern at the top of
+                // `Sender::send` in this file.
                 unsafe {
                     let inner_ptr: *mut queue::Consumer = &raw mut self.inner;
                     if let Some(claim) = (*inner_ptr).try_claim() {

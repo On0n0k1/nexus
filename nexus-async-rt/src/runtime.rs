@@ -537,6 +537,7 @@ impl<'w> RuntimeBuilder<'w> {
 
     /// Maximum tasks polled per cycle before yielding to check IO.
     /// Default: 64.
+    #[must_use]
     pub fn tasks_per_cycle(mut self, limit: usize) -> Self {
         self.tasks_per_cycle = limit;
         self
@@ -549,6 +550,7 @@ impl<'w> RuntimeBuilder<'w> {
     /// `epoll_wait(0)` to check for socket events, even if tasks are
     /// ready. Lower values improve IO responsiveness at the cost of
     /// more syscalls; higher values favor task throughput.
+    #[must_use]
     pub fn event_interval(mut self, n: u32) -> Self {
         assert!(n > 0, "event_interval must be > 0");
         self.event_interval = n;
@@ -562,30 +564,35 @@ impl<'w> RuntimeBuilder<'w> {
     /// local ready queue per iteration. Prevents a firehose of
     /// cross-thread wakes from starving local tasks and IO. Remaining
     /// wakes are drained on the next iteration.
+    #[must_use]
     pub fn cross_thread_drain_limit(mut self, limit: usize) -> Self {
         self.cross_thread_drain_limit = limit;
         self
     }
 
     /// Pre-allocated capacity for internal queues. Default: 64.
+    #[must_use]
     pub fn queue_capacity(mut self, cap: usize) -> Self {
         self.queue_capacity = cap;
         self
     }
 
     /// Maximum IO events processed per epoll cycle. Default: 1024.
+    #[must_use]
     pub fn event_capacity(mut self, cap: usize) -> Self {
         self.event_capacity = cap;
         self
     }
 
     /// Initial number of IO source slots. Default: 64.
+    #[must_use]
     pub fn token_capacity(mut self, cap: usize) -> Self {
         self.token_capacity = cap;
         self
     }
 
     /// Install SIGTERM/SIGINT signal handlers. Default: false.
+    #[must_use]
     pub fn signal_handlers(mut self, enable: bool) -> Self {
         self.signal_handlers = enable;
         self

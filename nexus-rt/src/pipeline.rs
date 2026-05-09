@@ -1,6 +1,11 @@
 // Builder return types are necessarily complex — each combinator returns
 // PipelineChain<In, Out, NodeType<Chain, ...>>. Same pattern as iterator adapters.
 #![allow(clippy::type_complexity)]
+// Handler arity is architecturally required by the Param trait — handlers
+// take N typed parameters and the macro-generated dispatch impls expand
+// per-arity into call_inner functions with N + Input arguments. Module-level
+// allow rather than one inline attribute per arity expansion.
+#![allow(clippy::too_many_arguments)]
 
 //! Pre-resolved pipeline dispatch using [`Param`] steps.
 //!
@@ -121,6 +126,7 @@ use crate::world::{Registry, World};
 pub struct Step<F, Params: Param> {
     f: F,
     state: Params::State,
+    // Retained for future diagnostic/tracing use (step name in error messages).
     #[allow(dead_code)]
     name: &'static str,
 }
@@ -215,7 +221,6 @@ macro_rules! impl_into_step {
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, world: &mut World, input: In) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<$($P,)+ Input, Output>(
                     mut f: impl FnMut($($P,)+ Input) -> Output,
                     $($P: $P,)+
@@ -276,6 +281,7 @@ all_tuples!(impl_into_step);
 #[doc(hidden)]
 pub struct OpaqueStep<F> {
     f: F,
+    // Retained for future diagnostic/tracing use (step name in error messages).
     #[allow(dead_code)]
     name: &'static str,
 }
@@ -375,7 +381,6 @@ macro_rules! impl_into_ref_step {
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, world: &mut World, input: &In) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<$($P,)+ Input: ?Sized, Output>(
                     mut f: impl FnMut($($P,)+ &Input) -> Output,
                     $($P: $P,)+
@@ -431,6 +436,7 @@ all_tuples!(impl_into_ref_step);
 #[doc(hidden)]
 pub struct OpaqueRefStep<F> {
     f: F,
+    // Retained for future diagnostic/tracing use (step name in error messages).
     #[allow(dead_code)]
     name: &'static str,
 }
@@ -546,7 +552,6 @@ macro_rules! impl_into_producer {
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, world: &mut World) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<$($P,)+ Output>(
                     mut f: impl FnMut($($P,)+) -> Output,
                     $($P: $P,)+
@@ -601,6 +606,7 @@ all_tuples!(impl_into_producer);
 #[doc(hidden)]
 pub struct OpaqueProducer<F> {
     f: F,
+    // Retained for future diagnostic/tracing use (step name in error messages).
     #[allow(dead_code)]
     name: &'static str,
 }
@@ -715,7 +721,6 @@ macro_rules! impl_into_scan_step {
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, world: &mut World, acc: &mut Acc, input: In) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<$($P,)+ Accumulator, Input, Output>(
                     mut f: impl FnMut($($P,)+ &mut Accumulator, Input) -> Output,
                     $($P: $P,)+
@@ -772,6 +777,7 @@ all_tuples!(impl_into_scan_step);
 #[doc(hidden)]
 pub struct OpaqueScanStep<F> {
     f: F,
+    // Retained for future diagnostic/tracing use (step name in error messages).
     #[allow(dead_code)]
     name: &'static str,
 }
@@ -893,7 +899,6 @@ macro_rules! impl_into_ref_scan_step {
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, world: &mut World, acc: &mut Acc, input: &In) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<$($P,)+ Accumulator, Input: ?Sized, Output>(
                     mut f: impl FnMut($($P,)+ &mut Accumulator, &Input) -> Output,
                     $($P: $P,)+
@@ -950,6 +955,7 @@ all_tuples!(impl_into_ref_scan_step);
 #[doc(hidden)]
 pub struct OpaqueRefScanStep<F> {
     f: F,
+    // Retained for future diagnostic/tracing use (step name in error messages).
     #[allow(dead_code)]
     name: &'static str,
 }
@@ -1052,7 +1058,6 @@ macro_rules! impl_splat2_step {
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call_splat(&mut self, world: &mut World, a: A, b: B) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<$($P,)+ IA, IB, Output>(
                     mut f: impl FnMut($($P,)+ IA, IB) -> Output,
                     $($P: $P,)+
@@ -1148,7 +1153,6 @@ macro_rules! impl_splat3_step {
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call_splat(&mut self, world: &mut World, a: A, b: B, c: C) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<$($P,)+ IA, IB, IC, Output>(
                     mut f: impl FnMut($($P,)+ IA, IB, IC) -> Output,
                     $($P: $P,)+
@@ -1247,7 +1251,6 @@ macro_rules! impl_splat4_step {
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call_splat(&mut self, world: &mut World, a: A, b: B, c: C, d: D) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<$($P,)+ IA, IB, IC, ID, Output>(
                     mut f: impl FnMut($($P,)+ IA, IB, IC, ID) -> Output,
                     $($P: $P,)+ a: IA, b: IB, c: IC, d: ID,
@@ -1334,7 +1337,6 @@ macro_rules! impl_splat5_step {
             #[inline(always)]
             #[allow(non_snake_case, clippy::many_single_char_names)]
             fn call_splat(&mut self, world: &mut World, a: A, b: B, c: C, d: D, e: E) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<$($P,)+ IA, IB, IC, ID, IE, Output>(
                     mut f: impl FnMut($($P,)+ IA, IB, IC, ID, IE) -> Output,
                     $($P: $P,)+ a: IA, b: IB, c: IC, d: ID, e: IE,

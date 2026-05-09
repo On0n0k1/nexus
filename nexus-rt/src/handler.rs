@@ -1,5 +1,11 @@
 //! Handler parameter resolution and dispatch primitives.
 
+// Handler arity is architecturally required by the Param trait — handlers
+// take N typed parameters and the macro-generated dispatch impls expand
+// per-arity into call_inner functions with N + Input arguments. Module-level
+// allow rather than one inline attribute per arity expansion.
+#![allow(clippy::too_many_arguments)]
+
 use std::ops::{Deref, DerefMut};
 
 use crate::Resource;
@@ -582,7 +588,6 @@ macro_rules! impl_into_handler {
             #[allow(non_snake_case)]
             fn run(&mut self, world: &mut World, event: E) {
                 // Helper binds the HRTB lifetime at a concrete call site.
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<$($P,)+ Ev>(
                     mut f: impl FnMut($($P,)+ Ev),
                     $($P: $P,)+

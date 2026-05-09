@@ -86,6 +86,14 @@ use crate::world::{Registry, World, WorldBuilder};
 ///
 /// Used with [`after`](SchedulerInstaller::after) and
 /// [`before`](SchedulerInstaller::before) to declare ordering.
+///
+/// # Type-tag intent
+///
+/// `SystemId` is a `usize` newtype with no invariants beyond what the
+/// underlying integer provides. The newtype exists purely to prevent
+/// accidentally passing some other identifier where a `SystemId` is
+/// expected. Don't reduce it to a type alias and don't add invariants
+/// the rest of the crate doesn't enforce.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct SystemId(usize);
 

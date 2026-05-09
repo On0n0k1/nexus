@@ -1,6 +1,11 @@
 // Builder return types are necessarily complex — each combinator returns
 // CtxDagChain<C, In, Out, NodeType<Chain, ...>>. Same pattern as iterator adapters.
 #![allow(clippy::type_complexity)]
+// Handler arity is architecturally required by the Param trait — handlers
+// take N typed parameters and the macro-generated dispatch impls expand
+// per-arity into call_inner functions with N + Input arguments. Module-level
+// allow rather than one inline attribute per arity expansion.
+#![allow(clippy::too_many_arguments)]
 
 //! Context-aware DAG dispatch.
 //!
@@ -308,7 +313,6 @@ macro_rules! impl_ctx_merge2_step {
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, ctx: &mut C, world: &mut World, inputs: (&A, &B)) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<Ctx, $($P,)+ IA, IB, Output>(
                     mut f: impl FnMut(&mut Ctx, $($P,)+ &IA, &IB) -> Output,
                     ctx: &mut Ctx,
@@ -397,7 +401,6 @@ macro_rules! impl_ctx_merge3_step {
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, ctx: &mut Ctx, world: &mut World, inputs: (&A, &B, &C)) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<Cx, $($P,)+ IA, IB, IC, Output>(
                     mut f: impl FnMut(&mut Cx, $($P,)+ &IA, &IB, &IC) -> Output,
                     ctx: &mut Cx,
@@ -488,7 +491,6 @@ macro_rules! impl_ctx_merge4_step {
             #[inline(always)]
             #[allow(non_snake_case)]
             fn call(&mut self, ctx: &mut Ctx, world: &mut World, inputs: (&A, &B, &C, &D)) -> Out {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<Cx, $($P,)+ IA, IB, IC, ID, Output>(
                     mut f: impl FnMut(&mut Cx, $($P,)+ &IA, &IB, &IC, &ID) -> Output,
                     ctx: &mut Cx,

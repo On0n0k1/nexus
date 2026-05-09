@@ -45,6 +45,12 @@
 //! See the [crate-level docs](crate#returning-impl-handler-from-functions-rust-2024)
 //! for the full explanation.
 
+// Handler arity is architecturally required by the Param trait — handlers
+// take N typed parameters and the macro-generated dispatch impls expand
+// per-arity into call_inner functions with N + Input arguments. Module-level
+// allow rather than one inline attribute per arity expansion.
+#![allow(clippy::too_many_arguments)]
+
 use crate::Handler;
 use crate::handler::Param;
 use crate::world::{Registry, World};
@@ -230,7 +236,6 @@ macro_rules! impl_into_callback {
         {
             #[allow(non_snake_case)]
             fn run(&mut self, world: &mut World, event: E) {
-                #[allow(clippy::too_many_arguments)]
                 fn call_inner<Ctx, $($P,)+ Ev>(
                     mut f: impl FnMut(&mut Ctx, $($P,)+ Ev),
                     ctx: &mut Ctx,

@@ -59,6 +59,12 @@
 //! [crate-level docs](crate#returning-impl-handler-from-functions-rust-2024)
 //! for details.
 
+// Handler arity is architecturally required by the Param trait — handlers
+// take N typed parameters and the macro-generated dispatch impls expand
+// per-arity into call_inner functions with N + Input arguments. Module-level
+// allow rather than one inline attribute per arity expansion.
+#![allow(clippy::too_many_arguments)]
+
 use std::marker::PhantomData;
 
 use crate::Handler;
@@ -213,7 +219,6 @@ macro_rules! impl_template_dispatch {
                 ) where
                     for<'a> &'a mut F: FnMut($($P,)+ E) + FnMut($($P::Item<'a>,)+ E),
                 {
-                    #[allow(clippy::too_many_arguments)]
                     fn call_inner<$($P,)+ Ev>(
                         mut f: impl FnMut($($P,)+ Ev),
                         $($P: $P,)+
@@ -266,7 +271,6 @@ macro_rules! impl_template_dispatch {
                         FnMut(&mut C, $($P,)+ E) +
                         FnMut(&mut C, $($P::Item<'a>,)+ E),
                 {
-                    #[allow(clippy::too_many_arguments)]
                     fn call_inner<Ctx, $($P,)+ Ev>(
                         mut f: impl FnMut(&mut Ctx, $($P,)+ Ev),
                         ctx: &mut Ctx,
