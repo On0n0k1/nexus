@@ -36,13 +36,18 @@ always a smell, and here it's a bug.
 For WebSocket feeds, 1-4 MiB is typical. For in-process
 telemetry, 256 KiB is usually plenty.
 
-## 3. Zero-length payloads are rejected
+## 3. Zero-length payloads panic
 
-`try_claim(0)` returns `Err(TryClaimError::ZeroLength)`. This is
-because `len == 0` is the "not yet committed" sentinel in the
-record header; allowing zero-length records would break the
-commit protocol. If you need a "marker" record, write at least
-one byte.
+`try_claim(0)` panics. `len == 0` is the "not yet committed"
+sentinel in the record header; allowing zero-length records
+would silently hang the consumer waiting for the producer to
+commit. The check is structural, not ergonomic — passing zero
+is a contract violation, not a runtime error you handle.
+
+If you need a "marker" record, write at least one byte. Aborting
+a non-zero claim (drop the `WriteClaim` without committing) is
+fully supported and writes a skip marker the consumer handles
+correctly.
 
 ## 4. Skip markers waste space near buffer wrap
 
@@ -98,10 +103,10 @@ first.
 
 In the raw `queue::spsc` / `queue::mpsc` API, there is no
 built-in disconnect tracking. If you need producer-side
-`SendError::Disconnected`, use the [`channel`](./channels.md)
-wrapper. The raw API assumes both sides live for the duration
-of the program, which is the common case for archival and
-journaling loops.
+disconnect detection (`ChannelClosed`), use the
+[`channel`](./channels.md) wrapper. The raw API assumes both
+sides live for the duration of the program, which is the common
+case for archival and journaling loops.
 
 ## 9. The consumer zeros. That's O(n) in record size.
 

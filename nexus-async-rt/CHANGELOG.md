@@ -5,6 +5,52 @@ All notable changes to nexus-async-rt are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] — 2026-05-08
+
+The "byte-channel error contract cleanup" release. Companion to
+[nexus-logbuf 2.2.0](../nexus-logbuf/CHANGELOG.md). The `ZeroLength`
+variant in `nexus-logbuf::{TryClaimError, SendError, TrySendError}`
+was a programmer-bug-as-error; it's now a panic at the queue layer.
+The cascade reaches `nexus-async-rt::channel::{spsc_bytes,
+mpsc_bytes}::ClaimError`, which had its own redundant `ZeroLength`
+variant — removed. `Sender::try_claim` signature changes to reflect
+the new `nexus_logbuf::BufferFull` unit struct.
+
+### Breaking changes
+
+- **`ClaimError::ZeroLength` removed** from both `channel::spsc_bytes`
+  and `channel::mpsc_bytes`. The variant is unreachable now that
+  `nexus-logbuf` panics on `len == 0`. `ClaimError` retains
+  `Closed` and `TooLarge` (still `#[non_exhaustive]`).
+- **`Sender::try_claim` error type changed** in both `spsc_bytes` and
+  `mpsc_bytes`:
+  - Before: `try_claim(len) -> Result<WriteClaim<'_>, nexus_logbuf::TryClaimError>`
+  - After:  `try_claim(len) -> Result<WriteClaim<'_>, nexus_logbuf::BufferFull>`
+- **`Sender::claim(len).await` and `Sender::try_claim(len)` now panic on
+  `len == 0`.** Channel-layer `assert!(len > 0)` runs before any state
+  inspection, so the panic contract is unconditional regardless of
+  whether the receiver has been dropped.
+
+### Changed
+
+- Dependency declaration: `nexus-logbuf` `2.1.3` → `2.2.0`. Pulls in
+  the new `BufferFull` / `ChannelClosed` types and the structural
+  `assert!(len > 0)` at the queue layer.
+
+### Migration
+
+| 0.5.0 | 0.6.0 |
+|---|---|
+| `Err(ClaimError::ZeroLength)` (in match) | remove arm; assert it can't happen, or fix the bug |
+| `Result<_, nexus_logbuf::TryClaimError>` (function sig) | `Result<_, nexus_logbuf::BufferFull>` |
+| `Err(nexus_logbuf::TryClaimError::Full)` (in match) | `Err(nexus_logbuf::BufferFull)` |
+| `Err(nexus_logbuf::TryClaimError::ZeroLength)` (in match) | remove arm |
+
+If your code called `claim(0).await` / `try_claim(0)` and handled
+the `ClaimError::ZeroLength` variant, that path was already a
+programmer bug surfaced as a soft error — the fix is to ensure
+`len > 0` upstream, not to handle the panic.
+
 ## [0.5.0] — 2026-05-05
 
 The "production hardening" release. Five PRs over the hardening

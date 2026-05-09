@@ -101,25 +101,21 @@ pub struct Sender {
     shared: Arc<ChannelShared>,
 }
 
-/// Error returned from [`Sender::send`].
+/// Error returned from [`Sender::send`] when the receiver has been dropped.
+///
+/// `send` has only one runtime failure mode — the receiver is gone. Passing
+/// `len == 0` is a precondition violation and panics (see
+/// [`queue::Producer::try_claim`] for details).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SendError {
-    /// The receiver has been dropped.
-    Disconnected,
-    /// The payload length was zero.
-    ZeroLength,
-}
+pub struct ChannelClosed;
 
-impl std::fmt::Display for SendError {
+impl std::fmt::Display for ChannelClosed {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Disconnected => write!(f, "channel disconnected"),
-            Self::ZeroLength => write!(f, "payload length must be non-zero"),
-        }
+        f.write_str("channel disconnected")
     }
 }
 
-impl std::error::Error for SendError {}
+impl std::error::Error for ChannelClosed {}
 
 /// Error returned from [`Sender::try_send`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,8 +124,6 @@ pub enum TrySendError {
     Full,
     /// The receiver has been dropped.
     Disconnected,
-    /// The payload length was zero.
-    ZeroLength,
 }
 
 impl std::fmt::Display for TrySendError {
@@ -137,7 +131,6 @@ impl std::fmt::Display for TrySendError {
         match self {
             Self::Full => write!(f, "channel full"),
             Self::Disconnected => write!(f, "channel disconnected"),
-            Self::ZeroLength => write!(f, "payload length must be non-zero"),
         }
     }
 }
@@ -156,16 +149,19 @@ impl Sender {
     ///
     /// # Errors
     ///
-    /// - [`SendError::Disconnected`] if receiver was dropped
-    /// - [`SendError::ZeroLength`] if `len` is zero
+    /// Returns [`ChannelClosed`] if the receiver was dropped.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `len == 0` (see [`queue::Producer::try_claim`]).
     #[inline]
-    pub fn send(&mut self, len: usize) -> Result<queue::WriteClaim<'_>, SendError> {
-        // Check preconditions first
-        if len == 0 {
-            return Err(SendError::ZeroLength);
-        }
+    pub fn send(&mut self, len: usize) -> Result<queue::WriteClaim<'_>, ChannelClosed> {
+        // Precondition check before any state inspection — `len == 0` is a
+        // contract violation regardless of channel state, and the doc
+        // contract is honest only if it panics unconditionally.
+        assert!(len > 0, "payload length must be non-zero");
         if self.shared.receiver_disconnected.load(Ordering::Relaxed) {
-            return Err(SendError::Disconnected);
+            return Err(ChannelClosed);
         }
 
         let backoff = Backoff::new();
@@ -177,24 +173,20 @@ impl Sender {
             // This is a known borrow checker limitation that Polonius handles.
             unsafe {
                 let inner_ptr: *mut queue::Producer = &raw mut self.inner;
-                match (*inner_ptr).try_claim(len) {
-                    Ok(claim) => {
-                        return Ok(std::mem::transmute::<
-                            queue::WriteClaim<'_>,
-                            queue::WriteClaim<'_>,
-                        >(claim));
-                    }
-                    Err(crate::TryClaimError::Full) => {
-                        backoff.snooze();
-                        if self.shared.receiver_disconnected.load(Ordering::Relaxed) {
-                            return Err(SendError::Disconnected);
-                        }
-                        // Reset backoff after it completes to keep spinning
-                        if backoff.is_completed() {
-                            backoff.reset();
-                        }
-                    }
-                    Err(crate::TryClaimError::ZeroLength) => return Err(SendError::ZeroLength),
+                if let Ok(claim) = (*inner_ptr).try_claim(len) {
+                    return Ok(std::mem::transmute::<
+                        queue::WriteClaim<'_>,
+                        queue::WriteClaim<'_>,
+                    >(claim));
+                }
+                // BufferFull — wait for receiver to drain.
+                backoff.snooze();
+                if self.shared.receiver_disconnected.load(Ordering::Relaxed) {
+                    return Err(ChannelClosed);
+                }
+                // Reset backoff after it completes to keep spinning
+                if backoff.is_completed() {
+                    backoff.reset();
                 }
             }
         }
@@ -206,17 +198,21 @@ impl Sender {
     ///
     /// - [`TrySendError::Full`] if buffer is full
     /// - [`TrySendError::Disconnected`] if receiver was dropped
-    /// - [`TrySendError::ZeroLength`] if `len` is zero
+    ///
+    /// # Panics
+    ///
+    /// Panics if `len == 0` (see [`queue::Producer::try_claim`]).
     #[inline]
     pub fn try_send(&mut self, len: usize) -> Result<queue::WriteClaim<'_>, TrySendError> {
+        // Precondition check before any state inspection — see `send` for why.
+        assert!(len > 0, "payload length must be non-zero");
         if self.shared.receiver_disconnected.load(Ordering::Relaxed) {
             return Err(TrySendError::Disconnected);
         }
 
         match self.inner.try_claim(len) {
             Ok(claim) => Ok(claim),
-            Err(crate::TryClaimError::Full) => Err(TrySendError::Full),
-            Err(crate::TryClaimError::ZeroLength) => Err(TrySendError::ZeroLength),
+            Err(crate::BufferFull) => Err(TrySendError::Full),
         }
     }
 
@@ -520,8 +516,8 @@ mod tests {
         drop(rx);
 
         match tx.send(8) {
-            Err(SendError::Disconnected) => {}
-            _ => panic!("expected Disconnected"),
+            Err(ChannelClosed) => {}
+            _ => panic!("expected ChannelClosed"),
         }
     }
 
@@ -575,9 +571,16 @@ mod tests {
     }
 
     #[test]
-    fn zero_len_error() {
+    #[should_panic(expected = "payload length must be non-zero")]
+    fn send_zero_panics() {
         let (mut tx, _rx) = channel(1024);
-        assert!(matches!(tx.send(0), Err(SendError::ZeroLength)));
-        assert!(matches!(tx.try_send(0), Err(TrySendError::ZeroLength)));
+        let _ = tx.send(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "payload length must be non-zero")]
+    fn try_send_zero_panics() {
+        let (mut tx, _rx) = channel(1024);
+        let _ = tx.try_send(0);
     }
 }

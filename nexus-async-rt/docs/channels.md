@@ -158,12 +158,13 @@ fn main() {
 }
 ```
 
-### `ClaimError::ZeroLength`
+### Zero-length claims panic
 
-Claiming zero bytes is an error (it would produce an empty message that's
-indistinguishable from no message). Validate your `len > 0` precondition
-before claiming. For real wire protocols this falls out naturally — you
-always know the frame size before claiming.
+Claiming zero bytes panics in `nexus_logbuf` — `len == 0` is the wire-format
+"uncommitted" sentinel, and letting it through would silently hang the
+consumer. Validate your `len > 0` precondition before claiming. For real
+wire protocols this falls out naturally — you always know the frame size
+before claiming.
 
 ### When to Use Byte Channels
 

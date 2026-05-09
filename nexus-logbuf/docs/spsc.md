@@ -52,7 +52,7 @@ Each record on the wire is:
 ## Producer — `try_claim`
 
 ```rust
-pub fn try_claim(&mut self, len: usize) -> Result<WriteClaim<'_>, TryClaimError>;
+pub fn try_claim(&mut self, len: usize) -> Result<WriteClaim<'_>, BufferFull>;
 ```
 
 Reserves space for a record of `len` bytes (plus header and
@@ -61,9 +61,13 @@ alignment padding).
 Returns:
 - `Ok(WriteClaim)` — you now own a `&mut [u8]` of exactly `len`
   bytes. Write your payload, then call `claim.commit()`.
-- `Err(TryClaimError::Full)` — not enough contiguous space.
-- `Err(TryClaimError::ZeroLength)` — `len == 0` is not allowed
-  because zero is the "not committed" sentinel.
+- `Err(BufferFull)` — not enough contiguous space.
+
+**Panics if `len == 0`.** Zero is reserved as the "not committed"
+sentinel in the record header. Letting it through would silently
+hang the consumer. Aborting a non-zero claim (drop the
+`WriteClaim` without committing) is fully supported and writes
+a skip marker the consumer handles correctly.
 
 If the remaining space to the end of the buffer is too small,
 the producer writes a **skip marker** of that size and advances

@@ -49,7 +49,7 @@ use std::sync::atomic::{AtomicUsize, Ordering, fence};
 
 use crossbeam_utils::CachePadded;
 
-use crate::{LEN_MASK, SKIP_BIT, TryClaimError, align8};
+use crate::{BufferFull, LEN_MASK, SKIP_BIT, align8};
 
 /// Header size in bytes — one system word (`usize`).
 ///
@@ -150,25 +150,29 @@ impl Producer {
     ///
     /// # Errors
     ///
-    /// - [`TryClaimError::ZeroLength`] if `len` is zero
-    /// - [`TryClaimError::Full`] if the buffer is full
+    /// Returns [`BufferFull`] if the buffer has no space for the record.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `len == 0`. The wire format reserves `len == 0` as the
+    /// "uncommitted" sentinel — letting it through would silently hang the
+    /// consumer. Aborting a non-zero claim is fully supported (drop the
+    /// [`WriteClaim`] without committing); only claiming zero bytes upfront
+    /// is forbidden.
     ///
     /// # Safety Contract
     ///
     /// `len` must not exceed `LEN_MASK`. On 64-bit this is ~9.2 exabytes
     /// (unreachable in practice). On 32-bit, records >2GB could set
     /// `SKIP_BIT` and corrupt the stream — enforced with `assert!`.
-    /// This is checked with
-    /// `debug_assert!` only.
+    /// On 64-bit this is checked with `debug_assert!` only.
     #[inline]
-    pub fn try_claim(&mut self, len: usize) -> Result<WriteClaim<'_>, TryClaimError> {
+    pub fn try_claim(&mut self, len: usize) -> Result<WriteClaim<'_>, BufferFull> {
+        assert!(len > 0, "payload length must be non-zero");
         #[cfg(target_pointer_width = "32")]
         assert!(len <= LEN_MASK, "payload too large for 32-bit logbuf");
         #[cfg(not(target_pointer_width = "32"))]
         debug_assert!(len <= LEN_MASK, "payload too large");
-        if len == 0 {
-            return Err(TryClaimError::ZeroLength);
-        }
 
         let record_size = align8(HEADER_SIZE + len);
 
@@ -184,7 +188,7 @@ impl Producer {
 
             let available = self.shared.capacity - (tail.wrapping_sub(self.cached_head.get()));
             if available < record_size {
-                return Err(TryClaimError::Full);
+                return Err(BufferFull);
             }
         }
 
@@ -205,7 +209,7 @@ impl Producer {
 
                 let available = self.shared.capacity - (tail.wrapping_sub(self.cached_head.get()));
                 if available < total_needed {
-                    return Err(TryClaimError::Full);
+                    return Err(BufferFull);
                 }
             }
 
@@ -738,9 +742,10 @@ mod tests {
     }
 
     #[test]
-    fn zero_len_returns_error() {
+    #[should_panic(expected = "payload length must be non-zero")]
+    fn zero_len_panics() {
         let (mut prod, _) = new(1024);
-        assert!(matches!(prod.try_claim(0), Err(TryClaimError::ZeroLength)));
+        let _ = prod.try_claim(0);
     }
 
     #[test]

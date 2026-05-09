@@ -206,10 +206,9 @@ fn spsc_bytes_random_sizes() {
                             claim.commit();
                             break;
                         }
-                        Err(nexus_logbuf::TryClaimError::Full) => {
+                        Err(nexus_logbuf::BufferFull) => {
                             std::hint::spin_loop();
                         }
-                        Err(_) => return,
                     }
                 }
             }
@@ -270,10 +269,9 @@ fn mpsc_bytes_concurrent_random_sizes() {
                                 sent.fetch_add(1, Ordering::Relaxed);
                                 break;
                             }
-                            Err(nexus_logbuf::TryClaimError::Full) => {
+                            Err(nexus_logbuf::BufferFull) => {
                                 std::hint::spin_loop();
                             }
-                            Err(_) => return,
                         }
                     }
                 }

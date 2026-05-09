@@ -53,25 +53,22 @@ pub mod queue;
 pub use queue::mpsc;
 pub use queue::spsc;
 
-/// Error returned from queue `try_claim` operations.
+/// Error returned from queue `try_claim` operations when the buffer has no
+/// space for the requested record.
+///
+/// This is the only failure mode that `try_claim` can surface as an error:
+/// passing `len == 0` is a precondition violation and panics (`len == 0` is
+/// reserved by the wire format as the "uncommitted" sentinel).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TryClaimError {
-    /// The buffer is full.
-    Full,
-    /// The payload length was zero.
-    ZeroLength,
-}
+pub struct BufferFull;
 
-impl std::fmt::Display for TryClaimError {
+impl std::fmt::Display for BufferFull {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Full => write!(f, "buffer full"),
-            Self::ZeroLength => write!(f, "payload length must be non-zero"),
-        }
+        f.write_str("buffer full")
     }
 }
 
-impl std::error::Error for TryClaimError {}
+impl std::error::Error for BufferFull {}
 
 /// Align a value up to the next multiple of 8.
 #[inline]

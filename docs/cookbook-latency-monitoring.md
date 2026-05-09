@@ -135,7 +135,7 @@ pub fn on_tick_instrumented(
         tick_ts_ns: tick.ts_ns,
     };
     // fixed: Producer method is `try_claim` and returns
-    // `Result<WriteClaim, TryClaimError>`. WriteClaim derefs to &mut [u8].
+    // `Result<WriteClaim, BufferFull>`. WriteClaim derefs to &mut [u8].
     if let Ok(mut claim) = metrics
         .sample_log
         .try_claim(std::mem::size_of::<LatencySample>())

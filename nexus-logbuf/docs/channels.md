@@ -109,13 +109,17 @@ let the receiver observe disconnect.
 
 ## Error types
 
-- `SendError::Disconnected` — receiver is gone.
-- `SendError::ZeroLength` — you passed `len == 0`.
+- `ChannelClosed` (returned by `send`) — receiver is gone.
 - `TrySendError::Full` — transient, try again.
 - `TrySendError::Disconnected` — permanent.
-- `TrySendError::ZeroLength` — permanent user error.
 - `RecvError::Timeout` — nothing arrived in time.
 - `RecvError::Disconnected` — all senders are gone.
+
+`send(0)` and `try_send(0)` panic. `len == 0` is the wire-format
+"uncommitted" sentinel — a zero-length claim would silently hang
+the consumer. This is a contract violation, not a runtime error.
+Aborting a non-zero claim (drop the `WriteClaim` without
+committing) is fully supported.
 
 ## When to use channel vs raw queue
 

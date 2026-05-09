@@ -322,6 +322,9 @@ impl Drop for ReadClaim<'_> {
 // =============================================================================
 
 /// Claim failed.
+///
+/// `len == 0` is not a runtime error — it's a precondition violation and
+/// panics in [`nexus_logbuf::queue::mpsc::Producer::try_claim`].
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ClaimError {
@@ -329,8 +332,6 @@ pub enum ClaimError {
     Closed,
     /// Requested length exceeds buffer capacity (can never succeed).
     TooLarge,
-    /// Requested length is zero (claims must be non-empty).
-    ZeroLength,
 }
 
 impl std::fmt::Display for ClaimError {
@@ -338,7 +339,6 @@ impl std::fmt::Display for ClaimError {
         match self {
             Self::Closed => f.write_str("byte channel closed"),
             Self::TooLarge => f.write_str("message exceeds buffer capacity"),
-            Self::ZeroLength => f.write_str("zero-length claim"),
         }
     }
 }
@@ -423,12 +423,22 @@ impl Sender {
     ///
     /// Returns `Err(ClaimError::TooLarge)` immediately if `len` exceeds
     /// the buffer capacity (can never succeed).
+    ///
+    /// # Panics
+    ///
+    /// Polling the returned future with `len == 0` panics (see
+    /// [`nexus_logbuf::queue::mpsc::Producer::try_claim`]).
     pub fn claim(&mut self, len: usize) -> ClaimFut<'_> {
         ClaimFut { sender: self, len }
     }
 
     /// Try to claim without waiting.
-    pub fn try_claim(&mut self, len: usize) -> Result<WriteClaim<'_>, nexus_logbuf::TryClaimError> {
+    ///
+    /// # Panics
+    ///
+    /// Panics if `len == 0` (see
+    /// [`nexus_logbuf::queue::mpsc::Producer::try_claim`]).
+    pub fn try_claim(&mut self, len: usize) -> Result<WriteClaim<'_>, nexus_logbuf::BufferFull> {
         let inner_claim = self.producer.try_claim(len)?;
         Ok(WriteClaim {
             inner: inner_claim,
@@ -488,6 +498,11 @@ impl<'a> Future for ClaimFut<'a> {
         // - The future won't be polled again after returning Ready
         let sender: &'a mut Sender = unsafe { &mut *(this.sender as *mut Sender) };
 
+        // Precondition check before any state inspection — `len == 0` is a
+        // contract violation regardless of channel state, and the doc
+        // contract is honest only if it panics unconditionally.
+        assert!(this.len > 0, "payload length must be non-zero");
+
         if sender.inner.rx_closed.load(Ordering::Acquire) {
             return Poll::Ready(Err(ClaimError::Closed));
         }
@@ -496,25 +511,21 @@ impl<'a> Future for ClaimFut<'a> {
             return Poll::Ready(Err(ClaimError::TooLarge));
         }
 
-        match sender.producer.try_claim(this.len) {
-            Ok(inner_claim) => Poll::Ready(Ok(WriteClaim {
+        if let Ok(inner_claim) = sender.producer.try_claim(this.len) {
+            return Poll::Ready(Ok(WriteClaim {
                 inner: inner_claim,
                 notify: &sender.inner,
-            })),
-            Err(nexus_logbuf::TryClaimError::Full) => {
-                let node = &sender.wake_node;
-                if !node.queued.load(Ordering::Acquire) {
-                    // Not in list yet -- safe to write waker, then push.
-                    // SAFETY: exclusive access -- node not in any shared structure.
-                    unsafe { *node.waker.get() = Some(cx.waker().clone()) };
-                    sender.inner.tx_waiters.push(node);
-                }
-                Poll::Pending
-            }
-            Err(nexus_logbuf::TryClaimError::ZeroLength) => {
-                Poll::Ready(Err(ClaimError::ZeroLength))
-            }
+            }));
         }
+        // BufferFull — park in the waiter list.
+        let node = &sender.wake_node;
+        if !node.queued.load(Ordering::Acquire) {
+            // Not in list yet -- safe to write waker, then push.
+            // SAFETY: exclusive access -- node not in any shared structure.
+            unsafe { *node.waker.get() = Some(cx.waker().clone()) };
+            sender.inner.tx_waiters.push(node);
+        }
+        Poll::Pending
     }
 }
 
