@@ -258,6 +258,7 @@ impl<T> Pool<T> {
 ///
 /// This guard can be sent to other threads. When dropped, the object
 /// is automatically returned to the pool (if the pool still exists).
+#[must_use = "dropping the guard immediately returns the object to the pool"]
 pub struct Pooled<T> {
     value: ManuallyDrop<T>,
     idx: usize,
