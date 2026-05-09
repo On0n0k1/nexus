@@ -49,6 +49,13 @@ use crate::world::Sequence;
 /// Appears in handler function signatures to declare a read dependency.
 /// Derefs to the inner value transparently.
 ///
+/// # Cloning
+///
+/// `Res<T>` is `Copy + Clone` regardless of `T` — the wrapped reference
+/// is `&T`, which is always `Copy`. To clone the *inner* value, use
+/// `(*res).clone()` or `res.to_owned()`. Calling `res.clone()` returns
+/// `Res<T>`, not `T` — same shadowing pattern as Bevy's `Res<T>`.
+///
 /// For exclusive write access, use [`ResMut<T>`]. For optional read
 /// access (no panic if unregistered), use [`Option<Res<T>>`].
 ///
@@ -96,6 +103,12 @@ impl<T: Resource> Deref for Res<'_, T> {
 ///
 /// Appears in handler function signatures to declare a write dependency.
 /// Derefs to the inner value transparently.
+///
+/// # Passing by value
+///
+/// `ResMut<T>` cannot be `Copy` (exclusive borrow). To pass the wrapper
+/// to inner functions without moving, call [`reborrow()`](Self::reborrow)
+/// — analogous to the `&mut *x` pattern for `&mut T`.
 ///
 /// For shared read access, use [`Res<T>`]. For optional write access
 /// (no panic if unregistered), use [`Option<ResMut<T>>`].
