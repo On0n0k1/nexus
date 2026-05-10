@@ -469,6 +469,34 @@ fn main() {
         map.clear(&slab);
     }
 
+    // iter full scan (per-element cycles, in-order successor traversal cost)
+    {
+        let mut map = RbTree::new();
+        for i in 0..STEADY_SIZE {
+            map.try_insert(&slab, i as u64, 0).unwrap();
+        }
+        let mut samples = Vec::with_capacity(SAMPLES);
+        for _ in 0..WARMUP {
+            let mut sum: u64 = 0;
+            for (k, _) in map.iter() {
+                sum = sum.wrapping_add(*k);
+            }
+            black_box(sum);
+        }
+        for _ in 0..SAMPLES {
+            let s = rdtsc_start();
+            let mut sum: u64 = 0;
+            for (k, _) in map.iter() {
+                sum = sum.wrapping_add(*k);
+            }
+            black_box(sum);
+            let e = rdtsc_end();
+            samples.push((e - s) / STEADY_SIZE as u64);
+        }
+        print_row(&format!("iter scan (per-elem, @{STEADY_SIZE})"), &mut samples);
+        map.clear(&slab);
+    }
+
     println!();
 
     // ── CHURN ─────────────────────────────────────────────────────────

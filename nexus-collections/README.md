@@ -216,11 +216,11 @@ p50 floors, taskset-pinned P-cores, turbo on, best-of-5.
 
 | Operation | RbTree | BTree | std BTreeMap |
 |-----------|--------|-------|-------------|
-| get (hit) | **21** | 31 | 36 |
+| get (hit) | **16** | 31 | 36 |
 | insert (steady) | 303 | **237** | 186 |
 | remove | 283 | **220** | 195 |
 | pop_first | **24** | 43 | 51 |
-| entry (occupied) | **31** | 41 | 35 |
+| entry (occupied) | **22** | 41 | 35 |
 | insert (growing) p999 | **612** | 698 | 3714 |
 
 RbTree wins on lookups and pops. BTree wins on insert and remove. std

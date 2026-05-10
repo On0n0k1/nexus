@@ -262,20 +262,6 @@ unsafe fn predecessor<K, V>(ptr: NodePtr<K, V>) -> NodePtr<K, V> {
 }
 
 // =============================================================================
-// Prefetch
-// =============================================================================
-
-fn prefetch_read_node<K, V>(ptr: NodePtr<K, V>) {
-    #[cfg(target_arch = "x86_64")]
-    if !ptr.is_null() {
-        // SAFETY: ptr is non-null. Prefetch is a hint — does not dereference.
-        unsafe {
-            std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
-        }
-    }
-}
-
-// =============================================================================
 // RbTree<K, V, C>
 // =============================================================================
 
@@ -390,8 +376,6 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
             parent = current;
             // SAFETY: current is non-null and a valid tree node.
             let node = unsafe { &*node_deref(current) };
-            prefetch_read_node(node.left.get());
-            prefetch_read_node(node.right.get());
             match C::cmp(&key, &node.key) {
                 Ordering::Equal => {
                     // SAFETY: current is a valid node; &mut self ensures exclusivity.
@@ -436,8 +420,6 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
             parent = current;
             // SAFETY: current is non-null and a valid tree node.
             let node = unsafe { &*node_deref(current) };
-            prefetch_read_node(node.left.get());
-            prefetch_read_node(node.right.get());
             match C::cmp(&key, &node.key) {
                 Ordering::Equal => {
                     // SAFETY: current is a valid node; &mut self ensures exclusivity.
@@ -485,8 +467,6 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
         while !current.is_null() {
             parent = current;
             let node = unsafe { &*node_deref(current) };
-            prefetch_read_node(node.left.get());
-            prefetch_read_node(node.right.get());
             match C::cmp(&key, &node.key) {
                 Ordering::Equal => {
                     drop(key);
@@ -625,9 +605,6 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
         while !current.is_null() {
             // SAFETY: current is non-null and a valid tree node (root or child).
             let node = unsafe { &*node_deref(current) };
-            // Prefetch both children before the comparison stalls on result
-            prefetch_read_node(node.left.get());
-            prefetch_read_node(node.right.get());
             match C::cmp(key, &node.key) {
                 Ordering::Equal => return Some(current),
                 Ordering::Less => current = node.left.get(),
@@ -642,8 +619,6 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
         let mut current = self.root;
         while !current.is_null() {
             let node = unsafe { &*node_deref(current) };
-            prefetch_read_node(node.left.get());
-            prefetch_read_node(node.right.get());
             if C::cmp(key, &node.key) == Ordering::Greater {
                 current = node.right.get();
             } else {
@@ -659,8 +634,6 @@ impl<K, V, C: Compare<K>> RbTree<K, V, C> {
         let mut current = self.root;
         while !current.is_null() {
             let node = unsafe { &*node_deref(current) };
-            prefetch_read_node(node.left.get());
-            prefetch_read_node(node.right.get());
             if C::cmp(key, &node.key) == Ordering::Less {
                 result = current;
                 current = node.left.get();
@@ -1427,7 +1400,6 @@ impl<'a, K: 'a, V: 'a> Iterator for Iter<'a, K, V> {
         let node = unsafe { &*node_deref(ptr) };
         self.front = unsafe { successor(ptr) };
         self.len -= 1;
-        prefetch_read_node(self.front);
         Some((&node.key, &node.value))
     }
 
@@ -1507,7 +1479,6 @@ impl<'a, K: 'a, V: 'a> Iterator for IterMut<'a, K, V> {
         let node = unsafe { &mut *node_deref_mut(ptr) };
         self.front = next;
         self.len -= 1;
-        prefetch_read_node(self.front);
         Some((&node.key, &mut node.value))
     }
 
@@ -1550,7 +1521,6 @@ impl<'a, K: 'a, V: 'a> Iterator for Range<'a, K, V> {
         // SAFETY: ptr is non-null and a valid tree node within the range.
         let node = unsafe { &*node_deref(ptr) };
         self.front = unsafe { successor(ptr) };
-        prefetch_read_node(self.front);
         Some((&node.key, &node.value))
     }
 }
@@ -1573,7 +1543,6 @@ impl<'a, K: 'a, V: 'a> Iterator for RangeMut<'a, K, V> {
         let next = unsafe { successor(ptr) };
         let node = unsafe { &mut *node_deref_mut(ptr) };
         self.front = next;
-        prefetch_read_node(self.front);
         Some((&node.key, &mut node.value))
     }
 }
@@ -1623,7 +1592,6 @@ impl<K, V, C: Compare<K>, S: SlabOps<RbNode<K, V>>> Cursor<'_, K, V, C, S> {
         if !self.started {
             self.started = true;
             self.current = self.tree.leftmost;
-            prefetch_read_node(self.current);
             return !self.current.is_null();
         }
         if self.current.is_null() {
@@ -1631,7 +1599,6 @@ impl<K, V, C: Compare<K>, S: SlabOps<RbNode<K, V>>> Cursor<'_, K, V, C, S> {
         }
         // SAFETY: current is non-null and a valid tree node.
         self.current = unsafe { successor(self.current) };
-        prefetch_read_node(self.current);
         !self.current.is_null()
     }
 

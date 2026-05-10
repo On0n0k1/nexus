@@ -353,20 +353,6 @@ unsafe fn split_child_core<K, V, const B: usize>(
 }
 
 // =============================================================================
-// Prefetch
-// =============================================================================
-
-fn prefetch_read_node<K, V, const B: usize>(ptr: NodePtr<K, V, B>) {
-    #[cfg(target_arch = "x86_64")]
-    if !ptr.is_null() {
-        // SAFETY: ptr is non-null. Prefetch is a hint — does not dereference.
-        unsafe {
-            std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
-        }
-    }
-}
-
-// =============================================================================
 // BTree<K, V, B, C>
 // =============================================================================
 
@@ -456,7 +442,6 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
             path[path_len] = (current, idx);
             path_len += 1;
             let next = unsafe { child_at(current, idx) };
-            prefetch_read_node(next);
             current = next;
         }
     }
@@ -476,7 +461,6 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
             path[path_len] = (current, 0);
             path_len += 1;
             let next = unsafe { child_at(current, 0) };
-            prefetch_read_node(next);
             current = next;
         }
 
@@ -504,7 +488,6 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
             path[path_len] = (current, len);
             path_len += 1;
             let next = unsafe { child_at(current, len) };
-            prefetch_read_node(next);
             current = next;
         }
 
@@ -577,7 +560,6 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
                 break;
             }
             let next = unsafe { child_at(current, idx) };
-            prefetch_read_node(next);
             current = next;
         }
 
@@ -820,7 +802,6 @@ impl<K, V, const B: usize, C: Compare<K>> BTree<K, V, B, C> {
                 return None;
             }
             let next = unsafe { child_at(current, idx) };
-            prefetch_read_node(next);
             current = next;
         }
         None
