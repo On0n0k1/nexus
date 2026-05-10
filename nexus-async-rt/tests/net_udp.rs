@@ -11,11 +11,7 @@ use nexus_rt::WorldBuilder;
 
 /// Bind a UDP socket to loopback:0, return (socket, addr).
 fn bind_udp() -> (UdpSocket, std::net::SocketAddr) {
-    let s = UdpSocket::bind(
-        "127.0.0.1:0".parse().unwrap(),
-        nexus_async_rt::IoHandle::current(),
-    )
-    .unwrap();
+    let s = UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap();
     let a = s.local_addr().unwrap();
     (s, a)
 }
@@ -46,11 +42,7 @@ fn udp_send_recv_basic() {
 
         spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
-            let mut s = UdpSocket::bind(
-                "127.0.0.1:0".parse().unwrap(),
-                nexus_async_rt::IoHandle::current(),
-            )
-            .unwrap();
+            let mut s = UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap();
             s.send_to(b"hello udp", recv_addr).await.unwrap();
         });
 
@@ -122,11 +114,7 @@ fn udp_echo() {
 
         spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
-            let mut c = UdpSocket::bind(
-                "127.0.0.1:0".parse().unwrap(),
-                nexus_async_rt::IoHandle::current(),
-            )
-            .unwrap();
+            let mut c = UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap();
             c.send_to(b"echo-me", server_addr).await.unwrap();
             let mut buf = [0u8; 64];
             let (n, _) = c.recv_from(&mut buf).await.unwrap();
@@ -167,11 +155,7 @@ fn udp_multiple_datagrams() {
 
         spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
-            let mut c = UdpSocket::bind(
-                "127.0.0.1:0".parse().unwrap(),
-                nexus_async_rt::IoHandle::current(),
-            )
-            .unwrap();
+            let mut c = UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap();
             for i in 0..5u8 {
                 c.send_to(&[i; 4], recv_addr).await.unwrap();
                 nexus_async_rt::sleep(Duration::from_millis(20)).await;
@@ -284,7 +268,7 @@ fn udp_from_std() {
     let flag = done.clone();
 
     rt.block_on(async move {
-        let sock = UdpSocket::from_std(std_sock, nexus_async_rt::IoHandle::current()).unwrap();
+        let sock = UdpSocket::from_std(std_sock).unwrap();
 
         spawn_boxed(async move {
             let mut s = sock;
@@ -296,11 +280,7 @@ fn udp_from_std() {
 
         spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
-            let mut s = UdpSocket::bind(
-                "127.0.0.1:0".parse().unwrap(),
-                nexus_async_rt::IoHandle::current(),
-            )
-            .unwrap();
+            let mut s = UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap();
             s.send_to(b"from-std", addr).await.unwrap();
         });
 
@@ -351,11 +331,7 @@ fn udp_peek_from() {
 
         spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
-            let mut s = UdpSocket::bind(
-                "127.0.0.1:0".parse().unwrap(),
-                nexus_async_rt::IoHandle::current(),
-            )
-            .unwrap();
+            let mut s = UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap();
             s.send_to(b"peek-data", recv_addr).await.unwrap();
         });
 
@@ -393,7 +369,7 @@ fn udp_multicast_loopback() {
     let flag = done.clone();
 
     rt.block_on(async move {
-        let recv_sock = UdpSocket::from_std(std_recv, nexus_async_rt::IoHandle::current()).unwrap();
+        let recv_sock = UdpSocket::from_std(std_recv).unwrap();
 
         spawn_boxed(async move {
             let mut s = recv_sock;
@@ -405,11 +381,7 @@ fn udp_multicast_loopback() {
 
         spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(50)).await;
-            let mut s = UdpSocket::bind(
-                "0.0.0.0:0".parse().unwrap(),
-                nexus_async_rt::IoHandle::current(),
-            )
-            .unwrap();
+            let mut s = UdpSocket::bind("0.0.0.0:0".parse().unwrap()).unwrap();
             let target: std::net::SocketAddr = format!("239.255.0.1:{recv_port}").parse().unwrap();
             s.send_to(b"mcast", target).await.unwrap();
         });

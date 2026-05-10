@@ -18,13 +18,13 @@
 //! const-initialized for zero first-access cost.
 //!
 //! ```ignore
-//! use nexus_async_rt::{spawn_boxed, sleep, IoHandle, WorldCtx, ShutdownSignal};
+//! use nexus_async_rt::{spawn_boxed, sleep, WorldCtx, ShutdownSignal, TcpListener};
 //!
 //! rt.block_on(async {
 //!     spawn_boxed(async {
 //!         WorldCtx::current().with_world(|world| { /* ... */ });
 //!         sleep(Duration::from_secs(1)).await;
-//!         let listener = TcpListener::bind(addr, IoHandle::current());
+//!         let listener = TcpListener::bind(addr);  // fetches IoHandle::current() internally
 //!     });
 //!     ShutdownSignal::current().await;
 //! });

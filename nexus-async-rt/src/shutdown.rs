@@ -140,8 +140,16 @@ impl ShutdownSignal {
             !flag.is_null(),
             "ShutdownSignal::current() called outside Runtime::block_on"
         );
-        // SAFETY: install() writes flag and waker pointers together; flag
-        // non-null implies waker_ptr non-null and valid for Runtime lifetime.
+        // Defense-in-depth: flag and waker_ptr are written together by
+        // install(), so this should be unreachable — but a future refactor
+        // that splits the install path would make a null waker_ptr deref UB.
+        // Catch it at the call site instead.
+        assert!(
+            !waker_ptr.is_null(),
+            "ShutdownSignal::current(): waker_ptr null while flag non-null (runtime install bug)"
+        );
+        // SAFETY: install() writes flag and waker pointers together; both
+        // verified non-null above; pointers are valid for Runtime lifetime.
         let task_waker = unsafe { (*waker_ptr).clone() };
         ShutdownSignal { flag, task_waker }
     }
@@ -245,6 +253,41 @@ mod tests {
 
             // Root future waits for shutdown.
             shutdown.signal().await;
+            flag.set(true);
+        });
+
+        assert!(done.get());
+    }
+
+    #[test]
+    fn shutdown_signal_current_resolves_after_trigger() {
+        // Sister test to `shutdown_signal_resolves_after_trigger`, but
+        // exercises the TLS-fetcher path (`ShutdownSignal::current()`)
+        // instead of `handle.signal()`. Catches regressions in the
+        // CTX_SHUTDOWN / CTX_SHUTDOWN_WAKER install/uninstall wiring.
+        use crate::{Runtime, spawn_boxed};
+        use nexus_rt::WorldBuilder;
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let mut rt = Runtime::new(&mut world);
+        let shutdown = rt.shutdown_handle();
+
+        let done = Rc::new(Cell::new(false));
+        let flag = done.clone();
+
+        let sh = shutdown.clone();
+        rt.block_on(async move {
+            spawn_boxed(async move {
+                crate::context::sleep(std::time::Duration::from_millis(50)).await;
+                sh.trigger();
+            });
+
+            // Fetch the signal via the TLS-based current() rather than
+            // handle.signal() — this is the path users will hit.
+            ShutdownSignal::current().await;
             flag.set(true);
         });
 

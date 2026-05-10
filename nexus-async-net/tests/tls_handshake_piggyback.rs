@@ -181,8 +181,7 @@ fn drive_handshake_handles_piggyback_with_bounded_allocations() {
             .expect("client tls config");
 
         let addr = format!("127.0.0.1:{port}").parse().unwrap();
-        let tcp = AsyncTcpStream::connect(addr, nexus_async_rt::IoHandle::current())
-            .expect("client tcp connect");
+        let tcp = AsyncTcpStream::connect(addr).expect("client tcp connect");
 
         let codec = TlsCodec::new(&tls_config, "localhost").expect("client codec");
         let capacities = TlsBufferCapacities::default();

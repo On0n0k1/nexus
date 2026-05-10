@@ -106,19 +106,21 @@ loop {
 ### I/O (mio-based)
 
 ```rust
-use nexus_async_rt::{TcpStream, TcpListener, IoHandle};
+use nexus_async_rt::{TcpStream, TcpListener};
 
 // Client
-let stream = TcpStream::connect(addr, IoHandle::current())?;
+let stream = TcpStream::connect(addr)?;
 
 // Server
-let listener = TcpListener::bind(addr, IoHandle::current())?;
+let listener = TcpListener::bind(addr)?;
 let (stream, peer) = listener.accept().await?;
 ```
 
-`IoHandle::current()` returns the IO handle for the active runtime —
-mirrors `tokio::runtime::Handle::current()`. Panics if called outside
-[`Runtime::block_on`].
+The constructors fetch the runtime's `IoHandle` internally via
+`IoHandle::current()` — mirrors `tokio::net::TcpListener::bind` /
+`tokio::net::TcpStream::connect`. They panic if called outside
+[`Runtime::block_on`]. Library authors who need the handle directly
+can call `IoHandle::current()` themselves.
 
 ### Channels
 

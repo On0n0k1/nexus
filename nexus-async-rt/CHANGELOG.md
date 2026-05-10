@@ -31,6 +31,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   the Rust async ecosystem. The future *is* the API; there's no enclosing
   handle to fetch.
 
+- **Constructor signatures hide `IoHandle`.** Eight public constructors
+  on `TcpListener`, `TcpStream`, `TcpSocket`, and `UdpSocket` no longer
+  take an explicit `io: IoHandle` parameter — they fetch
+  `IoHandle::current()` internally. Mirrors `tokio::net::TcpListener::bind`
+  / `tokio::net::TcpStream::connect` ergonomics and demotes the runtime
+  internal from end-user APIs (it's now a library-author primitive that
+  end users rarely need to reference).
+
+  Migration:
+
+  | 0.6.x | 0.7.0 |
+  |---|---|
+  | `TcpListener::bind(addr, io)` | `TcpListener::bind(addr)` |
+  | `TcpListener::from_std(listener, io)` | `TcpListener::from_std(listener)` |
+  | `TcpStream::connect(addr, io)` | `TcpStream::connect(addr)` |
+  | `TcpStream::from_std(stream, io)` | `TcpStream::from_std(stream)` |
+  | `UdpSocket::bind(addr, io)` | `UdpSocket::bind(addr)` |
+  | `UdpSocket::from_std(socket, io)` | `UdpSocket::from_std(socket)` |
+  | `TcpSocket::connect(self, addr, io)` | `TcpSocket::connect(self, addr)` |
+  | `TcpSocket::listen(self, backlog, io)` | `TcpSocket::listen(self, backlog)` |
+
+  All constructors now panic if called outside `Runtime::block_on`
+  (because the internal `IoHandle::current()` does). This is the same
+  semantic tokio enforces — bind/connect inside the runtime context.
+
 ### Added
 
 - `IoHandle::current()`, `WorldCtx::current()`, `ShutdownSignal::current()`
