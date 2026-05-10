@@ -19,19 +19,28 @@ operations. No `.unwrap()`, no indexing, no user callbacks.
 If you drop the pool while `Pooled<T>` guards are still alive:
 
 - Existing guards continue to work normally.
-- When each guard drops, it drops its `T` directly instead of
-  returning it to the (now-gone) pool.
+- When each guard drops, it returns its `T` to the (now-orphaned)
+  internal storage via the normal push path. The reset closure runs.
+- In-pool values (already in the free list when the pool dropped, plus
+  values returned by guards after pool drop) are **retained** until
+  the last `Pooled<T>` drops, then all drop together when the
+  internal storage finally dies.
 - No panic, no leak, no use-after-free.
 
 This is safe but operationally surprising: if your shutdown path
 drops the pool first and then waits for worker threads to finish,
-the worker threads will drop values on the allocator instead of
-returning them. If you care (e.g., because drop is expensive), keep
-the pool alive until all workers have exited.
+in-pool values stay alive until every worker has dropped its guard.
+If you care about prompt destruction of pool-retained resources
+(e.g., values holding file descriptors or holding socket buffers
+open), ensure all guards are dropped before dropping the pool.
 
-Under the hood, guards hold `Weak<Inner>` (local) or `Weak<Inner>`
-(sync) — the `Drop` impl upgrades and returns, or falls back to
-direct drop.
+Under the hood, guards hold `Rc<Inner>` (local) or `Arc<Inner>`
+(sync) — a strong reference. The pool itself drops the factory at
+its own `Drop` time, but the `Inner` storage lives on as long as any
+guard does. (Prior to 1.1.0 the guards held `Weak`, which gave
+prompt drop-on-pool-drop at the cost of refcount work on every
+release. The 1.1.0 change is a deliberate semantic-for-cycles
+trade-off — see CHANGELOG.)
 
 ## 3. Sizing the pool
 
@@ -98,9 +107,11 @@ factory calls.
 ## 9. Pool objects outlive pool only as long as their guards
 
 If you keep the value alive (via a `Pooled<T>` guard) longer than
-the pool, that's fine — the value drops directly on guard drop.
-But you cannot "rescue" a value from a dropped pool and
-reattach it to a different pool. The guard is one-shot.
+the pool, that's fine — the guard returns the value to the
+orphaned internal storage on drop, and the storage (along with any
+other in-pool values) finally dies when the last guard exits.
+You cannot "rescue" a value from a dropped pool and reattach it to
+a different pool. The guard is one-shot.
 
 ## 10. Don't pool huge objects
 

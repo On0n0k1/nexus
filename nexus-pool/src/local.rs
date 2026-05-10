@@ -9,7 +9,7 @@
 use std::cell::UnsafeCell;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ops::{Deref, DerefMut};
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 
 // =============================================================================
 // Inner - shared storage for both pool types
@@ -175,7 +175,7 @@ impl<T> BoundedPool<T> {
     pub fn try_acquire(&self) -> Option<Pooled<T>> {
         self.inner.try_pop().map(|value| Pooled {
             value: ManuallyDrop::new(value),
-            inner: Rc::downgrade(&self.inner),
+            inner: Rc::clone(&self.inner),
         })
     }
 
@@ -264,7 +264,7 @@ impl<T> Pool<T> {
         let value = unsafe { self.inner.pop_or_create() };
         Pooled {
             value: ManuallyDrop::new(value),
-            inner: Rc::downgrade(&self.inner),
+            inner: Rc::clone(&self.inner),
         }
     }
 
@@ -275,7 +275,7 @@ impl<T> Pool<T> {
     pub fn try_acquire(&self) -> Option<Pooled<T>> {
         self.inner.try_pop().map(|value| Pooled {
             value: ManuallyDrop::new(value),
-            inner: Rc::downgrade(&self.inner),
+            inner: Rc::clone(&self.inner),
         })
     }
 
@@ -342,8 +342,16 @@ impl<T> Drop for Pool<T> {
     fn drop(&mut self) {
         // SAFETY: Pool::new/with_capacity always calls new_growable, which
         // initializes the factory via MaybeUninit::new. We must drop it here
-        // before Rc drops Inner, because Inner's Drop doesn't know whether
-        // factory was initialized (BoundedPool leaves it uninit).
+        // before the strong-count reaches zero, because Inner's Drop doesn't
+        // know whether factory was initialized (BoundedPool leaves it uninit).
+        //
+        // Factory-ownership invariant: the factory is reachable only through
+        // `Pool::acquire` / `Pool::take`, both of which take `&self` on
+        // `Pool`. Once `Pool` drops, no code path can touch the factory
+        // again — even if `Pooled` guards keep `Inner` alive past this
+        // point via the strong Rc, the factory has been destroyed and is
+        // unreachable. Inner has no `Drop` of its own, so the (now-empty)
+        // `MaybeUninit` slot dies harmlessly when the last guard drops.
         unsafe {
             let factory = &mut *self.inner.factory.get();
             factory.assume_init_drop();
@@ -362,7 +370,7 @@ impl<T> Drop for Pool<T> {
 #[must_use = "dropping the guard immediately returns the object to the pool"]
 pub struct Pooled<T> {
     value: ManuallyDrop<T>,
-    inner: Weak<Inner<T>>,
+    inner: Rc<Inner<T>>,
 }
 
 impl<T> Deref for Pooled<T> {
@@ -383,18 +391,20 @@ impl<T> DerefMut for Pooled<T> {
 
 impl<T> Drop for Pooled<T> {
     fn drop(&mut self) {
-        if let Some(inner) = self.inner.upgrade() {
-            // Reset and return to pool
-            inner.return_value(&mut self.value);
-            // SAFETY: value is valid (ManuallyDrop preserves it until explicit take/drop).
-            // After take, self.value is consumed and we never touch it again.
-            let value = unsafe { ManuallyDrop::take(&mut self.value) };
-            inner.push(value);
-        } else {
-            // SAFETY: Pool is gone. Value is valid (ManuallyDrop preserves it) and must
-            // be dropped to avoid a leak. After drop, we never touch self.value again.
-            unsafe { ManuallyDrop::drop(&mut self.value) };
-        }
+        // Reset and return to pool. The strong Rc guarantees Inner is
+        // alive — no upgrade check needed. If `Pool` already dropped,
+        // Inner is now an "orphan": values keep flowing into its Vec
+        // and stay there until the last `Pooled` drops, at which point
+        // the strong-count hits zero and the Vec drops in one shot.
+        self.inner.return_value(&mut self.value);
+        // SAFETY: value is valid (ManuallyDrop preserves it until
+        // explicit take/drop). After take we never touch self.value
+        // again; Inner takes ownership via push.
+        let value = unsafe { ManuallyDrop::take(&mut self.value) };
+        self.inner.push(value);
+        // self.inner Rc drops here: one strong-count--. If we were the
+        // last guard, Inner's `data: UnsafeCell<Vec<T>>` drops, which
+        // drops every value still in the pool.
     }
 }
 
@@ -469,9 +479,11 @@ mod tests {
             let pool = BoundedPool::new(1, || String::from("test"), String::clear);
             guard = pool.try_acquire().unwrap();
         }
-        // Pool dropped, guard still valid
+        // Pool dropped, guard still valid (Inner survives via the
+        // strong Rc the guard holds).
         assert_eq!(&*guard, "test");
-        // Drop guard - value is dropped, not returned (pool is gone)
+        // Drop guard — value returns to the orphaned Inner, then Inner
+        // dies (last strong ref) and drops the value. No leak, no UAF.
         drop(guard);
     }
 
@@ -528,8 +540,10 @@ mod tests {
             let pool = Pool::new(|| String::from("test"), String::clear);
             guard = pool.acquire();
         }
-        // Pool dropped, guard still valid
+        // Pool dropped, guard still valid (Inner alive via guard's Rc).
         assert_eq!(&*guard, "test");
+        // Guard drops; value returns to orphan, last strong ref dies,
+        // Inner's Vec drops the value. No leak, no UAF.
         drop(guard);
     }
 

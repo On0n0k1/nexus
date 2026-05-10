@@ -4,6 +4,8 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[test]
 fn local_bounded_acquire_release() {
@@ -89,49 +91,92 @@ fn sync_acquire_release() {
 }
 
 #[test]
-fn local_drop_tracker() {
+fn local_guard_outlives_pool_retains_inpool_values_until_last_guard() {
+    // New (1.1.0) contract: in-pool values live until the last
+    // `Pooled<T>` guard drops. Dropping the pool with outstanding
+    // guards no longer drops in-pool values immediately — they sit in
+    // the orphaned Inner's Vec until the strong-count reaches zero.
+
     struct Tracked {
-        data: Vec<u8>,
         counter: Rc<Cell<u32>>,
     }
-
     impl Drop for Tracked {
         fn drop(&mut self) {
             self.counter.set(self.counter.get() + 1);
         }
     }
 
-    // Track how many times drop is called across all values.
     let drop_count = Rc::new(Cell::new(0u32));
-
     let dc = drop_count.clone();
     let pool = nexus_pool::local::BoundedPool::new(
         4,
         move || Tracked {
-            data: Vec::with_capacity(64),
             counter: dc.clone(),
         },
-        |t: &mut Tracked| t.data.clear(),
+        |_| {},
     );
 
-    // Acquire 2 items and hold them while dropping the pool.
+    // Acquire 2 items, hold them. 2 still in the pool, 2 out.
     let a = pool.try_acquire().unwrap();
     let b = pool.try_acquire().unwrap();
-    // 2 items still in the pool, 2 out.
-
     assert_eq!(drop_count.get(), 0);
 
-    // Drop the pool -- the 2 items still inside should be dropped.
+    // Drop pool. NEW SEMANTICS: in-pool values are NOT dropped yet —
+    // Inner survives via the strong Rc held by `a` and `b`.
     drop(pool);
+    assert_eq!(
+        drop_count.get(),
+        0,
+        "in-pool values retained until last guard drops"
+    );
 
-    // The 2 items that were in the pool's internal storage are now dropped.
-    assert_eq!(drop_count.get(), 2);
-
-    // Drop the outstanding guards -- since the pool is gone, values are
-    // dropped directly (not returned).
+    // Drop first guard — it returns to orphaned Inner; no drop yet.
     drop(a);
-    assert_eq!(drop_count.get(), 3);
+    assert_eq!(drop_count.get(), 0);
 
+    // Drop last guard — Inner finally dies; all 4 values drop together
+    // (2 returned-to-orphan + 2 still-in-pool).
     drop(b);
     assert_eq!(drop_count.get(), 4);
+}
+
+#[test]
+fn sync_guard_outlives_pool_miri() {
+    // Same pattern for sync::Pool — must not UAF.
+    // Pool's Arc drops -> Inner survives via Pooled's Arc.
+    // Last guard drops -> Inner::drop walks the free list,
+    // assume_init_drops every in-pool slot.
+
+    struct Tracked {
+        c: Arc<AtomicUsize>,
+    }
+    impl Drop for Tracked {
+        fn drop(&mut self) {
+            self.c.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    let counter = Arc::new(AtomicUsize::new(0));
+    let c = Arc::clone(&counter);
+    let pool = nexus_pool::sync::Pool::new(4, move || Tracked { c: Arc::clone(&c) }, |_| {});
+
+    let g1 = pool.try_acquire().unwrap();
+    let g2 = pool.try_acquire().unwrap();
+
+    drop(pool);
+    assert_eq!(
+        counter.load(Ordering::Relaxed),
+        0,
+        "in-pool slots retained while guards alive"
+    );
+
+    drop(g1);
+    assert_eq!(counter.load(Ordering::Relaxed), 0);
+
+    drop(g2);
+    assert_eq!(
+        counter.load(Ordering::Relaxed),
+        4,
+        "all 4 slots drop when last guard exits and Inner::drop runs"
+    );
 }

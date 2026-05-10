@@ -12,7 +12,7 @@ High-performance object pools for latency-sensitive applications.
 - **Zero allocation on hot path**: Pre-allocate objects at startup
 - **RAII guards**: Objects automatically return to pool on drop
 - **Manual take/put**: Owned values without RAII when guard lifetime doesn't fit
-- **Graceful shutdown**: Guards safely drop values if pool is gone
+- **Graceful shutdown**: Guards retain values past pool drop; everything cleans up when the last guard exits. No leak, no UAF.
 
 ## Quick Start
 

@@ -121,8 +121,10 @@
 //!
 //! The RAII pool types use guards ([`local::Pooled`], [`sync::Pooled`]) that
 //! automatically return objects to the pool on drop. If the pool is dropped
-//! before all guards, the guards will drop their values directly instead of
-//! returning them—no panic, no leak, no use-after-free.
+//! before all guards, the guards keep the internal storage alive via a
+//! strong reference; values flow back into the orphaned storage on guard
+//! drop, and the last guard to exit drops every retained value in one
+//! shot — no panic, no leak, no use-after-free. See `docs/caveats.md` §2.
 //!
 //! [`local::Pool`] also supports manual [`take()`](local::Pool::take) /
 //! [`put()`](local::Pool::put) for cases where RAII lifetime doesn't fit
