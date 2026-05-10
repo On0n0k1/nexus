@@ -12,8 +12,6 @@
 //! Test counts kept small (2–4 producer threads, a few hundred ops at
 //! most) because miri is ~10–100× slower than native.
 
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 
 use nexus_notify::{Events, Token, event_queue};
@@ -237,56 +235,37 @@ fn cross_thread_conflation() {
 }
 
 // =============================================================================
-// 2.9 — Independent counter check: each notify produces exactly one push
+// 2.9 — Racing notifies on the same token conflate to one polled event
 // =============================================================================
 //
-// The per-token flag is set/cleared exactly once per FIFO entry. Use a
-// shared atomic counter on the producer side to count "I won the swap
-// race" — the count must equal the polled-event count for the token.
+// Two producer threads notify the same token concurrently. The per-token
+// flag's `swap(true, Acquire)` pairing means exactly one wins the race
+// and pushes to the queue; the other observes flag=true and skips. From
+// outside the crate the swap winner isn't observable, but the
+// consequence is: each round produces exactly one polled event, no
+// matter how the threads interleave.
 
 #[test]
-fn won_swap_count_matches_polled_count() {
+fn racing_notifies_conflate_to_one_polled_event() {
     const ITERS: usize = 8;
     let (notifier, poller) = event_queue(1);
     let mut events = Events::with_capacity(1);
     let t = Token::new(0);
 
-    let won = Arc::new(AtomicUsize::new(0));
-    let mut total_polled = 0;
-
     for _ in 0..ITERS {
-        // 2 spawned producers spam the same token. Whichever wins the
-        // swap (sees flag=false) actually pushes; the other conflates.
         let n_a = notifier.clone();
         let n_b = notifier.clone();
-        let won_a = won.clone();
-        let won_b = won.clone();
 
-        let h_a = thread::spawn(move || {
-            // We can't observe the swap winner from outside the API,
-            // so this just drives concurrent notifies to interleave.
-            n_a.notify(t).unwrap();
-            // Bump the counter unconditionally — see invariant below.
-            won_a.fetch_add(1, Ordering::Relaxed);
-        });
-        let h_b = thread::spawn(move || {
-            n_b.notify(t).unwrap();
-            won_b.fetch_add(1, Ordering::Relaxed);
-        });
+        let h_a = thread::spawn(move || n_a.notify(t).unwrap());
+        let h_b = thread::spawn(move || n_b.notify(t).unwrap());
 
         h_a.join().unwrap();
         h_b.join().unwrap();
 
-        // Each round, the polled count for token 0 is exactly 1 (both
-        // producers raced; the second saw flag=true and conflated).
+        // Both threads called notify(); the dedup contract collapses
+        // them to a single queue entry.
         poller.poll(&mut events);
         assert_eq!(events.len(), 1);
         assert_eq!(events.iter().next().unwrap().index(), 0);
-        total_polled += events.len();
     }
-
-    // Sanity: producer-thread fetch_add count is 2 per iteration
-    // regardless of who won the swap.
-    assert_eq!(won.load(Ordering::Relaxed), ITERS * 2);
-    assert_eq!(total_polled, ITERS);
 }

@@ -130,8 +130,12 @@ fn flex_inline_runs_inner_drop() {
 
 #[test]
 fn flex_heap_runs_inner_drop() {
-    // 24 bytes of payload won't fit Flex<_, B16>'s ?Sized capacity
-    // (B16 - 16 = 0). Force the heap path.
+    // For `Flex<dyn Greet, B16>` the inline `?Sized` capacity is 0
+    // (16 bytes total, fully consumed by storage bookkeeping for the
+    // trait-object case). Any non-ZST payload routes to heap; the
+    // 32-byte payload below makes that explicit but is not the
+    // discriminator — a single `u8` would do the same. The test
+    // exercises the heap allocation + drop path.
     struct BigDrop {
         _payload: [u64; 4],
         counter: Rc<Cell<u32>>,
