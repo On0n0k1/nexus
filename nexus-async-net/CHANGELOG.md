@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Dependency declaration: `nexus-pool` `1.0.0` → `1.1.0`. Pulls in
+  the strong-Rc/Arc guard contract change from nexus-pool 1.1.0.
+  No behavior change for HTTP client pool usage — the new contract
+  (in-pool values retained until last guard drops) doesn't bite
+  app-lifetime client pools, and the API surface is unchanged.
+
 ## [0.7.1] — 2026-05-10
 
 Doc + internal cleanup release. No public API change.
