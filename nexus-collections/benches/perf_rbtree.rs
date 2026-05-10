@@ -493,7 +493,10 @@ fn main() {
             let e = rdtsc_end();
             samples.push((e - s) / STEADY_SIZE as u64);
         }
-        print_row(&format!("iter scan (per-elem, @{STEADY_SIZE})"), &mut samples);
+        print_row(
+            &format!("iter scan (per-elem, @{STEADY_SIZE})"),
+            &mut samples,
+        );
         map.clear(&slab);
     }
 
