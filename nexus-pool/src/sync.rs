@@ -118,10 +118,15 @@ impl<T> Inner<T> {
 
 impl<T> Drop for Inner<T> {
     fn drop(&mut self) {
-        // Only drop values that are currently in the free list.
-        // Values that are "out" (held by Pooled) have been moved
-        // out of the slot, and the guard's Drop impl will handle them
-        // (either returning to pool, or dropping directly if pool is gone).
+        // Inner::drop runs only when the last Arc dies — which means
+        // no `Pooled` guards are alive (each guard holds a strong
+        // Arc). So every slot that was ever acquired has been pushed
+        // back via `Pooled::drop`, and the free list now contains
+        // every slot we own. Drop them all here. The only way a slot
+        // can be missing from the free list at this point is if a
+        // reset closure panicked during a guard's drop — that path
+        // leaks the value (documented in caveats.md §1) and is the
+        // same as the 1.0.x behavior.
         let mut idx = *self.free_head.get_mut();
         while idx != NONE {
             // SAFETY: Slots in the free list contain valid values (written by new()
@@ -148,9 +153,9 @@ impl<T> Drop for Inner<T> {
 /// across threads (it is `Send` but not `Sync` or `Clone`).
 ///
 /// When the `Pool` is dropped while `Pooled` guards are still alive,
-/// the guards keep `Inner` alive via a strong `Arc`. Each guard drops
-/// returns its value to the (now-orphaned) free list; the last guard
-/// to drop releases `Inner`, which drops every in-pool slot.
+/// the guards keep `Inner` alive via a strong `Arc`. Each guard, on
+/// drop, returns its value to the (now-orphaned) free list; the last
+/// guard to drop releases `Inner`, which drops every in-pool slot.
 /// See `docs/caveats.md` §2.
 ///
 /// # Example
@@ -262,7 +267,10 @@ impl<T> Pool<T> {
 /// RAII guard that returns the object to the pool on drop.
 ///
 /// This guard can be sent to other threads. When dropped, the object
-/// is automatically returned to the pool (if the pool still exists).
+/// is automatically returned to the pool's storage. If the pool was
+/// already dropped, the value goes back into the orphaned `Inner`,
+/// which finally dies (along with every in-pool value) when the last
+/// `Pooled` exits. See `docs/caveats.md` §2.
 #[must_use = "dropping the guard immediately returns the object to the pool"]
 pub struct Pooled<T> {
     value: ManuallyDrop<T>,
