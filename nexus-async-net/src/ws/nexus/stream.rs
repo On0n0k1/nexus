@@ -601,7 +601,7 @@ impl WsStreamBuilder {
             })?;
 
         let connect_fn = async {
-            let tcp = TcpStream::connect(addr, nexus_async_rt::io())?;
+            let tcp = TcpStream::connect(addr)?;
             Ok::<TcpStream, WsError>(tcp)
         };
 

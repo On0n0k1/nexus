@@ -57,13 +57,13 @@ fn nexus_tcp_echo_samples() -> Vec<u64> {
     let mut world = wb.build();
     let mut rt = Runtime::new(&mut world);
 
-    let listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
-    let addr = listener.local_addr().unwrap();
-
     let samples_rc: Rc<Cell<Vec<u64>>> = Rc::new(Cell::new(Vec::new()));
     let writer = samples_rc.clone();
 
     rt.block_on(async move {
+        let listener = TcpListener::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let addr = listener.local_addr().unwrap();
+
         // Server
         spawn_boxed(async move {
             let mut listener = listener;
@@ -80,10 +80,9 @@ fn nexus_tcp_echo_samples() -> Vec<u64> {
         });
 
         // Client
-        let io = nexus_async_rt::io();
         spawn_boxed(async move {
             nexus_async_rt::sleep(Duration::from_millis(10)).await;
-            let mut c = TcpStream::connect(addr, io).unwrap();
+            let mut c = TcpStream::connect(addr).unwrap();
             c.set_nodelay(true).unwrap();
 
             let msg = [0xABu8; MSG_SIZE];
@@ -204,15 +203,15 @@ fn nexus_udp_samples() -> Vec<u64> {
     let mut world = wb.build();
     let mut rt = Runtime::new(&mut world);
 
-    let a = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
-    let b = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), nexus_async_rt::io()).unwrap();
-    let a_addr = a.local_addr().unwrap();
-    let b_addr = b.local_addr().unwrap();
-
     let samples_rc: Rc<Cell<Vec<u64>>> = Rc::new(Cell::new(Vec::new()));
     let writer = samples_rc.clone();
 
     rt.block_on(async move {
+        let a = UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let b = UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let a_addr = a.local_addr().unwrap();
+        let b_addr = b.local_addr().unwrap();
+
         // Echo server on b
         spawn_boxed(async move {
             let mut b = b;

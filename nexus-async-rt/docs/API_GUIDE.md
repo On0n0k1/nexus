@@ -173,18 +173,25 @@ stream.write_all(&buf[..n]).await?;
 Access nexus-rt ECS resources from async tasks:
 
 ```rust
-use nexus_async_rt::with_world;
+use nexus_async_rt::WorldCtx;
 
 // Synchronous, inline during task poll — no await point.
-with_world(|world| {
+WorldCtx::current().with_world(|world| {
     let config = world.resource::<Config>();
     println!("setting: {}", config.value);
 });
 ```
 
+`WorldCtx::current()` returns the active runtime's `World` handle —
+mirrors `tokio::runtime::Handle::current()`. Use `WorldCtx::new(&mut world)`
+when constructing the handle outside `block_on` (e.g., capturing into
+a task before the runtime starts).
+
 ### Pre-resolved handlers (hot path)
 
-For event dispatch where HashMap lookup cost matters:
+For event dispatch where HashMap lookup cost matters. Cache the
+[`WorldCtx`] once per task — `Copy` is free, but the TLS read in
+`current()` is wasted work if you're calling it in a tight loop:
 
 ```rust
 // At setup (cold path) — resolve resource IDs once:
@@ -193,7 +200,8 @@ let mut on_quote = (|mut books: ResMut<Books>, q: Quote| {
 }).into_handler(world.registry());
 
 // Per-event (hot path) — single deref per resource:
-with_world(|world| on_quote.run(world, quote));
+let ctx = WorldCtx::current();
+ctx.with_world(|world| on_quote.run(world, quote));
 ```
 
 ## Channels
@@ -249,7 +257,7 @@ let mut rt = Runtime::builder(&mut world)
 
 rt.block_on(async {
     // Completes when SIGTERM or SIGINT received
-    nexus_async_rt::shutdown_signal().await;
+    nexus_async_rt::ShutdownSignal::current().await;
     cleanup().await;
 });
 ```
@@ -293,7 +301,7 @@ rt.block_on(async {
                 let token = token.child();
                 spawn_boxed(handle_connection(stream, token));
             }
-            _ = shutdown_signal() => {
+            _ = ShutdownSignal::current() => {
                 token.cancel();
                 break;
             }
@@ -312,8 +320,8 @@ rt.block_on(async {
     loop {
         let msg = ws.recv().await?;
         match msg.msg_type() {
-            MsgType::Quote => with_world(|w| on_quote.run(w, parse_quote(&msg))),
-            MsgType::Trade => with_world(|w| on_trade.run(w, parse_trade(&msg))),
+            MsgType::Quote => WorldCtx::current().with_world(|w| on_quote.run(w, parse_quote(&msg))),
+            MsgType::Trade => WorldCtx::current().with_world(|w| on_trade.run(w, parse_trade(&msg))),
         }
     }
 });

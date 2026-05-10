@@ -50,7 +50,7 @@ fn main() {
                     .text().await.unwrap()
             }).await;
 
-            nexus_async_rt::with_world(|_w| {
+            nexus_async_rt::WorldCtx::current().with_world(|_w| {
                 // parse body, update World state
                 let _ = body;
             });
@@ -175,7 +175,7 @@ you hit a cross-thread waker bug, that's the first place to look.
 ## Example: `reqwest` for REST Cold Path
 
 ```rust
-use nexus_async_rt::{Runtime, spawn_boxed, with_world, tokio_compat::with_tokio};
+use nexus_async_rt::{Runtime, WorldCtx, spawn_boxed, tokio_compat::with_tokio};
 use nexus_rt::{Resource, WorldBuilder};
 use std::time::Duration;
 
@@ -194,7 +194,7 @@ async fn refresh_prices() {
 
     // Parse & apply under a scoped World borrow.
     let price: f64 = body.parse().unwrap_or(0.0);
-    with_world(|w| {
+    WorldCtx::current().with_world(|w| {
         w.resource_mut::<RefPrices>().btc_usd = price;
     });
 }

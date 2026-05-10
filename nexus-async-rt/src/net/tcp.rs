@@ -60,17 +60,26 @@ impl TcpStream {
     /// The connection completes asynchronously. The first read or write
     /// will register with mio and detect when the connection is
     /// established.
-    pub fn connect(addr: SocketAddr, io: IoHandle) -> io::Result<Self> {
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a [`Runtime::block_on`](crate::Runtime::block_on)
+    /// context — fetches the runtime's [`IoHandle`] internally.
+    pub fn connect(addr: SocketAddr) -> io::Result<Self> {
         let inner = mio::net::TcpStream::connect(addr)?;
-        Ok(Self::new(inner, io))
+        Ok(Self::new(inner, IoHandle::current()))
     }
 
     /// Convert from a `std::net::TcpStream`.
     ///
     /// The stream must be set to non-blocking mode before calling this.
-    pub fn from_std(stream: std::net::TcpStream, io: IoHandle) -> io::Result<Self> {
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a runtime context.
+    pub fn from_std(stream: std::net::TcpStream) -> io::Result<Self> {
         let inner = mio::net::TcpStream::from_std(stream);
-        Ok(Self::new(inner, io))
+        Ok(Self::new(inner, IoHandle::current()))
     }
 
     /// Convert into a `std::net::TcpStream`.
@@ -647,22 +656,31 @@ pub struct TcpListener {
 
 impl TcpListener {
     /// Bind to `addr`. Registration deferred to first `accept` poll.
-    pub fn bind(addr: SocketAddr, io: IoHandle) -> io::Result<Self> {
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a [`Runtime::block_on`](crate::Runtime::block_on)
+    /// context — fetches the runtime's [`IoHandle`] internally.
+    pub fn bind(addr: SocketAddr) -> io::Result<Self> {
         let inner = mio::net::TcpListener::bind(addr)?;
         Ok(Self {
             inner,
-            io,
+            io: IoHandle::current(),
             token: None,
             registered_task: std::ptr::null_mut(),
         })
     }
 
     /// Convert from a `std::net::TcpListener`.
-    pub fn from_std(listener: std::net::TcpListener, io: IoHandle) -> io::Result<Self> {
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a runtime context.
+    pub fn from_std(listener: std::net::TcpListener) -> io::Result<Self> {
         let inner = mio::net::TcpListener::from_std(listener);
         Ok(Self {
             inner,
-            io,
+            io: IoHandle::current(),
             token: None,
             registered_task: std::ptr::null_mut(),
         })
@@ -907,7 +925,12 @@ impl TcpSocket {
     /// The connection completes asynchronously (non-blocking socket).
     /// The first read or write will detect when the connection is
     /// established.
-    pub fn connect(self, addr: SocketAddr, io: IoHandle) -> io::Result<TcpStream> {
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a [`Runtime::block_on`](crate::Runtime::block_on)
+    /// context — fetches the runtime's [`IoHandle`] internally.
+    pub fn connect(self, addr: SocketAddr) -> io::Result<TcpStream> {
         // Non-blocking connect returns EINPROGRESS/EALREADY — that's
         // normal, not an error. Suppress these.
         match self.inner.connect(&addr.into()) {
@@ -919,17 +942,21 @@ impl TcpSocket {
         }
         let std_stream: std::net::TcpStream = self.inner.into();
         let mio_stream = mio::net::TcpStream::from_std(std_stream);
-        Ok(TcpStream::new(mio_stream, io))
+        Ok(TcpStream::new(mio_stream, IoHandle::current()))
     }
 
     /// Start listening with the given backlog and return a [`TcpListener`].
-    pub fn listen(self, backlog: i32, io: IoHandle) -> io::Result<TcpListener> {
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a runtime context.
+    pub fn listen(self, backlog: i32) -> io::Result<TcpListener> {
         self.inner.listen(backlog)?;
         let std_listener: std::net::TcpListener = self.inner.into();
         let mio_listener = mio::net::TcpListener::from_std(std_listener);
         Ok(TcpListener {
             inner: mio_listener,
-            io,
+            io: IoHandle::current(),
             token: None,
             registered_task: std::ptr::null_mut(),
         })
@@ -979,8 +1006,7 @@ mod tests {
         let done2 = done.clone();
 
         rt.block_on(async move {
-            let listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), crate::context::io())
-                .expect("bind failed");
+            let listener = TcpListener::bind("127.0.0.1:0".parse().unwrap()).expect("bind failed");
             let addr = listener.local_addr().unwrap();
             spawn_boxed(async move {
                 let mut listener = listener;
@@ -990,11 +1016,10 @@ mod tests {
                 stream.write_all(&buf[..n]).await.unwrap();
             });
 
-            let io = crate::context::io();
             let flag = done2;
             spawn_boxed(async move {
                 crate::context::sleep(std::time::Duration::from_millis(10)).await;
-                let mut client = TcpStream::connect(addr, io).unwrap();
+                let mut client = TcpStream::connect(addr).unwrap();
                 client.write_all(b"hello").await.unwrap();
                 let mut buf = [0u8; 64];
                 let n = client.read(&mut buf).await.unwrap();

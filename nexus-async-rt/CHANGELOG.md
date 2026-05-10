@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **Bare-noun context-fetcher free functions converted to
+  `Type::current()` pattern.** The four functions that returned a handle
+  or future (not a future factory) now live as inherent `current()`
+  methods on the relevant type. Mirrors `tokio::runtime::Handle::current()`
+  convention; makes call sites self-documenting and discourages threading
+  handles through APIs.
+
+  Migration:
+
+  | 0.6.x | 0.7.0 |
+  |---|---|
+  | `nexus_async_rt::io()` | `IoHandle::current()` |
+  | `nexus_async_rt::with_world(\|w\| ...)` | `WorldCtx::current().with_world(\|w\| ...)` |
+  | `nexus_async_rt::with_world_ref(\|w\| ...)` | `WorldCtx::current().with_world_ref(\|w\| ...)` |
+  | `nexus_async_rt::shutdown_signal()` | `ShutdownSignal::current()` |
+
+  Future factories (`sleep`, `sleep_until`, `interval`, `interval_at`,
+  `after`, `after_delay`, `timeout`, `timeout_at`, `yield_now`) and the
+  pure value getter (`event_time`) stay as free functions — idiomatic for
+  the Rust async ecosystem. The future *is* the API; there's no enclosing
+  handle to fetch.
+
+- **Constructor signatures hide `IoHandle`.** Eight public constructors
+  on `TcpListener`, `TcpStream`, `TcpSocket`, and `UdpSocket` no longer
+  take an explicit `io: IoHandle` parameter — they fetch
+  `IoHandle::current()` internally. Mirrors `tokio::net::TcpListener::bind`
+  / `tokio::net::TcpStream::connect` ergonomics and demotes the runtime
+  internal from end-user APIs (it's now a library-author primitive that
+  end users rarely need to reference).
+
+  Migration:
+
+  | 0.6.x | 0.7.0 |
+  |---|---|
+  | `TcpListener::bind(addr, io)` | `TcpListener::bind(addr)` |
+  | `TcpListener::from_std(listener, io)` | `TcpListener::from_std(listener)` |
+  | `TcpStream::connect(addr, io)` | `TcpStream::connect(addr)` |
+  | `TcpStream::from_std(stream, io)` | `TcpStream::from_std(stream)` |
+  | `UdpSocket::bind(addr, io)` | `UdpSocket::bind(addr)` |
+  | `UdpSocket::from_std(socket, io)` | `UdpSocket::from_std(socket)` |
+  | `TcpSocket::connect(self, addr, io)` | `TcpSocket::connect(self, addr)` |
+  | `TcpSocket::listen(self, backlog, io)` | `TcpSocket::listen(self, backlog)` |
+
+  All constructors now panic if called outside `Runtime::block_on`
+  (because the internal `IoHandle::current()` does). This is the same
+  semantic tokio enforces — bind/connect inside the runtime context.
+
+### Added
+
+- `IoHandle::current()`, `WorldCtx::current()`, `ShutdownSignal::current()`
+  — TLS-based fetchers for the active runtime context. All three panic
+  outside [`Runtime::block_on`]; all three are `#[must_use]`.
+
 ## [0.6.0] — 2026-05-08
 
 The "byte-channel error contract cleanup" release. Companion to

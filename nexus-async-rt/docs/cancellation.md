@@ -180,7 +180,9 @@ Top-level shutdown driven by SIGTERM/SIGINT. Installed automatically when
 `RuntimeBuilder::signal_handlers(true)` (the default).
 
 ```rust
-pub fn shutdown_signal() -> ShutdownSignal; // from module root
+impl ShutdownSignal {
+    pub fn current() -> ShutdownSignal;
+}
 ```
 
 `ShutdownSignal` is single-waiter — exactly one task can `.await` it. For
@@ -188,7 +190,7 @@ broadcast shutdown, convert the signal into a `CancellationToken::cancel()`
 call and distribute the token.
 
 ```rust
-use nexus_async_rt::{CancellationToken, Runtime, shutdown_signal, spawn_boxed};
+use nexus_async_rt::{CancellationToken, Runtime, ShutdownSignal, spawn_boxed};
 use nexus_rt::WorldBuilder;
 
 fn main() {
@@ -210,7 +212,7 @@ fn main() {
         }
 
         // Single-waiter: wait for SIGTERM, then fan out.
-        shutdown_signal().await;
+        ShutdownSignal::current().await;
         root.cancel();
 
         // Give children a grace period — in real code, join them on a
@@ -245,8 +247,8 @@ to `ShutdownSignal` for server shutdown.
 
 ```rust
 use nexus_async_rt::{
-    CancellationToken, Runtime, TcpListener, TcpStream,
-    shutdown_signal, spawn_boxed,
+    CancellationToken, Runtime, ShutdownSignal, TcpListener, TcpStream,
+    spawn_boxed,
 };
 use nexus_rt::WorldBuilder;
 
@@ -285,7 +287,7 @@ fn main() -> std::io::Result<()> {
             Ok::<_, std::io::Error>(())
         });
 
-        shutdown_signal().await;
+        ShutdownSignal::current().await;
         root.cancel();
         // optionally wait for accept + sessions to drain
         Ok(())

@@ -59,8 +59,8 @@ pub use alloc::SlabClaim;
 pub use backoff::{Backoff, BackoffBuilder, Exhausted};
 pub use cancel::{CancellationToken, DropGuard};
 pub use context::{
-    after, after_delay, event_time, interval, interval_at, io, shutdown_signal, sleep, sleep_until,
-    timeout, timeout_at, with_world, with_world_ref, yield_now,
+    after, after_delay, event_time, interval, interval_at, sleep, sleep_until, timeout, timeout_at,
+    yield_now,
 };
 pub use io::IoHandle;
 pub use net::{

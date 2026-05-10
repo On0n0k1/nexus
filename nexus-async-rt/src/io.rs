@@ -237,7 +237,7 @@ impl IoDriver {
 /// [`Copy`] handle for IO operations from async tasks.
 ///
 /// Provides source registration with the mio reactor. Obtained from
-/// [`crate::io()`].
+/// [`IoHandle::current`].
 ///
 /// # Safety
 ///
@@ -258,6 +258,28 @@ impl IoHandle {
             registry: std::ptr::from_ref(driver.registry()),
             driver: std::ptr::from_mut(driver),
         }
+    }
+
+    /// Returns the [`IoHandle`] for the currently running runtime.
+    ///
+    /// Use when you need to register a mio source from inside an async task —
+    /// e.g., when constructing a [`TcpStream`](crate::TcpStream) or
+    /// [`UdpSocket`](crate::UdpSocket). Mirrors `tokio::runtime::Handle::current()`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a [`Runtime::block_on`](crate::Runtime::block_on)
+    /// context.
+    #[must_use]
+    pub fn current() -> IoHandle {
+        let ptr = crate::context::current_io_ptr();
+        assert!(
+            !ptr.is_null(),
+            "IoHandle::current() called outside Runtime::block_on"
+        );
+        // SAFETY: ptr installed by Runtime::block_on, valid for Runtime lifetime.
+        // Single-threaded executor — no concurrent access.
+        IoHandle::new(unsafe { &mut *ptr })
     }
 
     /// Register a mio source with the given interest and waker.
@@ -327,5 +349,19 @@ impl IoHandle {
         registry.deregister(source)?;
         driver.release_token(token);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[should_panic(expected = "called outside Runtime::block_on")]
+    fn current_panics_outside_runtime() {
+        // Pins the documented panic contract. Most tests exercise
+        // `current()` transitively (via `TcpStream::connect`, etc.)
+        // inside `block_on`; this is the direct contract test.
+        let _ = IoHandle::current();
     }
 }

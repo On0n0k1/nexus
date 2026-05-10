@@ -181,7 +181,7 @@ impl HttpConnectionBuilder {
             .ok_or_else(|| RestError::InvalidUrl(format!("DNS resolution failed: {addr_str}")))?;
 
         let connect_fn = async {
-            let tcp = TcpStream::connect(addr, nexus_async_rt::io())?;
+            let tcp = TcpStream::connect(addr)?;
             Ok::<TcpStream, RestError>(tcp)
         };
 

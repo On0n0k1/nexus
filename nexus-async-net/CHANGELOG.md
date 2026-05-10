@@ -14,6 +14,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   No behavior change for HTTP client pool usage — the new contract
   (in-pool values retained until last guard drops) doesn't bite
   app-lifetime client pools, and the API surface is unchanged.
+- **Adopted `nexus-async-rt` 0.7.0's API simplification.** The
+  upstream constructor signatures dropped their explicit `IoHandle`
+  parameter (now fetched internally via `IoHandle::current()`), so
+  call sites in REST and WebSocket nexus connection paths plus the
+  `tls_handshake_piggyback` and `ws_nexus_integration` test suites
+  simplify from `TcpStream::connect(addr, IoHandle::current())` to
+  `TcpStream::connect(addr)`. No behavior change — same TLS read,
+  same registration, just hidden inside the constructor.
+- Dependency declaration: `nexus-async-rt` `0.6.0` → `0.7.0` to pick
+  up the `Type::current()` API and constructor cleanup.
 
 ## [0.7.1] — 2026-05-10
 

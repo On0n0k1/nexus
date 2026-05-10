@@ -20,7 +20,7 @@
 //!     spawn_boxed(connection_tasks...);
 //!
 //!     // Wait for SIGTERM/SIGINT.
-//!     nexus_async_rt::shutdown_signal().await;
+//!     nexus_async_rt::ShutdownSignal::current().await;
 //!
 //!     // Drain connections, flush buffers, etc.
 //! });
@@ -112,6 +112,47 @@ impl ShutdownHandle {
 pub struct ShutdownSignal {
     pub(crate) flag: *const AtomicBool,
     pub(crate) task_waker: Arc<std::sync::Mutex<Option<Waker>>>,
+}
+
+impl ShutdownSignal {
+    /// Returns a [`ShutdownSignal`] future for the currently running runtime.
+    ///
+    /// The returned future resolves when shutdown is triggered — either by
+    /// a Unix signal handler installed via
+    /// [`Runtime::install_signal_handlers`](crate::Runtime::install_signal_handlers)
+    /// (SIGTERM / SIGINT) or by an explicit
+    /// [`ShutdownHandle::trigger`] call. Mirrors
+    /// `tokio::runtime::Handle::current()`. Read as
+    /// `ShutdownSignal::current().await` — "await the current shutdown
+    /// signal".
+    ///
+    /// **Single waiter only** — see the type-level docs. For multi-waiter
+    /// patterns, use [`CancellationToken`](crate::CancellationToken).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a [`Runtime::block_on`](crate::Runtime::block_on)
+    /// context.
+    #[must_use]
+    pub fn current() -> ShutdownSignal {
+        let (flag, waker_ptr) = crate::context::current_shutdown_ptrs();
+        assert!(
+            !flag.is_null(),
+            "ShutdownSignal::current() called outside Runtime::block_on"
+        );
+        // Defense-in-depth: flag and waker_ptr are written together by
+        // install(), so this should be unreachable — but a future refactor
+        // that splits the install path would make a null waker_ptr deref UB.
+        // Catch it at the call site instead.
+        assert!(
+            !waker_ptr.is_null(),
+            "ShutdownSignal::current(): waker_ptr null while flag non-null (runtime install bug)"
+        );
+        // SAFETY: install() writes flag and waker pointers together; both
+        // verified non-null above; pointers are valid for Runtime lifetime.
+        let task_waker = unsafe { (*waker_ptr).clone() };
+        ShutdownSignal { flag, task_waker }
+    }
 }
 
 impl Future for ShutdownSignal {
@@ -212,6 +253,51 @@ mod tests {
 
             // Root future waits for shutdown.
             shutdown.signal().await;
+            flag.set(true);
+        });
+
+        assert!(done.get());
+    }
+
+    #[test]
+    #[should_panic(expected = "called outside Runtime::block_on")]
+    fn shutdown_signal_current_panics_outside_runtime() {
+        // Pins the documented panic contract for
+        // `ShutdownSignal::current()`. Symmetric to
+        // `IoHandle::current_panics_outside_runtime` and
+        // `WorldCtx::current_panics_outside_runtime`.
+        let _ = ShutdownSignal::current();
+    }
+
+    #[test]
+    fn shutdown_signal_current_resolves_after_trigger() {
+        // Sister test to `shutdown_signal_resolves_after_trigger`, but
+        // exercises the TLS-fetcher path (`ShutdownSignal::current()`)
+        // instead of `handle.signal()`. Catches regressions in the
+        // CTX_SHUTDOWN / CTX_SHUTDOWN_WAKER install/uninstall wiring.
+        use crate::{Runtime, spawn_boxed};
+        use nexus_rt::WorldBuilder;
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        let wb = WorldBuilder::new();
+        let mut world = wb.build();
+        let mut rt = Runtime::new(&mut world);
+        let shutdown = rt.shutdown_handle();
+
+        let done = Rc::new(Cell::new(false));
+        let flag = done.clone();
+
+        let sh = shutdown.clone();
+        rt.block_on(async move {
+            spawn_boxed(async move {
+                crate::context::sleep(std::time::Duration::from_millis(50)).await;
+                sh.trigger();
+            });
+
+            // Fetch the signal via the TLS-based current() rather than
+            // handle.signal() — this is the path users will hit.
+            ShutdownSignal::current().await;
             flag.set(true);
         });
 

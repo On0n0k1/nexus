@@ -12,33 +12,53 @@ nexus-rt handlers, all on one thread.
 ## The Big Picture
 
 ```text
-+----------------------------------------+
-|  Runtime::block_on()                   |  <- nexus-async-rt
-|                                        |
-|    async tasks   (sockets, timers)     |
-|        |                               |
-|        | with_world(|w| handler.run()) |
-|        v                               |
-|    World / Resources  (nexus-rt)       |
-+----------------------------------------+
++--------------------------------------------------------+
+|  Runtime::block_on()                                   |  <- nexus-async-rt
+|                                                        |
+|    async tasks   (sockets, timers)                     |
+|        |                                               |
+|        | WorldCtx::current().with_world(|w| handler.run()) |
+|        v                                               |
+|    World / Resources  (nexus-rt)                       |
++--------------------------------------------------------+
 ```
 
-The `World` is owned by the `Runtime`. Async tasks access it via
-`with_world` — a synchronous, scoped borrow — whenever they need to update
-state or dispatch a handler.
+The `World` is owned by the `Runtime`. Async tasks access it through
+[`WorldCtx`] — a `Copy` handle wrapping the World pointer — whenever
+they need to update state or dispatch a handler.
 
-## `with_world` and `with_world_ref`
+## `WorldCtx` and `WorldCtx::current()`
 
 ```rust
-pub fn with_world<R>(f: impl FnOnce(&mut nexus_rt::World) -> R) -> R;
-pub fn with_world_ref<R>(f: impl FnOnce(&nexus_rt::World) -> R) -> R;
+pub struct WorldCtx { /* Copy */ }
+
+impl WorldCtx {
+    /// Construct from a mutable World reference (use before `block_on`).
+    pub fn new(world: &mut World) -> Self;
+
+    /// Fetch the runtime's current WorldCtx from TLS (use inside tasks).
+    pub fn current() -> Self;
+
+    pub fn with_world<R>(&self, f: impl FnOnce(&mut World) -> R) -> R;
+    pub fn with_world_ref<R>(&self, f: impl FnOnce(&World) -> R) -> R;
+}
 ```
 
-Both borrow the World from thread-local storage (the Runtime puts it there
-during `block_on`). Outside a `block_on` they panic.
+The `Runtime` installs the World pointer in TLS during `block_on`.
+`WorldCtx::current()` reads that pointer; outside `block_on` it panics.
+`with_world` / `with_world_ref` are inherent methods that run a closure
+synchronously inline against the borrowed World — no await point.
+
+Two ways to obtain a `WorldCtx`:
+
+| When | Method | Why |
+|---|---|---|
+| Inside a task, occasional access | `WorldCtx::current()` | One TLS read per call site; fine for cold paths. |
+| Inside a task, hot loop | `let ctx = WorldCtx::current();` once, then reuse | `WorldCtx` is `Copy` — capture saves repeated TLS reads. |
+| Before `block_on`, capturing into closures | `WorldCtx::new(&mut world)` | No runtime context to read from yet. |
 
 ```rust
-use nexus_async_rt::{Runtime, spawn_boxed, with_world, with_world_ref};
+use nexus_async_rt::{Runtime, WorldCtx, spawn_boxed};
 use nexus_rt::{Resource, WorldBuilder};
 
 #[derive(Resource, Default)]
@@ -53,12 +73,12 @@ fn main() {
     rt.block_on(async {
         spawn_boxed(async {
             // Mutable access — scoped to the closure.
-            with_world(|w| {
+            WorldCtx::current().with_world(|w| {
                 w.resource_mut::<Counter>().0 += 1;
             });
 
             // Read-only access.
-            let n = with_world_ref(|w| w.resource::<Counter>().0);
+            let n = WorldCtx::current().with_world_ref(|w| w.resource::<Counter>().0);
             assert_eq!(n, 1);
         })
         .await;
@@ -81,7 +101,7 @@ The fastest dispatch pattern: resolve Handler parameters **once** at setup,
 then dispatch repeatedly from async tasks without re-resolution.
 
 ```rust
-use nexus_async_rt::{Runtime, spawn_boxed, with_world};
+use nexus_async_rt::{Runtime, WorldCtx, spawn_boxed};
 use nexus_rt::{IntoHandler, Handler, Res, ResMut, Resource, WorldBuilder};
 
 #[derive(Resource, Default)]
@@ -110,10 +130,12 @@ fn main() {
     let mut rt = Runtime::new(&mut world);
     rt.block_on(async move {
         spawn_boxed(async move {
+            // Cache the WorldCtx outside the loop — saves one TLS read per tick.
+            let ctx = WorldCtx::current();
             let tick = recv_tick().await;
 
             // Dispatch is one World borrow + the handler's pre-resolved fetch.
-            with_world(|w| handler.run(w, tick));
+            ctx.with_world(|w| handler.run(w, tick));
         })
         .await;
     });
@@ -127,22 +149,11 @@ the socket and the parsing state, and every parsed message goes through a
 pre-resolved handler. Dispatch cost is one `with_world` borrow plus the
 handler's parameter fetch (~1 cycle per `Res`/`ResMut`).
 
-## `WorldCtx` — A Copy Handle for Capturing
+## Capturing `WorldCtx` Across Many Tasks
 
-`WorldCtx` is a zero-cost `Copy` handle that implements `with_world` /
-`with_world_ref` without needing the thread-local. It captures cleanly into
-multiple tasks and makes the "I need World access here" contract explicit
-in signatures.
-
-```rust
-pub struct WorldCtx { /* Copy */ }
-
-impl WorldCtx {
-    pub fn new(world: &mut World) -> Self;
-    pub fn with_world<R>(&self, f: impl FnOnce(&mut World) -> R) -> R;
-    pub fn with_world_ref<R>(&self, f: impl FnOnce(&World) -> R) -> R;
-}
-```
+`WorldCtx` is `Copy`, so a single handle captures cleanly into as many
+closures as you like with no reference-counting cost. This is useful when
+you want to spawn a fan-out of tasks that all share World access.
 
 ```rust
 use nexus_async_rt::{Runtime, WorldCtx, spawn_boxed};
@@ -158,13 +169,12 @@ fn main() {
 
     let mut rt = Runtime::new(&mut world);
     rt.block_on(async {
-        let ctx = WorldCtx::new(nexus_async_rt::with_world(|w| w as *mut _ as usize) as _);
-        // (in practice WorldCtx::new is called from the runtime setup)
-        let _ = ctx;
+        // One TLS read; reuse across all spawned tasks below.
+        let ctx = WorldCtx::current();
 
         for _ in 0..4 {
             spawn_boxed(async move {
-                nexus_async_rt::with_world(|w| {
+                ctx.with_world(|w| {
                     w.resource_mut::<Stats>().msgs += 1;
                 });
             });
@@ -173,16 +183,17 @@ fn main() {
 }
 ```
 
-In practice you construct `WorldCtx` before entering `block_on` and pass it
-into your task-spawning code. It's `Copy`, so it captures into as many
-closures as you like with no reference-counting cost.
+`WorldCtx::new(&mut world)` is the alternative for the rarer case where
+you need to construct the handle *before* `block_on` is running (e.g.,
+moving it into a task that you'll spawn from inside `block_on`). Inside a
+task, prefer `current()`.
 
 ## Driving a Pipeline From an Async Task
 
 Pipelines are just `Handler`s — the same pattern works.
 
 ```rust
-use nexus_async_rt::{Runtime, spawn_boxed, with_world};
+use nexus_async_rt::{Runtime, WorldCtx, spawn_boxed};
 use nexus_rt::{Handler, Pipeline, Res, ResMut, Resource, WorldBuilder};
 
 #[derive(Resource, Default)]
@@ -210,8 +221,9 @@ fn main() {
     let mut rt = Runtime::new(&mut world);
     rt.block_on(async move {
         spawn_boxed(async move {
+            let ctx = WorldCtx::current();
             for tick in 1..=10 {
-                with_world(|w| pipeline.run(w, tick));
+                ctx.with_world(|w| pipeline.run(w, tick));
             }
         }).await;
     });
@@ -226,7 +238,7 @@ here — see nexus-rt `reactors.md`).
 
 ```rust
 use nexus_async_rt::{
-    Runtime, TcpStream, spawn_boxed, with_world, shutdown_signal,
+    Runtime, ShutdownSignal, TcpStream, WorldCtx, spawn_boxed,
 };
 use nexus_rt::{Handler, IntoHandler, ResMut, Resource, WorldBuilder};
 
@@ -254,16 +266,17 @@ fn main() -> std::io::Result<()> {
     let mut rt = Runtime::new(&mut world);
     rt.block_on(async move {
         spawn_boxed(async move {
+            let ctx = WorldCtx::current();
             let mut stream = connect_ws().await?;
             loop {
                 let q = read_quote(&mut stream).await?;
-                with_world(|w| handler.run(w, q));
+                ctx.with_world(|w| handler.run(w, q));
             }
             #[allow(unreachable_code)]
             Ok::<_, std::io::Error>(())
         });
 
-        shutdown_signal().await;
+        ShutdownSignal::current().await;
         Ok(())
     })
 }

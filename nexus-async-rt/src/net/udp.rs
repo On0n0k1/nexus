@@ -33,11 +33,16 @@ pub struct UdpSocket {
 
 impl UdpSocket {
     /// Bind to `addr`. Registration deferred to first IO poll.
-    pub fn bind(addr: SocketAddr, io: IoHandle) -> io::Result<Self> {
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a [`Runtime::block_on`](crate::Runtime::block_on)
+    /// context — fetches the runtime's [`IoHandle`] internally.
+    pub fn bind(addr: SocketAddr) -> io::Result<Self> {
         let inner = mio::net::UdpSocket::bind(addr)?;
         Ok(Self {
             inner,
-            io,
+            io: IoHandle::current(),
             token: None,
             registered_task: std::ptr::null_mut(),
         })
@@ -173,11 +178,15 @@ impl UdpSocket {
     /// Convert from a `std::net::UdpSocket`.
     ///
     /// The socket must be set to non-blocking mode before calling this.
-    pub fn from_std(socket: std::net::UdpSocket, io: IoHandle) -> io::Result<Self> {
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a runtime context.
+    pub fn from_std(socket: std::net::UdpSocket) -> io::Result<Self> {
         let inner = mio::net::UdpSocket::from_std(socket);
         Ok(Self {
             inner,
-            io,
+            io: IoHandle::current(),
             token: None,
             registered_task: std::ptr::null_mut(),
         })
@@ -435,8 +444,7 @@ mod tests {
         let done2 = done.clone();
 
         rt.block_on(async move {
-            let recv_sock =
-                UdpSocket::bind("127.0.0.1:0".parse().unwrap(), crate::context::io()).unwrap();
+            let recv_sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap();
             let recv_addr = recv_sock.local_addr().unwrap();
             // Receiver task.
             let flag = done2;
@@ -451,8 +459,7 @@ mod tests {
             // Sender task.
             spawn_boxed(async move {
                 crate::context::sleep(Duration::from_millis(10)).await;
-                let mut sock =
-                    UdpSocket::bind("127.0.0.1:0".parse().unwrap(), crate::context::io()).unwrap();
+                let mut sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap();
                 sock.send_to(b"test", recv_addr).await.unwrap();
             });
 
@@ -473,8 +480,7 @@ mod tests {
         let done2 = done.clone();
 
         rt.block_on(async move {
-            let server_sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), crate::context::io())
-                .expect("bind failed");
+            let server_sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap()).expect("bind failed");
             let server_addr = server_sock.local_addr().unwrap();
 
             // Server task: receive one datagram, echo back.
@@ -490,7 +496,7 @@ mod tests {
             spawn_boxed(async move {
                 crate::context::sleep(Duration::from_millis(10)).await;
                 let client_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-                let mut client = UdpSocket::bind(client_addr, crate::context::io()).unwrap();
+                let mut client = UdpSocket::bind(client_addr).unwrap();
                 client.send_to(b"hello udp", server_addr).await.unwrap();
                 let mut buf = [0u8; 64];
                 let (n, _from) = client.recv_from(&mut buf).await.unwrap();
@@ -515,9 +521,8 @@ mod tests {
         let done2 = done.clone();
 
         rt.block_on(async move {
-            let io = crate::context::io();
-            let a_sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), io).unwrap();
-            let b_sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), io).unwrap();
+            let a_sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            let b_sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap()).unwrap();
             let a_addr = a_sock.local_addr().unwrap();
             let b_addr = b_sock.local_addr().unwrap();
             // A sends to B via connected mode.
