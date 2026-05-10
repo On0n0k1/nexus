@@ -252,8 +252,9 @@ Zero allocation per wake.
 `ShutdownHandle` owns an `AtomicBool` flag and a waker slot. Signal handlers
 (SIGTERM, SIGINT) set the flag and wake the stored waker.
 
-Tasks await shutdown via `shutdown_signal().await`. The runtime checks the
-flag at the top of each loop iteration and re-polls the root future.
+Tasks await shutdown via `ShutdownSignal::current().await`. The runtime
+checks the flag at the top of each loop iteration and re-polls the root
+future.
 
 Single-waiter design. For multi-waiter shutdown, use `CancellationToken`
 (which supports hierarchical cancellation via parent/child relationships).

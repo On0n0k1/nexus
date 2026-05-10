@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   No behavior change for HTTP client pool usage — the new contract
   (in-pool values retained until last guard drops) doesn't bite
   app-lifetime client pools, and the API surface is unchanged.
+- **Adopted `nexus-async-rt` 0.7.0's `Type::current()` pattern.** Call
+  sites updated from `nexus_async_rt::io()` to
+  `nexus_async_rt::IoHandle::current()` in REST and WebSocket nexus
+  connection paths plus the `tls_handshake_piggyback` and
+  `ws_nexus_integration` test suites. No behavior change — same TLS
+  read, same `IoHandle` value.
+- Dependency declaration: `nexus-async-rt` `0.6.0` → `0.7.0` to pick
+  up the `Type::current()` API.
 
 ## [0.7.1] — 2026-05-10
 

@@ -9,7 +9,7 @@ sketch, and the gotchas worth remembering.
 on SIGTERM.
 
 ```rust
-use nexus_async_rt::{Runtime, shutdown_signal, spawn_boxed, sleep};
+use nexus_async_rt::{Runtime, ShutdownSignal, spawn_boxed, sleep};
 use nexus_rt::WorldBuilder;
 use std::time::Duration;
 
@@ -27,7 +27,7 @@ fn main() {
             }
         });
 
-        shutdown_signal().await;
+        ShutdownSignal::current().await;
         let was_running = worker.abort();
         eprintln!("shutdown (worker_running={was_running})");
     });
@@ -36,7 +36,7 @@ fn main() {
 async fn do_work() {}
 ```
 
-**Gotchas:** `shutdown_signal()` is single-waiter. If you have multiple
+**Gotchas:** `ShutdownSignal` is single-waiter. If you have multiple
 subsystems, fan out via `CancellationToken::cancel()`.
 
 ## 2. Per-Connection Task With Cancellation
@@ -46,8 +46,8 @@ parent token tied to SIGTERM.
 
 ```rust
 use nexus_async_rt::{
-    CancellationToken, Runtime, TcpListener, TcpStream,
-    shutdown_signal, spawn_boxed,
+    CancellationToken, Runtime, ShutdownSignal, TcpListener, TcpStream,
+    spawn_boxed,
 };
 use nexus_rt::WorldBuilder;
 
@@ -80,7 +80,7 @@ fn main() -> std::io::Result<()> {
             }
         });
 
-        shutdown_signal().await;
+        ShutdownSignal::current().await;
         root.cancel();
         Ok(())
     })
@@ -135,7 +135,7 @@ fn main() {
         // Consumer — processes frames.
         let consumer = spawn_boxed(async move {
             while let Ok(_frame) = frame_rx.recv().await {
-                // dispatch via with_world(|w| handler.run(w, _frame));
+                // dispatch via WorldCtx::current().with_world(|w| handler.run(w, _frame));
             }
         });
 
@@ -236,7 +236,7 @@ stays on our executor.
 
 ```rust
 use nexus_async_rt::{
-    Runtime, interval, spawn_boxed, with_world,
+    Runtime, WorldCtx, interval, spawn_boxed,
     tokio_compat::with_tokio,
 };
 use nexus_rt::{Resource, WorldBuilder};
@@ -252,6 +252,7 @@ fn main() {
     let mut rt = Runtime::new(&mut world);
     rt.block_on(async {
         spawn_boxed(async {
+            let ctx = WorldCtx::current();
             let mut tick = interval(Duration::from_secs(60));
             loop {
                 tick.tick().await;
@@ -261,7 +262,7 @@ fn main() {
                         .text().await.unwrap()
                 }).await;
                 let px: f64 = body.parse().unwrap_or(0.0);
-                with_world(|w| w.resource_mut::<RefPrice>().0 = px);
+                ctx.with_world(|w| w.resource_mut::<RefPrice>().0 = px);
             }
         }).await;
     });
@@ -277,7 +278,7 @@ borrow across an `.await`. The borrow checker enforces this.
 per message. Resolve once, dispatch many.
 
 ```rust
-use nexus_async_rt::{Runtime, spawn_boxed, with_world};
+use nexus_async_rt::{Runtime, WorldCtx, spawn_boxed};
 use nexus_rt::{IntoHandler, Handler, ResMut, Resource, WorldBuilder};
 
 #[derive(Resource, Default)]
@@ -300,9 +301,10 @@ fn main() {
     let mut rt = Runtime::new(&mut world);
     rt.block_on(async move {
         spawn_boxed(async move {
+            let ctx = WorldCtx::current();
             for _ in 0..100 {
                 let t = recv_tick().await;
-                with_world(|w| handler.run(w, t));
+                ctx.with_world(|w| handler.run(w, t));
             }
         }).await;
     });

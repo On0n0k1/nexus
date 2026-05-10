@@ -76,6 +76,34 @@ impl WorldCtx {
         }
     }
 
+    /// Returns a [`WorldCtx`] for the currently running runtime.
+    ///
+    /// Reads the world pointer installed by
+    /// [`Runtime::block_on`](crate::Runtime::block_on). The returned handle
+    /// is the same shape as one constructed via [`WorldCtx::new`] — same
+    /// [`Copy`] semantics, same [`with_world`](Self::with_world) /
+    /// [`with_world_ref`](Self::with_world_ref) methods. Mirrors
+    /// `tokio::runtime::Handle::current()`.
+    ///
+    /// Use [`WorldCtx::new`] explicitly when constructing a handle outside
+    /// the runtime context (e.g., capturing into a task before `block_on`).
+    /// Use `current()` when you're already inside a task and want the
+    /// active runtime's world.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a [`Runtime::block_on`](crate::Runtime::block_on)
+    /// context.
+    #[must_use]
+    pub fn current() -> WorldCtx {
+        let ptr = crate::context::current_world_ptr();
+        assert!(
+            !ptr.is_null(),
+            "WorldCtx::current() called outside Runtime::block_on"
+        );
+        Self { ptr }
+    }
+
     /// Run a closure with exclusive [`World`] access.
     ///
     /// Executes synchronously inline — no await point. The closure

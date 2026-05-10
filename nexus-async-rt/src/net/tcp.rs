@@ -979,8 +979,9 @@ mod tests {
         let done2 = done.clone();
 
         rt.block_on(async move {
-            let listener = TcpListener::bind("127.0.0.1:0".parse().unwrap(), crate::context::io())
-                .expect("bind failed");
+            let listener =
+                TcpListener::bind("127.0.0.1:0".parse().unwrap(), crate::IoHandle::current())
+                    .expect("bind failed");
             let addr = listener.local_addr().unwrap();
             spawn_boxed(async move {
                 let mut listener = listener;
@@ -990,7 +991,7 @@ mod tests {
                 stream.write_all(&buf[..n]).await.unwrap();
             });
 
-            let io = crate::context::io();
+            let io = crate::IoHandle::current();
             let flag = done2;
             spawn_boxed(async move {
                 crate::context::sleep(std::time::Duration::from_millis(10)).await;

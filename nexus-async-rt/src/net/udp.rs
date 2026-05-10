@@ -436,7 +436,8 @@ mod tests {
 
         rt.block_on(async move {
             let recv_sock =
-                UdpSocket::bind("127.0.0.1:0".parse().unwrap(), crate::context::io()).unwrap();
+                UdpSocket::bind("127.0.0.1:0".parse().unwrap(), crate::IoHandle::current())
+                    .unwrap();
             let recv_addr = recv_sock.local_addr().unwrap();
             // Receiver task.
             let flag = done2;
@@ -452,7 +453,8 @@ mod tests {
             spawn_boxed(async move {
                 crate::context::sleep(Duration::from_millis(10)).await;
                 let mut sock =
-                    UdpSocket::bind("127.0.0.1:0".parse().unwrap(), crate::context::io()).unwrap();
+                    UdpSocket::bind("127.0.0.1:0".parse().unwrap(), crate::IoHandle::current())
+                        .unwrap();
                 sock.send_to(b"test", recv_addr).await.unwrap();
             });
 
@@ -473,8 +475,9 @@ mod tests {
         let done2 = done.clone();
 
         rt.block_on(async move {
-            let server_sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), crate::context::io())
-                .expect("bind failed");
+            let server_sock =
+                UdpSocket::bind("127.0.0.1:0".parse().unwrap(), crate::IoHandle::current())
+                    .expect("bind failed");
             let server_addr = server_sock.local_addr().unwrap();
 
             // Server task: receive one datagram, echo back.
@@ -490,7 +493,7 @@ mod tests {
             spawn_boxed(async move {
                 crate::context::sleep(Duration::from_millis(10)).await;
                 let client_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-                let mut client = UdpSocket::bind(client_addr, crate::context::io()).unwrap();
+                let mut client = UdpSocket::bind(client_addr, crate::IoHandle::current()).unwrap();
                 client.send_to(b"hello udp", server_addr).await.unwrap();
                 let mut buf = [0u8; 64];
                 let (n, _from) = client.recv_from(&mut buf).await.unwrap();
@@ -515,7 +518,7 @@ mod tests {
         let done2 = done.clone();
 
         rt.block_on(async move {
-            let io = crate::context::io();
+            let io = crate::IoHandle::current();
             let a_sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), io).unwrap();
             let b_sock = UdpSocket::bind("127.0.0.1:0".parse().unwrap(), io).unwrap();
             let a_addr = a_sock.local_addr().unwrap();

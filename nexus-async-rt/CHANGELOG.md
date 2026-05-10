@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+- **Bare-noun context-fetcher free functions converted to
+  `Type::current()` pattern.** The four functions that returned a handle
+  or future (not a future factory) now live as inherent `current()`
+  methods on the relevant type. Mirrors `tokio::runtime::Handle::current()`
+  convention; makes call sites self-documenting and discourages threading
+  handles through APIs.
+
+  Migration:
+
+  | 0.6.x | 0.7.0 |
+  |---|---|
+  | `nexus_async_rt::io()` | `IoHandle::current()` |
+  | `nexus_async_rt::with_world(\|w\| ...)` | `WorldCtx::current().with_world(\|w\| ...)` |
+  | `nexus_async_rt::with_world_ref(\|w\| ...)` | `WorldCtx::current().with_world_ref(\|w\| ...)` |
+  | `nexus_async_rt::shutdown_signal()` | `ShutdownSignal::current()` |
+
+  Future factories (`sleep`, `sleep_until`, `interval`, `interval_at`,
+  `after`, `after_delay`, `timeout`, `timeout_at`, `yield_now`) and the
+  pure value getter (`event_time`) stay as free functions — idiomatic for
+  the Rust async ecosystem. The future *is* the API; there's no enclosing
+  handle to fetch.
+
+### Added
+
+- `IoHandle::current()`, `WorldCtx::current()`, `ShutdownSignal::current()`
+  — TLS-based fetchers for the active runtime context. All three panic
+  outside [`Runtime::block_on`]; all three are `#[must_use]`.
+
 ## [0.6.0] — 2026-05-08
 
 The "byte-channel error contract cleanup" release. Companion to

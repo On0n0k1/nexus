@@ -106,15 +106,19 @@ loop {
 ### I/O (mio-based)
 
 ```rust
-use nexus_async_rt::{TcpStream, TcpListener, io};
+use nexus_async_rt::{TcpStream, TcpListener, IoHandle};
 
 // Client
-let stream = TcpStream::connect(addr, io())?;
+let stream = TcpStream::connect(addr, IoHandle::current())?;
 
 // Server
-let listener = TcpListener::bind(addr, io())?;
+let listener = TcpListener::bind(addr, IoHandle::current())?;
 let (stream, peer) = listener.accept().await?;
 ```
+
+`IoHandle::current()` returns the IO handle for the active runtime —
+mirrors `tokio::runtime::Handle::current()`. Panics if called outside
+[`Runtime::block_on`].
 
 ### Channels
 
@@ -138,18 +142,23 @@ let (tx, rx) = channel::spsc::channel(64);
 Access nexus-rt `World` resources from async tasks:
 
 ```rust
-with_world(|world| {
+WorldCtx::current().with_world(|world| {
     let config = world.resource::<Config>();
     // ...
 });
 ```
+
+`WorldCtx::current()` returns the `World` handle for the active runtime
+(panics outside `block_on`). Use `WorldCtx::new(&mut world)` instead
+when constructing the handle outside the runtime context (e.g.,
+capturing into a task before `block_on`).
 
 ### Graceful shutdown
 
 ```rust
 rt.block_on(async {
     // ... spawn tasks ...
-    shutdown_signal().await; // waits for Ctrl+C
+    ShutdownSignal::current().await; // waits for Ctrl+C
 });
 ```
 

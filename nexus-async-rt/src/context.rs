@@ -1,19 +1,32 @@
 //! Thread-local runtime context.
 //!
-//! All runtime state is accessible via free functions that read from
-//! thread-local storage. The TLS slots are set by [`Runtime::block_on`]
-//! and cleared on exit. All const-initialized for zero first-access cost.
+//! Two access shapes for runtime state, by intent:
+//!
+//! - **Handles for the current runtime** — [`IoHandle::current`](crate::IoHandle::current),
+//!   [`WorldCtx::current`](crate::WorldCtx::current),
+//!   [`ShutdownSignal::current`](crate::ShutdownSignal::current). Inherent
+//!   `current()` methods on the type, mirroring `tokio::runtime::Handle::current()`.
+//!   Use when you need the handle/future itself.
+//! - **Future factories and value getters** — free functions [`sleep`],
+//!   [`sleep_until`], [`interval`], [`interval_at`], [`after`],
+//!   [`after_delay`], [`timeout`], [`timeout_at`], [`yield_now`],
+//!   [`event_time`]. These produce a value and don't fit the `Type::current()`
+//!   shape (the future is the API; there's no enclosing handle to fetch).
+//!
+//! All readers panic if called outside a [`Runtime::block_on`](crate::Runtime::block_on)
+//! context. The TLS slots are installed by `block_on` and cleared on exit;
+//! const-initialized for zero first-access cost.
 //!
 //! ```ignore
-//! use nexus_async_rt::{spawn, with_world, sleep, io, shutdown_signal};
+//! use nexus_async_rt::{spawn_boxed, sleep, IoHandle, WorldCtx, ShutdownSignal};
 //!
 //! rt.block_on(async {
-//!     spawn(async {
-//!         with_world(|world| { /* ... */ });
+//!     spawn_boxed(async {
+//!         WorldCtx::current().with_world(|world| { /* ... */ });
 //!         sleep(Duration::from_secs(1)).await;
-//!         let listener = TcpListener::bind(addr, io());
+//!         let listener = TcpListener::bind(addr, IoHandle::current());
 //!     });
-//!     shutdown_signal().await;
+//!     ShutdownSignal::current().await;
 //! });
 //! ```
 
@@ -22,7 +35,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
-use crate::io::{IoDriver, IoHandle};
+use crate::io::IoDriver;
 use crate::timer::{TimerDriver, TimerHandle};
 
 // =============================================================================
@@ -100,54 +113,34 @@ pub(crate) fn assert_in_runtime(msg: &str) {
 }
 
 // =============================================================================
-// Public free functions — the user-facing API
+// pub(crate) TLS readers — back the inherent `Type::current()` methods on
+// `IoHandle`, `WorldCtx`, and `ShutdownSignal`. Kept in this module so the
+// `CTX_*` thread-locals don't need to be exposed elsewhere in the crate.
 // =============================================================================
 
-/// Access the [`World`](nexus_rt::World) with exclusive access.
-///
-/// Runs the closure synchronously inline. Must be called from within
-/// [`crate::Runtime::block_on`].
-///
-/// # Panics
-///
-/// Panics if called outside a runtime context.
-pub fn with_world<R>(f: impl FnOnce(&mut nexus_rt::World) -> R) -> R {
-    let ptr = CTX_WORLD.with(Cell::get);
-    assert!(
-        !ptr.is_null(),
-        "with_world() called outside Runtime::block_on"
-    );
-    // SAFETY: ptr set by install(), valid for Runtime lifetime.
-    // Single-threaded — exclusive access.
-    let world = unsafe { &mut *ptr };
-    f(world)
+/// Returns the raw `IoDriver` pointer installed for the current runtime, or
+/// null if outside a runtime context.
+pub(crate) fn current_io_ptr() -> *mut IoDriver {
+    CTX_IO.with(Cell::get)
 }
 
-/// Access the [`World`](nexus_rt::World) with shared access.
-///
-/// # Panics
-///
-/// Panics if called outside a runtime context.
-pub fn with_world_ref<R>(f: impl FnOnce(&nexus_rt::World) -> R) -> R {
-    let ptr = CTX_WORLD.with(Cell::get);
-    assert!(
-        !ptr.is_null(),
-        "with_world_ref() called outside Runtime::block_on"
-    );
-    let world = unsafe { &*ptr };
-    f(world)
+/// Returns the raw `World` pointer installed for the current runtime, or null
+/// if outside a runtime context.
+pub(crate) fn current_world_ptr() -> *mut nexus_rt::World {
+    CTX_WORLD.with(Cell::get)
 }
 
-/// Returns the IO handle for registering mio sources.
-///
-/// # Panics
-///
-/// Panics if called outside a runtime context.
-pub fn io() -> IoHandle {
-    let ptr = CTX_IO.with(Cell::get);
-    assert!(!ptr.is_null(), "io() called outside Runtime::block_on");
-    // SAFETY: ptr valid for Runtime lifetime.
-    IoHandle::new(unsafe { &mut *ptr })
+/// Returns `(flag, waker)` pointers for the current runtime's shutdown
+/// machinery, or `(null, null)` if outside a runtime context. Both pointers
+/// are non-null whenever the runtime is installed (`install` writes them
+/// together).
+pub(crate) fn current_shutdown_ptrs() -> (
+    *const AtomicBool,
+    *const Arc<std::sync::Mutex<Option<std::task::Waker>>>,
+) {
+    let flag = CTX_SHUTDOWN.with(Cell::get);
+    let waker = CTX_SHUTDOWN_WAKER.with(Cell::get);
+    (flag, waker)
 }
 
 /// Create a [`Sleep`](crate::Sleep) future that completes after `duration`.
@@ -266,20 +259,4 @@ pub fn interval_at(start: Instant, period: Duration) -> crate::timer::Interval {
 /// poll. Other ready tasks get a turn before this task resumes.
 pub fn yield_now() -> crate::timer::YieldNow {
     crate::timer::YieldNow(false)
-}
-
-/// Returns a future that resolves when shutdown is triggered.
-pub fn shutdown_signal() -> crate::ShutdownSignal {
-    let ptr = CTX_SHUTDOWN.with(Cell::get);
-    assert!(
-        !ptr.is_null(),
-        "shutdown_signal() called outside Runtime::block_on"
-    );
-    let waker_ptr = CTX_SHUTDOWN_WAKER.with(Cell::get);
-    // SAFETY: waker_ptr was set by install() and is valid for Runtime lifetime.
-    let task_waker = unsafe { (*waker_ptr).clone() };
-    crate::ShutdownSignal {
-        flag: ptr,
-        task_waker,
-    }
 }

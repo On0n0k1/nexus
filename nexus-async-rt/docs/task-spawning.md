@@ -205,7 +205,7 @@ rt.block_on(async {
         }
     });
 
-    nexus_async_rt::shutdown_signal().await;
+    nexus_async_rt::ShutdownSignal::current().await;
 });
 
 async fn recv_next() -> u64 { 0 }
@@ -262,7 +262,7 @@ fn main() -> std::io::Result<()> {
             Ok::<_, std::io::Error>(())
         });
 
-        nexus_async_rt::shutdown_signal().await;
+        nexus_async_rt::ShutdownSignal::current().await;
         Ok(())
     })
 }

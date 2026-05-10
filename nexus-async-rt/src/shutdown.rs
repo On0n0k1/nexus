@@ -20,7 +20,7 @@
 //!     spawn_boxed(connection_tasks...);
 //!
 //!     // Wait for SIGTERM/SIGINT.
-//!     nexus_async_rt::shutdown_signal().await;
+//!     nexus_async_rt::ShutdownSignal::current().await;
 //!
 //!     // Drain connections, flush buffers, etc.
 //! });
@@ -112,6 +112,39 @@ impl ShutdownHandle {
 pub struct ShutdownSignal {
     pub(crate) flag: *const AtomicBool,
     pub(crate) task_waker: Arc<std::sync::Mutex<Option<Waker>>>,
+}
+
+impl ShutdownSignal {
+    /// Returns a [`ShutdownSignal`] future for the currently running runtime.
+    ///
+    /// The returned future resolves when shutdown is triggered — either by
+    /// a Unix signal handler installed via
+    /// [`Runtime::install_signal_handlers`](crate::Runtime::install_signal_handlers)
+    /// (SIGTERM / SIGINT) or by an explicit
+    /// [`ShutdownHandle::trigger`] call. Mirrors
+    /// `tokio::runtime::Handle::current()`. Read as
+    /// `ShutdownSignal::current().await` — "await the current shutdown
+    /// signal".
+    ///
+    /// **Single waiter only** — see the type-level docs. For multi-waiter
+    /// patterns, use [`CancellationToken`](crate::CancellationToken).
+    ///
+    /// # Panics
+    ///
+    /// Panics if called outside a [`Runtime::block_on`](crate::Runtime::block_on)
+    /// context.
+    #[must_use]
+    pub fn current() -> ShutdownSignal {
+        let (flag, waker_ptr) = crate::context::current_shutdown_ptrs();
+        assert!(
+            !flag.is_null(),
+            "ShutdownSignal::current() called outside Runtime::block_on"
+        );
+        // SAFETY: install() writes flag and waker pointers together; flag
+        // non-null implies waker_ptr non-null and valid for Runtime lifetime.
+        let task_waker = unsafe { (*waker_ptr).clone() };
+        ShutdownSignal { flag, task_waker }
+    }
 }
 
 impl Future for ShutdownSignal {

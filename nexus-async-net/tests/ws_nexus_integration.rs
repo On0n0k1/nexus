@@ -27,7 +27,7 @@ fn text_echo_loopback() {
 
     rt.block_on(async {
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let mut listener = TcpListener::bind(addr, nexus_async_rt::io()).unwrap();
+        let mut listener = TcpListener::bind(addr, nexus_async_rt::IoHandle::current()).unwrap();
         let local_addr = listener.local_addr().unwrap();
 
         // Server
@@ -44,7 +44,7 @@ fn text_echo_loopback() {
         });
 
         // Client
-        let tcp = TcpStream::connect(local_addr, nexus_async_rt::io()).unwrap();
+        let tcp = TcpStream::connect(local_addr, nexus_async_rt::IoHandle::current()).unwrap();
         let url = format!("ws://127.0.0.1:{}/ws", local_addr.port());
         let mut ws = WsStreamBuilder::new()
             .connect_with(NexusAsyncReadAdapter::new(tcp), &url)
@@ -74,7 +74,7 @@ fn binary_roundtrip_loopback() {
 
     rt.block_on(async {
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let mut listener = TcpListener::bind(addr, nexus_async_rt::io()).unwrap();
+        let mut listener = TcpListener::bind(addr, nexus_async_rt::IoHandle::current()).unwrap();
         let local_addr = listener.local_addr().unwrap();
 
         let server = spawn_boxed(async move {
@@ -92,7 +92,7 @@ fn binary_roundtrip_loopback() {
             ws.send_binary(&[0xCD; 128]).await.unwrap();
         });
 
-        let tcp = TcpStream::connect(local_addr, nexus_async_rt::io()).unwrap();
+        let tcp = TcpStream::connect(local_addr, nexus_async_rt::IoHandle::current()).unwrap();
         let url = format!("ws://127.0.0.1:{}/ws", local_addr.port());
         let mut ws = WsStreamBuilder::new()
             .connect_with(NexusAsyncReadAdapter::new(tcp), &url)
@@ -125,7 +125,7 @@ fn ping_pong_loopback() {
 
     rt.block_on(async {
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let mut listener = TcpListener::bind(addr, nexus_async_rt::io()).unwrap();
+        let mut listener = TcpListener::bind(addr, nexus_async_rt::IoHandle::current()).unwrap();
         let local_addr = listener.local_addr().unwrap();
 
         let server = spawn_boxed(async move {
@@ -145,7 +145,7 @@ fn ping_pong_loopback() {
             ws.send_pong(&ping_data).await.unwrap();
         });
 
-        let tcp = TcpStream::connect(local_addr, nexus_async_rt::io()).unwrap();
+        let tcp = TcpStream::connect(local_addr, nexus_async_rt::IoHandle::current()).unwrap();
         let url = format!("ws://127.0.0.1:{}/ws", local_addr.port());
         let mut ws = WsStreamBuilder::new()
             .connect_with(NexusAsyncReadAdapter::new(tcp), &url)
@@ -175,7 +175,7 @@ fn close_handshake_loopback() {
 
     rt.block_on(async {
         let addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
-        let mut listener = TcpListener::bind(addr, nexus_async_rt::io()).unwrap();
+        let mut listener = TcpListener::bind(addr, nexus_async_rt::IoHandle::current()).unwrap();
         let local_addr = listener.local_addr().unwrap();
 
         let server = spawn_boxed(async move {
@@ -192,7 +192,7 @@ fn close_handshake_loopback() {
             }
         });
 
-        let tcp = TcpStream::connect(local_addr, nexus_async_rt::io()).unwrap();
+        let tcp = TcpStream::connect(local_addr, nexus_async_rt::IoHandle::current()).unwrap();
         let url = format!("ws://127.0.0.1:{}/ws", local_addr.port());
         let mut ws = WsStreamBuilder::new()
             .connect_with(NexusAsyncReadAdapter::new(tcp), &url)

@@ -1236,11 +1236,11 @@ mod tests {
         let mut rt = Runtime::new(&mut world);
 
         let result = rt.block_on(async move {
-            crate::context::with_world(|world| {
+            crate::WorldCtx::current().with_world(|world| {
                 let v = world.resource::<Val>().0;
                 world.resource_mut::<Out>().0 = v + 10;
             });
-            crate::context::with_world_ref(|world| world.resource::<Out>().0)
+            crate::WorldCtx::current().with_world_ref(|world| world.resource::<Out>().0)
         });
 
         assert_eq!(result, 52);
@@ -1261,8 +1261,8 @@ mod tests {
         .into_handler(world.registry());
 
         let result = rt.block_on(async move {
-            crate::context::with_world(|world| h.run(world, 10));
-            crate::context::with_world_ref(|world| world.resource::<Out>().0)
+            crate::WorldCtx::current().with_world(|world| h.run(world, 10));
+            crate::WorldCtx::current().with_world_ref(|world| world.resource::<Out>().0)
         });
 
         assert_eq!(result, 52);
@@ -1279,7 +1279,7 @@ mod tests {
         rt.block_on(async move {
             for i in 1..=3u64 {
                 spawn_boxed(async move {
-                    crate::context::with_world(|world| {
+                    crate::WorldCtx::current().with_world(|world| {
                         world.resource_mut::<Out>().0 += i;
                     });
                 });
@@ -1312,7 +1312,7 @@ mod tests {
 
         rt.block_on_busy(async move {
             spawn_boxed(async move {
-                crate::context::with_world(|world| {
+                crate::WorldCtx::current().with_world(|world| {
                     world.resource_mut::<Out>().0 = 99;
                 });
             });
@@ -1373,7 +1373,7 @@ mod tests {
 
         rt.block_on(async move {
             spawn_slab(async move {
-                crate::context::with_world(|world| {
+                crate::WorldCtx::current().with_world(|world| {
                     world.resource_mut::<Out>().0 = 77;
                 });
             });
@@ -1397,13 +1397,13 @@ mod tests {
         rt.block_on(async move {
             // Box-allocated
             spawn_boxed(async move {
-                crate::context::with_world(|world| {
+                crate::WorldCtx::current().with_world(|world| {
                     world.resource_mut::<Out>().0 += 10;
                 });
             });
             // Slab-allocated
             spawn_slab(async move {
-                crate::context::with_world(|world| {
+                crate::WorldCtx::current().with_world(|world| {
                     world.resource_mut::<Out>().0 += 20;
                 });
             });
@@ -1431,7 +1431,7 @@ mod tests {
         rt.block_on(async move {
             let claim = claim_slab();
             claim.spawn(async move {
-                crate::context::with_world(|world| {
+                crate::WorldCtx::current().with_world(|world| {
                     world.resource_mut::<Out>().0 = 55;
                 });
             });
@@ -1489,14 +1489,14 @@ mod tests {
 
         rt.block_on(async move {
             spawn_boxed(async move {
-                crate::context::with_world(|world| {
+                crate::WorldCtx::current().with_world(|world| {
                     world.resource_mut::<Out>().0 += 10;
                 });
             });
 
             let claim = claim_slab();
             claim.spawn(async move {
-                crate::context::with_world(|world| {
+                crate::WorldCtx::current().with_world(|world| {
                     world.resource_mut::<Out>().0 += 20;
                 });
             });
@@ -1547,7 +1547,7 @@ mod tests {
         rt.block_on(async move {
             spawn_boxed(async move {
                 crate::context::sleep(Duration::from_millis(50)).await;
-                crate::context::with_world(|world| {
+                crate::WorldCtx::current().with_world(|world| {
                     world.resource_mut::<Out>().0 = 42;
                 });
             });
@@ -1664,7 +1664,7 @@ mod tests {
 
         rt.block_on(async move {
             spawn_boxed(async move {
-                crate::context::with_world(|world| {
+                crate::WorldCtx::current().with_world(|world| {
                     world.resource_mut::<Out>().0 = 99;
                 });
             });
@@ -1672,7 +1672,7 @@ mod tests {
             // Yield so the spawned task gets a turn.
             crate::context::yield_now().await;
 
-            let val = crate::context::with_world_ref(|world| world.resource::<Out>().0);
+            let val = crate::WorldCtx::current().with_world_ref(|world| world.resource::<Out>().0);
             assert_eq!(val, 99);
         });
     }

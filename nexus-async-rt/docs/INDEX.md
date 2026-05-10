@@ -21,8 +21,8 @@ wakers, mio-driven IO, and a tokio bridge for ecosystem code on cold paths.
 - [Cancellation](cancellation.md) — `CancellationToken`, hierarchical
   cancellation, `ShutdownSignal`
 - [Channels](channels.md) — `local`, `spsc`, `mpsc`, byte-oriented variants
-- [Integration with nexus-rt](integration-with-nexus-rt.md) — `with_world`,
-  `WorldCtx`, pre-resolved handler dispatch from async tasks
+- [Integration with nexus-rt](integration-with-nexus-rt.md) — `WorldCtx`,
+  `WorldCtx::current()`, pre-resolved handler dispatch from async tasks
 - [Tokio Compatibility](tokio-compat.md) — `with_tokio`, `spawn_on_tokio`,
   bridging ecosystem crates
 - [Patterns](patterns.md) — Cookbook: event loops, per-connection tasks,
