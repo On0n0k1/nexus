@@ -5,7 +5,7 @@ use std::net::ToSocketAddrs;
 use std::pin::Pin;
 
 use nexus_async_rt::TcpStream;
-use nexus_net::http::{HttpError, ResponseReader};
+use nexus_net::http::{HTTP_HANDSHAKE_BUFFER, HttpError, ResponseReader};
 use nexus_net::rest::{Request, RestError, RestResponse};
 #[cfg(feature = "tls")]
 use nexus_net::tls::TlsConfig;
@@ -417,7 +417,7 @@ impl<S: WireStream + Unpin> HttpConnection<S> {
                     "response head exceeds reader capacity",
                 )));
             }
-            match fill_async(&mut self.stream, reader, 4096).await {
+            match fill_async(&mut self.stream, reader, HTTP_HANDSHAKE_BUFFER).await {
                 Ok(0) => {
                     self.poisoned = true;
                     return Err(RestError::ConnectionClosed(
@@ -483,7 +483,7 @@ impl<S: WireStream + Unpin> HttpConnection<S> {
                     available: 0,
                 }));
             }
-            match fill_async(&mut self.stream, reader, 4096).await {
+            match fill_async(&mut self.stream, reader, HTTP_HANDSHAKE_BUFFER).await {
                 Ok(0) => {
                     self.poisoned = true;
                     return Err(RestError::ConnectionClosed(
@@ -507,9 +507,9 @@ impl<S: WireStream + Unpin> HttpConnection<S> {
 
         let max_body = reader.max_body_size_limit();
         let mut decoder = ChunkedDecoder::new();
-        let mut body = Vec::with_capacity(4096);
-        let mut wire_buf = [0u8; 4096];
-        let mut decode_buf = [0u8; 4096];
+        let mut body = Vec::with_capacity(HTTP_HANDSHAKE_BUFFER);
+        let mut wire_buf = [0u8; HTTP_HANDSHAKE_BUFFER];
+        let mut decode_buf = [0u8; HTTP_HANDSHAKE_BUFFER];
 
         // Decode any chunk data that arrived with the headers.
         let remainder = reader.remainder();
@@ -680,7 +680,7 @@ mod tests {
 
         let mock = NexusAsyncReadAdapter::new(MockAsyncStream::new(&ok_response(r#"{"ok":true}"#)));
         let mut writer = RequestWriter::new("api.example.com").unwrap();
-        let mut reader = ResponseReader::new(4096);
+        let mut reader = ResponseReader::new(HTTP_HANDSHAKE_BUFFER);
         let mut conn = HttpConnection::new(mock);
 
         block_on(async {
@@ -702,7 +702,7 @@ mod tests {
         let mock =
             NexusAsyncReadAdapter::new(MockAsyncStream::new(&ok_response(r#"{"filled":true}"#)));
         let mut writer = RequestWriter::new("api.example.com").unwrap();
-        let mut reader = ResponseReader::new(4096);
+        let mut reader = ResponseReader::new(HTTP_HANDSHAKE_BUFFER);
         let mut conn = HttpConnection::new(mock);
 
         block_on(async {
@@ -724,7 +724,7 @@ mod tests {
         let resp_bytes = b"HTTP/1.1 200 OK\r\nX-Request-Id: abc\r\nContent-Length: 2\r\n\r\n{}";
         let mock = NexusAsyncReadAdapter::new(MockAsyncStream::new(resp_bytes));
         let mut writer = RequestWriter::new("host").unwrap();
-        let mut reader = ResponseReader::new(4096);
+        let mut reader = ResponseReader::new(HTTP_HANDSHAKE_BUFFER);
         let mut conn = HttpConnection::new(mock);
 
         block_on(async {
@@ -742,7 +742,7 @@ mod tests {
         let resp_bytes = b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\npartial";
         let mock = NexusAsyncReadAdapter::new(MockAsyncStream::new(resp_bytes));
         let mut writer = RequestWriter::new("host").unwrap();
-        let mut reader = ResponseReader::new(4096);
+        let mut reader = ResponseReader::new(HTTP_HANDSHAKE_BUFFER);
         let mut conn = HttpConnection::new(mock);
 
         block_on(async {
@@ -764,7 +764,7 @@ mod tests {
             b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n";
         let mock = NexusAsyncReadAdapter::new(MockAsyncStream::new(resp_bytes));
         let mut writer = RequestWriter::new("host").unwrap();
-        let mut reader = ResponseReader::new(4096);
+        let mut reader = ResponseReader::new(HTTP_HANDSHAKE_BUFFER);
         let mut conn = HttpConnection::new(mock);
 
         block_on(async {

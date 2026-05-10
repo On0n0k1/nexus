@@ -8,6 +8,8 @@
 use std::future::poll_fn;
 use std::pin::Pin;
 
+#[cfg(test)]
+use nexus_net::http::HTTP_HANDSHAKE_BUFFER;
 use nexus_net::http::ResponseReader;
 use nexus_net::rest::{RequestWriter, RestError};
 #[cfg(feature = "tls")]
@@ -467,7 +469,7 @@ mod tests {
             n,
             || AtomicClientSlot {
                 writer: RequestWriter::new("host").unwrap(),
-                reader: ResponseReader::new(4096),
+                reader: ResponseReader::new(HTTP_HANDSHAKE_BUFFER),
                 conn: None,
             },
             |slot| {
@@ -499,7 +501,7 @@ mod tests {
     fn atomic_slot_needs_reconnect() {
         let slot = AtomicClientSlot {
             writer: RequestWriter::new("host").unwrap(),
-            reader: ResponseReader::new(4096),
+            reader: ResponseReader::new(HTTP_HANDSHAKE_BUFFER),
             conn: None,
         };
         assert!(slot.needs_reconnect());
@@ -515,7 +517,7 @@ mod tests {
 
         tokio::spawn(async move {
             let (mut tcp, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 4096];
+            let mut buf = [0u8; HTTP_HANDSHAKE_BUFFER];
             let _ = tcp.read(&mut buf).await.unwrap();
             let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
             tcp.write_all(resp).await.unwrap();
@@ -595,7 +597,7 @@ mod tests {
         tokio::spawn(async move {
             for _ in 0..4 {
                 let (mut tcp, _) = listener.accept().await.unwrap();
-                let mut buf = [0u8; 4096];
+                let mut buf = [0u8; HTTP_HANDSHAKE_BUFFER];
                 let _ = tcp.read(&mut buf).await.unwrap();
                 let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
                 tcp.write_all(resp).await.unwrap();

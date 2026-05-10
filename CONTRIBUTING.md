@@ -210,6 +210,50 @@ Every public item needs documentation that explains:
 
 Unsafe code requires a `// SAFETY:` comment explaining why it's sound. "It's faster" is not sufficient — explain the invariants being upheld.
 
+### Builder and Setter Naming
+
+Workspace convention for naming methods that configure or mutate
+state. Matches Rust ecosystem patterns (`Vec`, `String`, `BufReader`,
+`tokio`, `hyper`).
+
+**Builder methods** take `mut self` and return `Self`:
+
+- `*_capacity` — application-level allocated buffer (matches
+  `Vec::with_capacity`, `String::with_capacity`,
+  `BufReader::with_capacity`).
+- `*_size` (in OS-option setters) — kernel-side buffer size for
+  socket options (matches `tokio::TcpSocket::set_recv_buffer_size`,
+  `socket2::Socket::set_*_buffer_size`).
+- `max_*_size` — application-level upper limit (matches
+  `hyper::Builder::max_buf_size`, `hyper::Body::limit_max_size`).
+- No `set_` prefix on builder methods. Builders compose; setters
+  mutate.
+
+**Runtime setters** on already-constructed types take `&mut self`,
+return `()`, and use the `set_*` prefix (matches `Vec::set_len`).
+This is the standard distinction between "configure during
+construction" and "mutate after construction."
+
+Example:
+
+```rust
+use nexus_async_net::ws::WsStreamBuilder;
+
+// Builder — no `set_` prefix; chains `mut self -> Self`.
+let mut stream = WsStreamBuilder::new()
+    .buffer_capacity(8192)        // app buffer
+    .recv_buffer_size(64 * 1024)  // SO_RCVBUF
+    .max_message_size(1 << 20)    // app limit
+    .connect("wss://exchange.com/ws")
+    .await?;
+
+// Runtime mutator — `set_` prefix; takes `&mut self`.
+stream.set_max_read_size(16 * 1024);  // adjust after construction
+```
+
+When in doubt, look at how `std`, `tokio`, or `hyper` names a similar
+concept.
+
 ## Submitting Changes
 
 1. **Open an issue first** for non-trivial changes. Let's discuss the approach before you write code.

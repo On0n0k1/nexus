@@ -7,6 +7,8 @@ use std::future::poll_fn;
 use std::pin::Pin;
 
 use nexus_async_rt::AsyncWrite;
+#[cfg(test)]
+use nexus_net::http::HTTP_HANDSHAKE_BUFFER;
 use nexus_net::http::ResponseReader;
 use nexus_net::rest::{RequestWriter, RestError};
 #[cfg(feature = "tls")]
@@ -553,7 +555,7 @@ mod tests {
     fn make_disconnected_slot() -> ClientSlot {
         ClientSlot {
             writer: RequestWriter::new("host").unwrap(),
-            reader: ResponseReader::new(4096),
+            reader: ResponseReader::new(HTTP_HANDSHAKE_BUFFER),
             conn: None,
         }
     }

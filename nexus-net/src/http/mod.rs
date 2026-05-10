@@ -15,6 +15,21 @@ mod error;
 mod request;
 mod response;
 
+/// Default capacity for HTTP read/decode/scratch buffers.
+///
+/// Sized to comfortably fit a typical HTTP/1.1 head section (request
+/// line + headers up to ~3-4 KiB) in a single allocation, which is the
+/// dominant use site. Also used by `nexus-async-net` as the per-recv
+/// read cap during WebSocket upgrade and REST request/response cycles,
+/// and as the initial capacity of intermediate body / wire / decode
+/// scratch buffers.
+///
+/// Currently a hardcoded internal default. Callers with unusually large
+/// HTTP heads (very long cookies, many or large header values) would
+/// today need to work around by sending fewer headers; a builder knob
+/// is a separate concern.
+pub const HTTP_HANDSHAKE_BUFFER: usize = 4096;
+
 pub use chunked::ChunkedDecoder;
 pub use error::HttpError;
 // RequestReader parses inbound HTTP requests (used for WS upgrade handshake).

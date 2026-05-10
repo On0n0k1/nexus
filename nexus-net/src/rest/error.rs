@@ -1,3 +1,18 @@
+//! REST client error types.
+//!
+//! ## TLS error handling
+//!
+//! `From<TlsError> for RestError` partially preserves the TLS layer:
+//! non-IO `TlsError` variants (decrypt failure, peer alert, malformed
+//! record) surface as [`RestError::Tls`]; `TlsError::Io` flattens to
+//! [`RestError::Io`] because it represents a genuine `io::Error` that
+//! happened during TLS operations and the underlying async transport
+//! ([`WireStream`](crate::WireStream)) returns `io::Result` either
+//! way. The original `TlsError::Io` is preserved as the source of the
+//! resulting `io::Error` and reachable via `io_err.source()` /
+//! `io_err.get_ref()`. See [`RestError::Tls`] for the full
+//! sync-vs-async asymmetry note.
+
 use std::fmt;
 
 use crate::http::HttpError;

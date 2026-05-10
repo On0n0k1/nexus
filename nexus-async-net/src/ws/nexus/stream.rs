@@ -6,6 +6,7 @@ use std::pin::Pin;
 
 use nexus_async_rt::TcpStream;
 use nexus_net::buf::WriteBuf;
+use nexus_net::http::HTTP_HANDSHAKE_BUFFER;
 #[cfg(feature = "tls")]
 use nexus_net::tls::TlsConfig;
 use nexus_net::ws::{
@@ -241,7 +242,7 @@ impl<S: WireStream + Unpin> WsStream<S> {
         // Feed bytes directly into resp_reader's spare region via
         // WireStream — one fewer copy than reading into a tmp slice
         // and pushing through resp_reader.read().
-        let mut resp_reader = nexus_net::http::ResponseReader::new(4096);
+        let mut resp_reader = nexus_net::http::ResponseReader::new(HTTP_HANDSHAKE_BUFFER);
         loop {
             // Pre-check the WireStream::poll_fill_into precondition
             // (sink.spare() non-empty). If full without a parsed
@@ -249,7 +250,7 @@ impl<S: WireStream + Unpin> WsStream<S> {
             if resp_reader.spare().is_empty() {
                 return Err(HandshakeError::MalformedHttp.into());
             }
-            let n = fill_async(&mut stream, &mut resp_reader, 4096).await?;
+            let n = fill_async(&mut stream, &mut resp_reader, HTTP_HANDSHAKE_BUFFER).await?;
             if n == 0 {
                 return Err(HandshakeError::MalformedHttp.into());
             }
@@ -313,7 +314,7 @@ impl<S: WireStream + Unpin> WsStream<S> {
         write_cap: usize,
         max_read_size: usize,
     ) -> Result<Self, WsError> {
-        let mut req_reader = nexus_net::http::RequestReader::new(4096);
+        let mut req_reader = nexus_net::http::RequestReader::new(HTTP_HANDSHAKE_BUFFER);
 
         let ws_key;
         loop {
@@ -325,7 +326,7 @@ impl<S: WireStream + Unpin> WsStream<S> {
             }
             // Direct-feed via WireStream — bytes land in
             // req_reader.spare() without a tmp slice intermediate.
-            let n = fill_async(&mut stream, &mut req_reader, 4096).await?;
+            let n = fill_async(&mut stream, &mut req_reader, HTTP_HANDSHAKE_BUFFER).await?;
             if n == 0 {
                 return Err(HandshakeError::MalformedHttp.into());
             }

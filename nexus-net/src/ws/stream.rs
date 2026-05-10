@@ -126,7 +126,21 @@ pub enum Error {
     Encode(super::frame_writer::EncodeError),
     /// HTTP handshake failed.
     Handshake(HandshakeError),
-    /// TLS error.
+    /// TLS error during connection setup (handshake, certificate
+    /// validation, SNI hostname verification).
+    ///
+    /// **Steady-state TLS protocol errors** (decrypt failure, peer
+    /// alert, malformed record received during a frame) on the async
+    /// `nexus-async-net` paths surface as [`Error::Io`](Self::Io)
+    /// instead — the underlying [`TlsError`](crate::tls::TlsError) is
+    /// wrapped via `io::Error::other` and reachable via
+    /// `io_err.source()` or `io_err.get_ref()`. This asymmetry stems
+    /// from the [`WireStream`](crate::WireStream) trait returning
+    /// `io::Result` for poll methods. Sync WS surfaces `Tls` directly
+    /// because its `TlsStream` exposes `TlsError` natively. Pattern-
+    /// match on both `Io` and `Tls` if you need to distinguish TLS-
+    /// protocol failures from generic transport failures across both
+    /// surfaces.
     #[cfg(feature = "tls")]
     Tls(TlsError),
     /// Invalid WebSocket URL.

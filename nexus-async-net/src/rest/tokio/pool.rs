@@ -8,6 +8,8 @@
 use std::future::poll_fn;
 use std::pin::Pin;
 
+#[cfg(test)]
+use nexus_net::http::HTTP_HANDSHAKE_BUFFER;
 use nexus_net::http::ResponseReader;
 use nexus_net::rest::{RequestWriter, RestError};
 #[cfg(feature = "tls")]
@@ -541,7 +543,7 @@ mod tests {
     fn make_disconnected_slot() -> ClientSlot {
         ClientSlot {
             writer: RequestWriter::new("host").unwrap(),
-            reader: ResponseReader::new(4096),
+            reader: ResponseReader::new(HTTP_HANDSHAKE_BUFFER),
             conn: None,
         }
     }
@@ -663,7 +665,7 @@ mod tests {
         tokio::spawn(async move {
             for _ in 0..4 {
                 let (mut tcp, _) = listener.accept().await.unwrap();
-                let mut buf = [0u8; 4096];
+                let mut buf = [0u8; HTTP_HANDSHAKE_BUFFER];
                 let _ = tcp.read(&mut buf).await.unwrap();
                 let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok";
                 tcp.write_all(resp).await.unwrap();
@@ -687,7 +689,7 @@ mod tests {
             let conn = HttpConnection::new(stream);
             pool.put(ClientSlot {
                 writer: RequestWriter::new(&addr.to_string()).unwrap(),
-                reader: ResponseReader::new(4096),
+                reader: ResponseReader::new(HTTP_HANDSHAKE_BUFFER),
                 conn: Some(conn),
             });
 
@@ -717,7 +719,7 @@ mod tests {
         // Server: read request, send canned response.
         tokio::spawn(async move {
             let (mut tcp, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 4096];
+            let mut buf = [0u8; HTTP_HANDSHAKE_BUFFER];
             let _ = tcp.read(&mut buf).await.unwrap();
             let resp = b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n{\"orderId\":123}";
             tcp.write_all(resp).await.unwrap();
@@ -730,7 +732,7 @@ mod tests {
 
         let mut slot = ClientSlot {
             writer: RequestWriter::new(&addr.to_string()).unwrap(),
-            reader: ResponseReader::new(4096),
+            reader: ResponseReader::new(HTTP_HANDSHAKE_BUFFER),
             conn: Some(conn),
         };
 
@@ -761,7 +763,7 @@ mod tests {
         // Server: handle two sequential requests on the same connection.
         tokio::spawn(async move {
             let (mut tcp, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 4096];
+            let mut buf = [0u8; HTTP_HANDSHAKE_BUFFER];
 
             // Request 1
             let _ = tcp.read(&mut buf).await.unwrap();
@@ -789,7 +791,7 @@ mod tests {
         });
         pool.put(ClientSlot {
             writer: RequestWriter::new(&addr.to_string()).unwrap(),
-            reader: ResponseReader::new(4096),
+            reader: ResponseReader::new(HTTP_HANDSHAKE_BUFFER),
             conn: Some(conn),
         });
 
@@ -844,7 +846,7 @@ mod tests {
         // Server: accept, respond to first request, then close the connection.
         tokio::spawn(async move {
             let (mut tcp, _) = listener.accept().await.unwrap();
-            let mut buf = [0u8; 4096];
+            let mut buf = [0u8; HTTP_HANDSHAKE_BUFFER];
 
             // First request — respond normally.
             let _ = tcp.read(&mut buf).await.unwrap();
@@ -869,7 +871,7 @@ mod tests {
         });
         pool.put(ClientSlot {
             writer: RequestWriter::new(&addr.to_string()).unwrap(),
-            reader: ResponseReader::new(4096),
+            reader: ResponseReader::new(HTTP_HANDSHAKE_BUFFER),
             conn: Some(conn),
         });
 
@@ -943,7 +945,7 @@ mod tests {
                         let listener = TcpListener::from_std(listener_fd).unwrap();
                         // Accept first connection — respond then close.
                         let (mut tcp, _) = listener.accept().await.unwrap();
-                        let mut buf = [0u8; 4096];
+                        let mut buf = [0u8; HTTP_HANDSHAKE_BUFFER];
                         let _ = tcp.read(&mut buf).await.unwrap();
                         tcp.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nfirst")
                             .await
