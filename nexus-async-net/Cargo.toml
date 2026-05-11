@@ -12,13 +12,25 @@ categories.workspace = true
 
 [features]
 default = ["tokio-tls"]
-full = ["tls", "socket-opts", "bytes"]
+
+# Runtime backends — pick one. Tokio is the supported path for production use.
 tokio-rt = ["dep:tokio", "dep:futures-core", "dep:futures-sink"]
-nexus = ["dep:nexus-async-rt"]
+nexus = ["dep:nexus-async-rt"]                          # experimental, see README
+
+# Generic protocol features (work with either backend).
 tls = ["nexus-net/tls"]
-tokio-tls = ["tokio-rt", "tls", "dep:tokio-rustls"]
 socket-opts = ["dep:socket2"]
 bytes = ["nexus-net/bytes"]
+
+# Per-backend composites.
+tokio-tls = ["tokio-rt", "tls", "dep:tokio-rustls"]
+tokio-full = ["tokio-tls", "socket-opts", "bytes"]
+nexus-tls = ["nexus", "tls"]
+nexus-full = ["nexus-tls", "socket-opts", "bytes"]
+
+# `full` defaults to the tokio bundle. Users on the experimental nexus
+# backend should opt in via `nexus-full` explicitly.
+full = ["tokio-full"]
 
 [package.metadata.docs.rs]
 features = ["tokio-tls", "socket-opts", "bytes"]

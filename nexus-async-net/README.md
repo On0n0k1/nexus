@@ -8,6 +8,33 @@ Same sans-IO primitives, same performance — just `.await` on socket I/O.
 - **REST HTTP/1.1** — `HttpConnection<S>` wrapping nexus-net's RequestWriter/ResponseReader
 - **Client Pool** — `ClientPool` (single-threaded) and `AtomicClientPool` (thread-safe) for connection reuse with LIFO acquire, inline reconnect, and RAII guards
 
+## Backends
+
+This crate has two runtime backends, exposed via Cargo features:
+
+- **`tokio-rt` (default, supported)** — production-ready, the recommended path
+- **`nexus` (experimental)** — backed by [nexus-async-rt](../nexus-async-rt/),
+  a reference implementation. The `nexus-async-rt` crate itself is
+  experimental and not under active development; this feature exists for
+  parity but tokio is the supported path for production use.
+
+### Feature matrix
+
+| Feature | What you get | Notes |
+|---|---|---|
+| (default) | `tokio-tls` | tokio runtime + TLS (rustls via tokio-rustls) |
+| `tokio-rt` | tokio runtime alone | no TLS |
+| `tokio-tls` | tokio runtime + TLS | composite |
+| `tokio-full` | tokio-tls + socket-opts + bytes | recommended for most users |
+| `full` | alias for `tokio-full` | backward-compat default bundle |
+| `nexus` | nexus-async-rt runtime alone | no TLS, **experimental** |
+| `nexus-tls` | nexus runtime + TLS | composite, **experimental** |
+| `nexus-full` | nexus-tls + socket-opts + bytes | **experimental** |
+
+Backends are mutually exclusive — pick one runtime feature. To use the
+nexus backend, set `default-features = false` and pick a `nexus-*`
+composite explicitly.
+
 ## Quick Start
 
 ```rust
