@@ -32,6 +32,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Tick operations: `add_ticks`, `tick_diff`, `is_tick_aligned`
 - Proximity guards: `within_bps`, `within_ticks`
 - Bps rounding: `round_bps`, `floor_bps`, `ceil_bps`
+- Property-based tests for arithmetic invariants (cross-backing equivalence, truncation direction)
+- Property-based tests for financial methods (rounding alignment, tick roundtrip, shift identity)
+- Property-based tests for pow2 operations (mul/div roundtrip, halve equivalence, abs_diff symmetry)
 
 ## [1.1.0] — 2026-04-23
 
