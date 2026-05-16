@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- `EPSILON` constant — smallest positive representable value (`1 / 10^D`)
+- `HALF` constant — the value 0.5 (requires `D >= 1`, compile-time enforced)
+- `TWO` constant — the value 2.0 (compile-time overflow check)
 - Power-of-2 multiplication family: `mul_pow2`, `checked_mul_pow2`,
   `saturating_mul_pow2`, `wrapping_mul_pow2`, `try_mul_pow2`. Multiplies
   by `2^n` via a backing-width shift; the `10^D` scale factor cancels

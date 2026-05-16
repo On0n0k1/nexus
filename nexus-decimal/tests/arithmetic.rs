@@ -62,6 +62,69 @@ fn custom_precision() {
     assert_eq!(Usd::new(19, 99).to_raw(), 1999);
 }
 
+#[test]
+fn epsilon_value() {
+    assert_eq!(D64::EPSILON.to_raw(), 1);
+    assert_eq!(D64::EPSILON, D64::from_raw(1));
+    assert_eq!(D32::EPSILON.to_raw(), 1);
+    assert_eq!(D128::EPSILON.to_raw(), 1);
+}
+
+#[test]
+fn half_value() {
+    assert_eq!(D64::HALF.to_raw(), 50_000_000); // 10^8 / 2
+    assert_eq!(D32::HALF.to_raw(), 5_000); // 10^4 / 2
+    assert_eq!(D96::HALF.to_raw(), 500_000_000_000); // 10^12 / 2
+    assert_eq!(D128::HALF.to_raw(), 500_000_000_000_000_000); // 10^18 / 2
+    // HALF + HALF == ONE
+    assert_eq!(D64::HALF.checked_add(D64::HALF), Some(D64::ONE));
+}
+
+#[test]
+fn two_value() {
+    assert_eq!(D64::TWO.to_raw(), 200_000_000); // 2 * 10^8
+    assert_eq!(D32::TWO.to_raw(), 20_000); // 2 * 10^4
+    assert_eq!(D128::TWO.to_raw(), 2_000_000_000_000_000_000); // 2 * 10^18
+    // ONE + ONE == TWO
+    assert_eq!(D64::ONE.checked_add(D64::ONE), Some(D64::TWO));
+}
+
+#[test]
+fn constants_cross_backing() {
+    type X32 = Decimal<i32, 4>;
+    type X64 = Decimal<i64, 4>;
+    type X128 = Decimal<i128, 4>;
+
+    assert_eq!(X32::EPSILON.to_raw() as i64, X64::EPSILON.to_raw());
+    assert_eq!(X64::EPSILON.to_raw() as i128, X128::EPSILON.to_raw());
+
+    assert_eq!(X32::HALF.to_raw() as i64, X64::HALF.to_raw());
+    assert_eq!(X64::HALF.to_raw() as i128, X128::HALF.to_raw());
+
+    assert_eq!(X32::TWO.to_raw() as i64, X64::TWO.to_raw());
+    assert_eq!(X64::TWO.to_raw() as i128, X128::TWO.to_raw());
+}
+
+#[test]
+fn half_d0_is_not_representable() {
+    // Decimal<i64, 0>::HALF would fail to compile — 0.5 is not
+    // representable with zero fractional digits.
+    // Verified by: const assert in HALF definition.
+    type D0 = Decimal<i64, 0>;
+    assert_eq!(D0::SCALE, 1); // confirms D=0 means integer-only
+}
+
+#[test]
+fn half_relationships() {
+    // halve(ONE) == HALF
+    assert_eq!(D64::ONE.halve(), D64::HALF);
+    // TWO * HALF (via mul) == ONE
+    assert_eq!(D64::TWO.checked_mul(D64::HALF), Some(D64::ONE));
+    // EPSILON is smallest positive
+    assert!(D64::EPSILON.to_raw() > 0);
+    assert_eq!(D64::EPSILON.to_raw(), 1);
+}
+
 // ============================================================================
 // Constructors
 // ============================================================================
