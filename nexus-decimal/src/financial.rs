@@ -232,7 +232,7 @@ macro_rules! impl_decimal_financial {
             /// Panics if `D < 4`.
             #[inline(always)]
             pub const fn round_bps(self, n: u32) -> Option<Self> {
-                assert!(D >= 4, "round_bps requires D >= 4");
+                const { assert!(D >= 4, "round_bps requires D >= 4") };
                 if n == 0 {
                     return None;
                 }
@@ -254,7 +254,7 @@ macro_rules! impl_decimal_financial {
             /// Panics if `D < 4`.
             #[inline(always)]
             pub const fn floor_bps(self, n: u32) -> Option<Self> {
-                assert!(D >= 4, "floor_bps requires D >= 4");
+                const { assert!(D >= 4, "floor_bps requires D >= 4") };
                 if n == 0 {
                     return None;
                 }
@@ -276,7 +276,7 @@ macro_rules! impl_decimal_financial {
             /// Panics if `D < 4`.
             #[inline(always)]
             pub const fn ceil_bps(self, n: u32) -> Option<Self> {
-                assert!(D >= 4, "ceil_bps requires D >= 4");
+                const { assert!(D >= 4, "ceil_bps requires D >= 4") };
                 if n == 0 {
                     return None;
                 }
@@ -560,6 +560,9 @@ macro_rules! impl_financial_widening {
             /// Returns `true` if `|self - other| <= |other| * bps / 10000`.
             #[inline]
             pub const fn within_bps(self, other: Self, bps: i32) -> bool {
+                if bps < 0 {
+                    return false;
+                }
                 let diff = if self.value >= other.value {
                     (self.value as $wider) - (other.value as $wider)
                 } else {
@@ -609,6 +612,9 @@ macro_rules! impl_financial_widening {
             }
 
             /// `(self - other) / tick` as an integer tick count.
+            ///
+            /// Truncates toward zero (partial ticks dropped, matching Rust
+            /// integer division).
             ///
             /// Returns `None` if `tick` is zero or the result exceeds `i64`.
             #[inline]
@@ -768,6 +774,9 @@ impl<const D: u8> Decimal<i128, D> {
         let Some(frac_main) = rs_q.checked_mul(10000) else {
             return None;
         };
+        // Sub-fractional term bounded by 9999 ULP; only overflows when
+        // |divisor| > i128::MAX / 10000 (~10^34 raw). Precision loss is
+        // negligible relative to the main result at that magnitude.
         let frac_sub = match rs_r.checked_mul(10000) {
             Some(v) => v / divisor.value,
             None => 0,
@@ -821,6 +830,8 @@ impl<const D: u8> Decimal<i128, D> {
         let Some(frac_main) = rs_q.checked_mul(100) else {
             return None;
         };
+        // Sub-fractional term bounded by 99 ULP; same overflow condition
+        // as bps_diff_by — negligible precision loss at extreme magnitudes.
         let frac_sub = match rs_r.checked_mul(100) {
             Some(v) => v / divisor.value,
             None => 0,
@@ -908,6 +919,9 @@ impl<const D: u8> Decimal<i128, D> {
     }
 
     /// `(self - other) / tick` as an integer tick count.
+    ///
+    /// Truncates toward zero (partial ticks dropped, matching Rust
+    /// integer division).
     ///
     /// Returns `None` if `tick` is zero or the result exceeds `i64`.
     #[inline]
