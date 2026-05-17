@@ -133,4 +133,5 @@
 #![warn(missing_docs)]
 
 pub mod local;
+mod loom_impl;
 pub mod sync;

@@ -7,10 +7,9 @@ fn two_thread_no_lost_tokens() {
     let mut events = Events::with_capacity(64);
 
     let tokens: Vec<Token> = (0..64).map(Token::new).collect();
-    let producer_tokens = tokens.clone();
 
     let handle = thread::spawn(move || {
-        for t in &producer_tokens {
+        for t in &tokens {
             notifier.notify(*t).unwrap();
         }
     });
@@ -18,7 +17,7 @@ fn two_thread_no_lost_tokens() {
     handle.join().unwrap();
     poller.poll(&mut events);
 
-    let mut indices: Vec<usize> = events.iter().map(|t| t.index()).collect();
+    let mut indices: Vec<usize> = events.iter().map(Token::index).collect();
     indices.sort_unstable();
     let expected: Vec<usize> = (0..64).collect();
     assert_eq!(indices, expected);
@@ -52,7 +51,7 @@ fn mpsc_two_producers() {
 
     poller.poll(&mut events);
 
-    let mut indices: Vec<usize> = events.iter().map(|t| t.index()).collect();
+    let mut indices: Vec<usize> = events.iter().map(Token::index).collect();
     indices.sort_unstable();
     let expected: Vec<usize> = (0..128).collect();
     assert_eq!(indices, expected);
@@ -94,11 +93,10 @@ fn stress_no_lost_tokens() {
     let mut events = Events::with_capacity(64);
 
     let tokens: Vec<Token> = (0..8).map(Token::new).collect();
-    let producer_tokens = tokens.clone();
 
     let handle = thread::spawn(move || {
         for _ in 0..ROUNDS {
-            for t in &producer_tokens {
+            for t in &tokens {
                 notifier.notify(*t).unwrap();
             }
         }
@@ -135,7 +133,7 @@ fn stress_poll_limit_fifo() {
     let mut all_indices = Vec::new();
     for _ in 0..4 {
         poller.poll_limit(&mut events, 5);
-        let chunk: Vec<usize> = events.iter().map(|t| t.index()).collect();
+        let chunk: Vec<usize> = events.iter().map(Token::index).collect();
         assert_eq!(chunk.len(), 5);
         all_indices.extend(chunk);
     }
@@ -155,7 +153,7 @@ fn large_capacity() {
 
     poller.poll(&mut events);
 
-    let mut indices: Vec<usize> = events.iter().map(|t| t.index()).collect();
+    let mut indices: Vec<usize> = events.iter().map(Token::index).collect();
     indices.sort_unstable();
     let expected: Vec<usize> = (0..4096).collect();
     assert_eq!(indices, expected);

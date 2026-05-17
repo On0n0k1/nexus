@@ -150,6 +150,7 @@
 mod event_channel;
 mod event_queue;
 pub mod local;
+mod loom_impl;
 
 pub use event_channel::{Receiver, Sender, event_channel};
 pub use event_queue::{Events, Notifier, NotifyError, Poller, Token, event_queue};

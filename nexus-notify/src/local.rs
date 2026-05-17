@@ -252,12 +252,12 @@ mod tests {
         let mut events = Events::with_capacity(4);
 
         let t0 = notify.register();
-        let t1 = notify.register();
+        let _t1 = notify.register();
         let t2 = notify.register();
 
         notify.mark(t0);
         notify.mark(t2);
-        // t1 not marked
+        // _t1 not marked
 
         notify.poll(&mut events);
         assert_eq!(events.len(), 2);
