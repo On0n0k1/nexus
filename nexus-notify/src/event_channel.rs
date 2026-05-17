@@ -356,7 +356,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             let mut events = Events::with_capacity(64);
             receiver.recv(&mut events);
-            events.iter().map(|t| t.index()).collect::<Vec<_>>()
+            events.iter().map(Token::index).collect::<Vec<_>>()
         });
 
         // Small delay to let receiver park
@@ -374,7 +374,7 @@ mod tests {
         let handle = std::thread::spawn(move || {
             let mut events = Events::with_capacity(64);
             receiver.recv_limit(&mut events, 2);
-            events.iter().map(|t| t.index()).collect::<Vec<_>>()
+            events.iter().map(Token::index).collect::<Vec<_>>()
         });
 
         std::thread::sleep(Duration::from_millis(50));
@@ -418,7 +418,7 @@ mod tests {
             let got_data = receiver.recv_timeout(&mut events, Duration::from_secs(5));
             (
                 got_data,
-                events.iter().map(|t| t.index()).collect::<Vec<_>>(),
+                events.iter().map(Token::index).collect::<Vec<_>>(),
             )
         });
 
@@ -455,7 +455,7 @@ mod tests {
         }
 
         receiver.recv(&mut events);
-        let indices: Vec<usize> = events.iter().map(|t| t.index()).collect();
+        let indices: Vec<usize> = events.iter().map(Token::index).collect();
         assert_eq!(indices, vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
     }
 

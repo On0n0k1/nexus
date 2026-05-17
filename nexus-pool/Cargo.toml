@@ -13,8 +13,12 @@ categories.workspace = true
 [lints]
 workspace = true
 
+[target.'cfg(loom)'.dependencies]
+loom = "0.7"
+
 [dev-dependencies]
 hdrhistogram = "7.5"
+loom = "0.7"
 
 [[bench]]
 name = "perf_local_pool"

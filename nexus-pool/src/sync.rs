@@ -5,11 +5,10 @@
 //!
 //! Uses LIFO ordering for cache locality.
 
-use std::cell::UnsafeCell;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use std::ops::{Deref, DerefMut};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::loom_impl::{Arc, AtomicUsize, Ordering, UnsafeCell};
 
 const NONE: usize = usize::MAX;
 
@@ -49,9 +48,9 @@ impl<T> Inner<T> {
         // SAFETY: We own this slot (it was popped from the free list via CAS).
         // No other thread can access it until we push it back. MaybeUninit::write
         // initializes the slot for the next acquirer.
-        unsafe {
-            (*self.slots[idx].value.get()).write(value);
-        }
+        self.slots[idx].value.with_mut(|ptr| unsafe {
+            (*ptr).write(value);
+        });
 
         // Link into free list with CAS loop
         loop {
@@ -112,7 +111,9 @@ impl<T> Inner<T> {
         // written by new() or push(). assume_init_read moves the value out without
         // dropping the MaybeUninit, which is correct since the slot will be rewritten
         // on the next push.
-        unsafe { (*self.slots[idx].value.get()).assume_init_read() }
+        self.slots[idx]
+            .value
+            .with_mut(|ptr| unsafe { (*ptr).assume_init_read() })
     }
 }
 
@@ -127,16 +128,16 @@ impl<T> Drop for Inner<T> {
         // reset closure panicked during a guard's drop — that path
         // leaks the value (documented in caveats.md §1) and is the
         // same as the 1.0.x behavior.
-        let mut idx = *self.free_head.get_mut();
+        let mut idx = self.free_head.load(Ordering::Relaxed);
         while idx != NONE {
             // SAFETY: Slots in the free list contain valid values (written by new()
             // or push()). Slots NOT in the free list have been moved out via
-            // assume_init_read in pop and are handled by Pooled's Drop. get_mut is
-            // safe because we have &mut self (exclusive access during drop).
-            unsafe {
-                (*self.slots[idx].value.get()).assume_init_drop();
-            }
-            idx = *self.slots[idx].next.get_mut();
+            // assume_init_read in pop and are handled by Pooled's Drop. We have
+            // &mut self (exclusive access during drop), so Relaxed load is correct.
+            self.slots[idx].value.with_mut(|ptr| unsafe {
+                (*ptr).assume_init_drop();
+            });
+            idx = self.slots[idx].next.load(Ordering::Relaxed);
         }
         // MaybeUninit doesn't drop contents, so Box<[Slot<T>]> will just
         // deallocate memory without double-dropping.

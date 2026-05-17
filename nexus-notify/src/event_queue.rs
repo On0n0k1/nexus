@@ -1,5 +1,4 @@
-use core::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use crate::loom_impl::{Flags, Ordering};
 
 use nexus_queue::mpsc;
 
@@ -72,14 +71,14 @@ impl From<usize> for Token {
 ///
 /// Obtained from [`event_queue()`].
 pub struct Notifier {
-    flags: Arc<[AtomicBool]>,
+    flags: Flags,
     tx: mpsc::Producer<usize>,
 }
 
 impl Clone for Notifier {
     fn clone(&self) -> Self {
         Self {
-            flags: Arc::clone(&self.flags),
+            flags: self.flags.clone(),
             tx: self.tx.clone(),
         }
     }
@@ -118,14 +117,14 @@ impl Notifier {
         // models the Release flag clear can propagate before the queue's
         // turn counter store). Release side is not needed — no downstream
         // consumer reads depend on writes before this swap.
-        if self.flags[idx].swap(true, Ordering::Acquire) {
+        if self.flags.get(idx).swap(true, Ordering::Acquire) {
             return Ok(());
         }
 
         // Newly ready — push index to FIFO queue.
         self.tx.push(idx).map_err(|_| {
             // Invariant violated. Clear flag so future notifies can retry.
-            self.flags[idx].store(false, Ordering::Relaxed);
+            self.flags.get(idx).store(false, Ordering::Relaxed);
             NotifyError { token }
         })
     }
@@ -142,7 +141,7 @@ impl Notifier {
 ///
 /// Obtained from [`event_queue()`].
 pub struct Poller {
-    flags: Arc<[AtomicBool]>,
+    flags: Flags,
     rx: mpsc::Consumer<usize>,
 }
 
@@ -183,7 +182,7 @@ impl Poller {
                 Some(idx) => {
                     // Release: ensures the queue pop's slot-free writes are
                     // ordered before this flag clear becomes visible to producers.
-                    self.flags[idx].store(false, Ordering::Release);
+                    self.flags.get(idx).store(false, Ordering::Release);
                     events.tokens.push(Token(idx));
                 }
                 None => break,
@@ -318,14 +317,11 @@ impl<'a> IntoIterator for &'a Events {
 #[cold]
 pub fn event_queue(max_tokens: usize) -> (Notifier, Poller) {
     assert!(max_tokens > 0, "event queue capacity must be non-zero");
-    let flags: Arc<[AtomicBool]> = (0..max_tokens)
-        .map(|_| AtomicBool::new(false))
-        .collect::<Vec<_>>()
-        .into();
+    let flags = Flags::new(max_tokens);
     let (tx, rx) = mpsc::ring_buffer(max_tokens);
     (
         Notifier {
-            flags: Arc::clone(&flags),
+            flags: flags.clone(),
             tx,
         },
         Poller { flags, rx },
@@ -376,7 +372,7 @@ mod tests {
         poller.poll(&mut events);
         assert_eq!(events.len(), 3);
 
-        let indices: Vec<usize> = events.iter().map(|t| t.index()).collect();
+        let indices: Vec<usize> = events.iter().map(Token::index).collect();
         assert_eq!(indices, vec![0, 3, 63]);
     }
 
@@ -561,15 +557,15 @@ mod tests {
         }
 
         poller.poll_limit(&mut events, 2);
-        let indices: Vec<usize> = events.iter().map(|t| t.index()).collect();
+        let indices: Vec<usize> = events.iter().map(Token::index).collect();
         assert_eq!(indices, vec![10, 20]);
 
         poller.poll_limit(&mut events, 2);
-        let indices: Vec<usize> = events.iter().map(|t| t.index()).collect();
+        let indices: Vec<usize> = events.iter().map(Token::index).collect();
         assert_eq!(indices, vec![30, 40]);
 
         poller.poll(&mut events);
-        let indices: Vec<usize> = events.iter().map(|t| t.index()).collect();
+        let indices: Vec<usize> = events.iter().map(Token::index).collect();
         assert_eq!(indices, vec![50]);
     }
 
@@ -605,7 +601,7 @@ mod tests {
         }
 
         poller.poll_limit(&mut events, 3);
-        let drained: Vec<usize> = events.iter().map(|t| t.index()).collect();
+        let drained: Vec<usize> = events.iter().map(Token::index).collect();
         assert_eq!(drained.len(), 3);
 
         // Re-notify a token NOT yet drained — flag is still true. Conflated.
