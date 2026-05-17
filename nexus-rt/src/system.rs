@@ -12,9 +12,9 @@
 //! have been processed. The typical pattern:
 //!
 //! 1. Event handler writes to resources (`ResMut<MidPrice>`)
-//! 2. Scheduler runs systems in topological order
+//! 2. Scheduler runs systems in stage order
 //! 3. Systems read upstream resources, compute derived state, return
-//!    `bool` to propagate or skip downstream
+//!    `bool` to propagate or skip downstream stages
 //!
 //! Systems are converted from plain functions via [`IntoSystem`], using
 //! the same HRTB double-bound pattern as [`IntoHandler`](crate::IntoHandler).
@@ -22,7 +22,7 @@
 //! # Supported signatures
 //!
 //! - `fn(params...) -> bool` — returns propagation decision for
-//!   scheduler DAGs
+//!   staged scheduling
 //! - `fn(params...)` — void return, always propagates (`true`). Useful
 //!   for [`World::run_startup`] and systems that unconditionally
 //!   propagate.

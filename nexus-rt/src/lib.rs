@@ -220,7 +220,7 @@ pub use pipeline::{
 };
 pub use plugin::Plugin;
 pub use resource::{Res, ResMut, Seq, SeqMut};
-pub use scheduler::{MAX_SYSTEMS, SchedulerInstaller, SystemId, SystemScheduler};
+pub use scheduler::{SchedulerBuilder, SystemScheduler};
 pub use shutdown::{Shutdown, ShutdownHandle};
 pub use system::{IntoSystem, System, SystemFn};
 pub use template::{

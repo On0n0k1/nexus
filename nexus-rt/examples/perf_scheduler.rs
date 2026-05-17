@@ -1,7 +1,7 @@
 //! Scheduler dispatch latency benchmark.
 //!
-//! Measures the cost of `SystemScheduler::run()` with various DAG
-//! topologies and system counts. All systems do trivial work (single
+//! Measures the cost of `SystemScheduler::run()` with various stage
+//! configurations and system counts. All systems do trivial work (single
 //! wrapping_add) to isolate scheduler overhead from system body cost.
 //!
 //! Run with:
@@ -11,7 +11,7 @@
 
 use std::hint::black_box;
 
-use nexus_rt::scheduler::SchedulerInstaller;
+use nexus_rt::scheduler::SchedulerBuilder;
 use nexus_rt::{ResMut, WorldBuilder, new_resource};
 
 new_resource!(ResU64(u64));
@@ -94,69 +94,6 @@ fn sys_false(mut val: ResMut<ResU64>) -> bool {
 }
 
 // =============================================================================
-// DAG builders
-// =============================================================================
-
-/// N independent roots (no edges). All always run.
-fn build_flat(n: usize) -> (WorldBuilder, SchedulerInstaller) {
-    let mut wb = WorldBuilder::new();
-    wb.register(ResU64(0));
-    let mut installer = SchedulerInstaller::new();
-    for _ in 0..n {
-        installer.add(sys_true, wb.registry());
-    }
-    (wb, installer)
-}
-
-/// Linear chain: A → B → C → ... All propagate true.
-fn build_chain(n: usize) -> (WorldBuilder, SchedulerInstaller) {
-    let mut wb = WorldBuilder::new();
-    wb.register(ResU64(0));
-    let mut installer = SchedulerInstaller::new();
-    let mut prev = installer.add(sys_true, wb.registry());
-    for _ in 1..n {
-        let cur = installer.add(sys_true, wb.registry());
-        installer.after(cur, prev);
-        prev = cur;
-    }
-    (wb, installer)
-}
-
-/// Diamond fan-out/fan-in: root → N middle → sink.
-/// Total systems = N + 2.
-fn build_diamond(fan: usize) -> (WorldBuilder, SchedulerInstaller) {
-    let mut wb = WorldBuilder::new();
-    wb.register(ResU64(0));
-    let mut installer = SchedulerInstaller::new();
-    let root = installer.add(sys_true, wb.registry());
-    let mut middles = Vec::with_capacity(fan);
-    for _ in 0..fan {
-        let m = installer.add(sys_true, wb.registry());
-        installer.after(m, root);
-        middles.push(m);
-    }
-    let sink = installer.add(sys_true, wb.registry());
-    for &m in &middles {
-        installer.after(sink, m);
-    }
-    (wb, installer)
-}
-
-/// Chain where root returns false — downstream skipped.
-fn build_chain_skipped(n: usize) -> (WorldBuilder, SchedulerInstaller) {
-    let mut wb = WorldBuilder::new();
-    wb.register(ResU64(0));
-    let mut installer = SchedulerInstaller::new();
-    let mut prev = installer.add(sys_false, wb.registry());
-    for _ in 1..n {
-        let cur = installer.add(sys_true, wb.registry());
-        installer.after(cur, prev);
-        prev = cur;
-    }
-    (wb, installer)
-}
-
-// =============================================================================
 // Main
 // =============================================================================
 
@@ -166,44 +103,143 @@ fn main() {
     println!("Iterations: {ITERATIONS}, Warmup: {WARMUP}, Batch: {BATCH}");
     println!("All times in CPU cycles\n");
 
-    // -- Flat (independent roots) --
+    // -- Single-system stages (linear chains) --
 
-    print_header("Flat DAG (independent roots, all run)");
+    print_header("Linear Chain (single-system stages, all propagate true)");
 
-    for n in [1, 4, 8, 16, 32] {
-        let (mut wb, installer) = build_flat(n);
-        let mut scheduler = wb.install_driver(installer);
+    {
+        let mut wb = WorldBuilder::new();
+        wb.register(ResU64(0));
+        let reg = wb.registry();
+        let mut scheduler = wb.install_driver(SchedulerBuilder::new().root(sys_true, &reg));
         let mut world = wb.build();
-        bench_batched(&format!("flat {n} systems"), || {
+        bench_batched("chain 1 system", || {
+            black_box(scheduler.run(&mut world));
+        });
+    }
+    {
+        let mut wb = WorldBuilder::new();
+        wb.register(ResU64(0));
+        let reg = wb.registry();
+        let mut scheduler = wb.install_driver(
+            SchedulerBuilder::new()
+                .root(sys_true, &reg)
+                .then(sys_true, &reg)
+                .then(sys_true, &reg)
+                .then(sys_true, &reg),
+        );
+        let mut world = wb.build();
+        bench_batched("chain 4 systems", || {
+            black_box(scheduler.run(&mut world));
+        });
+    }
+    {
+        let mut wb = WorldBuilder::new();
+        wb.register(ResU64(0));
+        let reg = wb.registry();
+        let mut scheduler = wb.install_driver(
+            SchedulerBuilder::new()
+                .root(sys_true, &reg)
+                .then(sys_true, &reg)
+                .then(sys_true, &reg)
+                .then(sys_true, &reg)
+                .then(sys_true, &reg)
+                .then(sys_true, &reg)
+                .then(sys_true, &reg)
+                .then(sys_true, &reg),
+        );
+        let mut world = wb.build();
+        bench_batched("chain 8 systems", || {
             black_box(scheduler.run(&mut world));
         });
     }
 
-    // -- Linear chain (all propagate) --
+    // -- Multi-system stages (fan-out) --
 
     println!();
-    print_header("Linear Chain (all propagate true)");
+    print_header("Multi-System Stage (all in root, all propagate true)");
 
-    for n in [1, 4, 8, 16, 32] {
-        let (mut wb, installer) = build_chain(n);
-        let mut scheduler = wb.install_driver(installer);
+    {
+        let mut wb = WorldBuilder::new();
+        wb.register(ResU64(0));
+        let reg = wb.registry();
+        let mut scheduler = wb.install_driver(
+            SchedulerBuilder::new().root((sys_true, sys_true, sys_true, sys_true), &reg),
+        );
         let mut world = wb.build();
-        bench_batched(&format!("chain {n} systems"), || {
+        bench_batched("stage with 4 systems", || {
+            black_box(scheduler.run(&mut world));
+        });
+    }
+    {
+        let mut wb = WorldBuilder::new();
+        wb.register(ResU64(0));
+        let reg = wb.registry();
+        let mut scheduler = wb.install_driver(SchedulerBuilder::new().root(
+            (
+                sys_true, sys_true, sys_true, sys_true, sys_true, sys_true, sys_true, sys_true,
+            ),
+            &reg,
+        ));
+        let mut world = wb.build();
+        bench_batched("stage with 8 systems", || {
             black_box(scheduler.run(&mut world));
         });
     }
 
-    // -- Diamond (fan-out/fan-in) --
+    // -- Diamond (fan-out + fan-in) --
 
     println!();
-    print_header("Diamond (root → N middle → sink)");
+    print_header("Diamond (root → stage with N → sink)");
 
-    for fan in [2, 4, 8, 16] {
-        let (mut wb, installer) = build_diamond(fan);
-        let total = fan + 2;
-        let mut scheduler = wb.install_driver(installer);
+    {
+        let mut wb = WorldBuilder::new();
+        wb.register(ResU64(0));
+        let reg = wb.registry();
+        let mut scheduler = wb.install_driver(
+            SchedulerBuilder::new()
+                .root(sys_true, &reg)
+                .then((sys_true, sys_true), &reg)
+                .then(sys_true, &reg),
+        );
         let mut world = wb.build();
-        bench_batched(&format!("diamond fan={fan} ({total} systems)"), || {
+        bench_batched("diamond fan=2 (4 systems)", || {
+            black_box(scheduler.run(&mut world));
+        });
+    }
+    {
+        let mut wb = WorldBuilder::new();
+        wb.register(ResU64(0));
+        let reg = wb.registry();
+        let mut scheduler = wb.install_driver(
+            SchedulerBuilder::new()
+                .root(sys_true, &reg)
+                .then((sys_true, sys_true, sys_true, sys_true), &reg)
+                .then(sys_true, &reg),
+        );
+        let mut world = wb.build();
+        bench_batched("diamond fan=4 (6 systems)", || {
+            black_box(scheduler.run(&mut world));
+        });
+    }
+    {
+        let mut wb = WorldBuilder::new();
+        wb.register(ResU64(0));
+        let reg = wb.registry();
+        let mut scheduler = wb.install_driver(
+            SchedulerBuilder::new()
+                .root(sys_true, &reg)
+                .then(
+                    (
+                        sys_true, sys_true, sys_true, sys_true, sys_true, sys_true, sys_true,
+                        sys_true,
+                    ),
+                    &reg,
+                )
+                .then(sys_true, &reg),
+        );
+        let mut world = wb.build();
+        bench_batched("diamond fan=8 (10 systems)", || {
             black_box(scheduler.run(&mut world));
         });
     }
@@ -213,16 +249,41 @@ fn main() {
     println!();
     print_header("Skipped Chain (root=false, downstream skipped)");
 
-    for n in [4, 8, 16, 32] {
-        let (mut wb, installer) = build_chain_skipped(n);
-        let mut scheduler = wb.install_driver(installer);
-        let mut world = wb.build();
-        bench_batched(
-            &format!("skipped chain {n} (1 runs, {} skip)", n - 1),
-            || {
-                black_box(scheduler.run(&mut world));
-            },
+    {
+        let mut wb = WorldBuilder::new();
+        wb.register(ResU64(0));
+        let reg = wb.registry();
+        let mut scheduler = wb.install_driver(
+            SchedulerBuilder::new()
+                .root(sys_false, &reg)
+                .then(sys_true, &reg)
+                .then(sys_true, &reg)
+                .then(sys_true, &reg),
         );
+        let mut world = wb.build();
+        bench_batched("skipped chain 4 (1 runs, 3 skip)", || {
+            black_box(scheduler.run(&mut world));
+        });
+    }
+    {
+        let mut wb = WorldBuilder::new();
+        wb.register(ResU64(0));
+        let reg = wb.registry();
+        let mut scheduler = wb.install_driver(
+            SchedulerBuilder::new()
+                .root(sys_false, &reg)
+                .then(sys_true, &reg)
+                .then(sys_true, &reg)
+                .then(sys_true, &reg)
+                .then(sys_true, &reg)
+                .then(sys_true, &reg)
+                .then(sys_true, &reg)
+                .then(sys_true, &reg),
+        );
+        let mut world = wb.build();
+        bench_batched("skipped chain 8 (1 runs, 7 skip)", || {
+            black_box(scheduler.run(&mut world));
+        });
     }
 
     println!();

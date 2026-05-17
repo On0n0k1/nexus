@@ -10,9 +10,7 @@ mod select;
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
 use syn::visit_mut::VisitMut;
-use syn::{
-    Data, DeriveInput, Fields, GenericParam, Lifetime, TypeParamBound, parse_macro_input,
-};
+use syn::{Data, DeriveInput, Fields, GenericParam, Lifetime, TypeParamBound, parse_macro_input};
 
 // =============================================================================
 // #[derive(Resource)]

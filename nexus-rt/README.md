@@ -926,33 +926,33 @@ let mut system = compute_theo.into_system(registry);
 let changed = system.run(&mut world);
 ```
 
-### DAG Scheduler — topological system execution
+### Staged Scheduler — monomorphized system execution
 
-`SchedulerInstaller` builds a DAG of `System`s executed in topological order.
-Root systems (no upstreams) always run. Non-root systems run only if at
-least one upstream returned `true` (OR semantics).
+`SchedulerBuilder` creates a staged chain of `System`s. Each `.then()` call
+adds a stage. The first stage always runs. Subsequent stages run only if
+at least one system in the previous stage returned `true` (OR semantics).
 
 ```rust
-use nexus_rt::scheduler::SchedulerInstaller;
+use nexus_rt::scheduler::SchedulerBuilder;
 
-let mut installer = SchedulerInstaller::new();
-let theo = installer.add(compute_theo, registry);
-let quotes = installer.add(compute_quotes, registry);
-let risk = installer.add(check_risk, registry);
-installer.after(quotes, theo);   // quotes runs after theo
-installer.after(risk, quotes);   // risk runs after quotes
-
-let mut scheduler = wb.install_driver(installer);
+let mut scheduler = wb.install_driver(
+    SchedulerBuilder::new()
+        .root(compute_theo, &reg)
+        .then(compute_quotes, &reg)
+        .then(check_risk, &reg)
+);
 let mut world = wb.build();
 
 // In event loop: run scheduler after event processing
 let systems_run = scheduler.run(&mut world);
 ```
 
-Propagation is tracked via a `u64` bitmask (one bit per system), limiting
-the scheduler to `MAX_SYSTEMS` (64) systems. Systems return `bool` to
-control downstream execution — `true` means "my outputs changed, run
-downstream." For per-item change detection, use the reactor system.
+Stages can contain multiple systems via tuples (up to 8 per stage). All
+systems in a stage run regardless of individual return values — the stage
+result is the OR of all returns. The entire chain is monomorphized; no
+vtable dispatch, no system limit. Systems return `bool` to control
+downstream execution — `true` means "my outputs changed, run downstream."
+For per-item change detection, use the reactor system.
 
 ### Reactor system (feature: `reactors`)
 
@@ -1266,8 +1266,9 @@ overhead. Boxing adds ~1 cycle at the boundary.
 | Skipped chain 8 (1 runs, 7 skip) | 17 | 28 | 68 |
 | Skipped chain 32 (1 runs, 31 skip) | 46 | 76 | 118 |
 
-Scheduler overhead is ~8-12 cycles per system. Skipped systems
-(upstream returned `false`) cost ~2 cycles each (bitmask check).
+Scheduler overhead is ~8-12 cycles per system. Skipped stages
+(previous stage returned all `false`) short-circuit via a single
+branch — no per-system cost for skipped stages.
 
 ## Limitations
 

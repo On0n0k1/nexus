@@ -1,13 +1,14 @@
-//! Scheduler DAG — reconciliation systems with boolean propagation.
+//! Staged scheduler — reconciliation systems with boolean propagation.
 //!
-//! The DAG scheduler executes `System`s (not `Handler`s) in topological
+//! The staged scheduler executes `System`s (not `Handler`s) in stage
 //! order. Key differences from handlers:
 //!
 //! - **System** returns `bool` — `true` means "my outputs changed, run
 //!   downstream", `false` means "nothing changed, skip downstream".
 //! - **No event parameter** — systems read shared state, not per-event data.
-//! - **Boolean propagation** — root systems always run; non-root systems
-//!   run only if at least one upstream returned `true` (OR semantics).
+//! - **Boolean propagation** — root stage always runs; subsequent stages
+//!   run only if the previous stage returned at least one `true` (OR
+//!   semantics within a stage).
 //!
 //! Typical pattern: event handlers write resources, then the scheduler
 //! runs reconciliation after each event (or batch of events).
@@ -19,7 +20,7 @@
 
 #![allow(clippy::needless_pass_by_value)]
 
-use nexus_rt::scheduler::SchedulerInstaller;
+use nexus_rt::scheduler::SchedulerBuilder;
 use nexus_rt::{Handler, IntoHandler, Res, ResMut, Resource, WorldBuilder};
 
 // ── Domain types ────────────────────────────────────────────────────────
@@ -93,15 +94,15 @@ fn main() {
     wb.register(QuoteState { bid: 0.0, ask: 0.0 });
     wb.register(RiskFlag(false));
 
-    // Build the DAG: compute_theo → compute_quotes → check_risk
-    let mut installer = SchedulerInstaller::new();
-    let theo = installer.add(compute_theo, wb.registry());
-    let quotes = installer.add(compute_quotes, wb.registry());
-    let risk = installer.add(check_risk, wb.registry());
-    installer.after(quotes, theo);
-    installer.after(risk, quotes);
+    let reg = wb.registry();
 
-    let mut scheduler = wb.install_driver(installer);
+    // Build the staged chain: compute_theo → compute_quotes → check_risk
+    let mut scheduler = wb.install_driver(
+        SchedulerBuilder::new()
+            .root(compute_theo, &reg)
+            .then(compute_quotes, &reg)
+            .then(check_risk, &reg),
+    );
 
     // Event handler for market data
     let mut market_handler = on_market_tick.into_handler(wb.registry());
