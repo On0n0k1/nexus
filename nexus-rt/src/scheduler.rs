@@ -108,13 +108,13 @@ pub struct StageNode<Prev, S> {
 
 #[doc(hidden)]
 pub trait RunSchedule: Send {
-    fn run_schedule(&mut self, world: &mut World, upstream_fired: bool) -> (usize, bool);
+    fn run_schedule(&mut self, world: &mut World) -> (usize, bool);
     fn system_count(&self) -> usize;
 }
 
 impl RunSchedule for StageEnd {
     #[inline(always)]
-    fn run_schedule(&mut self, _world: &mut World, _upstream_fired: bool) -> (usize, bool) {
+    fn run_schedule(&mut self, _world: &mut World) -> (usize, bool) {
         (0, true)
     }
 
@@ -125,8 +125,8 @@ impl RunSchedule for StageEnd {
 
 impl<Prev: RunSchedule, S: StageRunner> RunSchedule for StageNode<Prev, S> {
     #[inline(always)]
-    fn run_schedule(&mut self, world: &mut World, upstream_fired: bool) -> (usize, bool) {
-        let (prev_ran, prev_fired) = self.prev.run_schedule(world, upstream_fired);
+    fn run_schedule(&mut self, world: &mut World) -> (usize, bool) {
+        let (prev_ran, prev_fired) = self.prev.run_schedule(world);
         if !prev_fired {
             return (prev_ran, false);
         }
@@ -432,7 +432,7 @@ impl<Chain: RunSchedule> SystemScheduler<Chain> {
     ///
     /// Returns the number of systems that actually ran.
     pub fn run(&mut self, world: &mut World) -> usize {
-        let (ran, _) = self.chain.run_schedule(world, true);
+        let (ran, _) = self.chain.run_schedule(world);
         ran
     }
 
@@ -703,6 +703,23 @@ mod tests {
 
         assert_eq!(scheduler.run(&mut world), 3);
         assert_eq!(*world.resource::<u64>(), 3);
+    }
+
+    #[test]
+    fn scheduler_chain_is_send() {
+        fn assert_send<T: Send>(_: &T) {}
+
+        let mut builder = WorldBuilder::new();
+        builder.register::<u64>(0);
+        builder.register::<bool>(false);
+        let reg = builder.registry();
+        let scheduler = builder.install_driver(
+            SchedulerBuilder::new()
+                .root(increment, &reg)
+                .then((increment, set_flag), &reg)
+                .then(double, &reg),
+        );
+        assert_send(&scheduler);
     }
 
     #[test]
