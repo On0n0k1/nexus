@@ -1266,8 +1266,9 @@ overhead. Boxing adds ~1 cycle at the boundary.
 | Skipped chain 8 (1 runs, 7 skip) | 17 | 28 | 68 |
 | Skipped chain 32 (1 runs, 31 skip) | 46 | 76 | 118 |
 
-Scheduler overhead is ~8-12 cycles per system. Skipped systems
-(upstream returned `false`) cost ~2 cycles each (bitmask check).
+Scheduler overhead is ~8-12 cycles per system. Skipped stages
+(previous stage returned all `false`) short-circuit via a single
+branch — no per-system cost for skipped stages.
 
 ## Limitations
 
