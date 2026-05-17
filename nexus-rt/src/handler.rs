@@ -564,7 +564,7 @@ pub type HandlerFn<F, Params> = Callback<(), CtxFree<F>, Params>;
 #[diagnostic::on_unimplemented(
     message = "this function cannot be converted into a handler",
     note = "handler signature: `fn(Res<A>, ResMut<B>, ..., Event)` — resources first, event last",
-    note = "for Handler<()>, you can omit the event: `fn(Res<A>, ResMut<B>, ...)`",
+    note = "for Handler<()> with params, wrap with `no_event(fn_name)` to omit the event parameter",
     note = "closures with resource parameters (Res<T>, ResMut<T>) are not supported — use a named `fn`",
     note = "arity-0 closures (`fn(Event)` with no resources) ARE supported"
 )]

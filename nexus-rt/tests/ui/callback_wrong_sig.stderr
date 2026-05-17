@@ -7,7 +7,7 @@ error[E0277]: this function cannot be converted into a callback
    |     required by a bound introduced by this call
    |
    = note: callback signature: `fn(&mut Context, Res<A>, ..., Event)` — context first, then resources, event last
-   = note: for Handler<()>, you can omit the event: `fn(&mut Context, Res<A>, ...)`
+   = note: for Handler<()> with params, wrap with `no_event(fn_name)` to omit the event parameter
    = note: closures with resource parameters are not supported — use a named `fn` when using Param resources
    = help: the following other types implement trait `IntoCallback<C, E, Params>`:
              `NoEvent<F>` implements `IntoCallback<C, (), (P0, P1)>`
