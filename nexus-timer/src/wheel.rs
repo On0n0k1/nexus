@@ -176,12 +176,14 @@ impl UnboundedWheelBuilder {
         // The slab is never shared across threads.
         let slab = unsafe { unbounded::Slab::with_chunk_capacity(self.chunk_capacity) };
         let levels = build_levels::<T>(&self.config);
+        let tick_ns = self.config.tick_ns();
         TimerWheel {
             slab,
             num_levels: self.config.num_levels,
             levels,
             current_ticks: 0,
-            tick_ns: self.config.tick_ns(),
+            tick_ns,
+            inv_tick_ns: (1u128 << 64) / tick_ns as u128,
             epoch: now,
             active_levels: 0,
             len: 0,
@@ -213,12 +215,14 @@ impl BoundedWheelBuilder {
         // The slab is never shared across threads.
         let slab = unsafe { bounded::Slab::with_capacity(self.capacity) };
         let levels = build_levels::<T>(&self.config);
+        let tick_ns = self.config.tick_ns();
         TimerWheel {
             slab,
             num_levels: self.config.num_levels,
             levels,
             current_ticks: 0,
-            tick_ns: self.config.tick_ns(),
+            tick_ns,
+            inv_tick_ns: (1u128 << 64) / tick_ns as u128,
             epoch: now,
             active_levels: 0,
             len: 0,
@@ -253,6 +257,7 @@ pub struct TimerWheel<
     active_levels: u8,
     current_ticks: u64,
     tick_ns: u64,
+    inv_tick_ns: u128,
     epoch: Instant,
     len: usize,
     _marker: PhantomData<*const ()>, // !Send (overridden below), !Sync
@@ -594,9 +599,9 @@ impl<T: 'static, S: SlabStore<Item = WheelEntry<T>>> TimerWheel<T, S> {
 
     #[inline]
     fn instant_to_ticks(&self, instant: Instant) -> u64 {
-        // Saturate at 0 for instants before epoch
         let dur = instant.saturating_duration_since(self.epoch);
-        dur.as_nanos() as u64 / self.tick_ns
+        let nanos = dur.as_nanos().min(u64::MAX as u128) as u64;
+        ((nanos as u128 * self.inv_tick_ns) >> 64) as u64
     }
 
     #[inline]
