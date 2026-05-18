@@ -10,6 +10,42 @@ contained.
 
 ## [Unreleased]
 
+## [2.4.0] — 2026-05-17
+
+Eventless handlers and monomorphized scheduler.
+
+### Added
+
+- **`NoEvent<F>` wrapper + `no_event()` function.** Handlers with
+  `E = ()` no longer need a trailing `_: ()` parameter. Arity-0
+  functions work automatically; for 1+ params, wrap with
+  `no_event(tick)` to disambiguate from the event-taking impls.
+  Same coherence trick as `CtxFree` — `NoEvent<F>` never satisfies
+  `FnMut`, so impls are provably disjoint.
+- **Diagnostic hint** on `IntoHandler` for `no_event()` usage.
+
+### Changed
+
+- **Monomorphized scheduler.** `SchedulerBuilder` replaces
+  `SchedulerInstaller`. The schedule is a nested
+  `StageNode<Prev, S>` type chain — fully inlined by the compiler,
+  no vtable dispatch, no bitmask, no 64-system limit.
+  Builder API: `.root(sys, &reg).then(sys, &reg)`.
+- **nexus-timer dependency** tightened from `>=1.2` to `>=1.4`
+  (picks up reciprocal precision and deadline cache improvements).
+
+### Removed
+
+- `SchedulerInstaller`, `SystemId`, `MAX_SYSTEMS` — replaced by
+  `SchedulerBuilder`.
+
+### Notes on breakage
+
+- The scheduler API is fully replaced. `SchedulerInstaller::new()` +
+  `.add()` + `.after()` becomes `SchedulerBuilder::new().root().then()`.
+  Blast radius is narrow — scheduler is internal infrastructure, not
+  a user-facing hot path.
+
 ## [2.3.0] — 2026-05-08
 
 Ergonomics around `Res<T>` and `ResMut<T>`. Lets handler bodies pass
