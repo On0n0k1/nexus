@@ -20,6 +20,9 @@ mod enums;
 pub mod math;
 mod feature_vector;
 
+/// Clock trait and implementations.
+pub mod clock;
+
 pub use enums::{Condition, ConfigError, DataError, Direction};
 
 /// Control, thresholding, and differencing.

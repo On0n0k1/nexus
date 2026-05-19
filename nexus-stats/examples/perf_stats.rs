@@ -213,24 +213,16 @@ fn bench_drawdown_f64(samples: &mut [u64]) {
 }
 
 fn bench_windowed_max_f64(samples: &mut [u64]) {
-    use std::time::{Duration, Instant};
-    let base = Instant::now();
-    let mut wm = WindowedMaxF64::with_base(Duration::from_nanos(1000), base).unwrap();
+    let mut wm = WindowedMaxF64::new(1000).unwrap();
     let mut rng = 12345u64;
     for t in 0..WARMUP as u64 {
-        let _ = wm.update(
-            base + Duration::from_nanos(t),
-            90.0 + (next_val(&mut rng) % 20) as f64,
-        );
+        let _ = wm.update(t, 90.0 + (next_val(&mut rng) % 20) as f64);
     }
     let mut t = WARMUP as u64;
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            let _ = wm.update(
-                base + Duration::from_nanos(t),
-                90.0 + (next_val(&mut rng) % 20) as f64,
-            );
+            let _ = wm.update(t, 90.0 + (next_val(&mut rng) % 20) as f64);
             t += 1;
         }
         let end = rdtsc_end();
@@ -240,24 +232,16 @@ fn bench_windowed_max_f64(samples: &mut [u64]) {
 }
 
 fn bench_windowed_min_f64(samples: &mut [u64]) {
-    use std::time::{Duration, Instant};
-    let base = Instant::now();
-    let mut wm = WindowedMinF64::with_base(Duration::from_nanos(1000), base).unwrap();
+    let mut wm = WindowedMinF64::new(1000).unwrap();
     let mut rng = 12345u64;
     for t in 0..WARMUP as u64 {
-        let _ = wm.update(
-            base + Duration::from_nanos(t),
-            90.0 + (next_val(&mut rng) % 20) as f64,
-        );
+        let _ = wm.update(t, 90.0 + (next_val(&mut rng) % 20) as f64);
     }
     let mut t = WARMUP as u64;
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            let _ = wm.update(
-                base + Duration::from_nanos(t),
-                90.0 + (next_val(&mut rng) % 20) as f64,
-            );
+            let _ = wm.update(t, 90.0 + (next_val(&mut rng) % 20) as f64);
             t += 1;
         }
         let end = rdtsc_end();
@@ -477,29 +461,20 @@ fn bench_event_rate_f64(samples: &mut [u64]) {
 }
 
 fn bench_codel_i64(samples: &mut [u64]) {
-    use std::time::{Duration, Instant};
-    let base = Instant::now();
     let mut qd = CoDelI64::builder()
         .target(100)
-        .window(Duration::from_nanos(1000))
-        .base(base)
+        .window(1000)
         .build()
         .unwrap();
     let mut rng = 12345u64;
     for t in 0..WARMUP as u64 {
-        let _ = qd.update(
-            base + Duration::from_nanos(t),
-            50 + (next_val(&mut rng) % 100) as i64,
-        );
+        let _ = qd.update(t, 50 + (next_val(&mut rng) % 100) as i64);
     }
     let mut t = WARMUP as u64;
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            let _ = qd.update(
-                base + Duration::from_nanos(t),
-                50 + (next_val(&mut rng) % 100) as i64,
-            );
+            let _ = qd.update(t, 50 + (next_val(&mut rng) % 100) as i64);
             t += 1;
         }
         let end = rdtsc_end();

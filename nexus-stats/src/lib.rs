@@ -90,7 +90,7 @@
 //!
 //! | Feature | Default | Enables |
 //! |---------|---------|---------|
-//! | `std` | yes | `Instant`-based windowed/CoDel/liveness/event-rate types, `sqrt`/`exp` intrinsics |
+//! | `std` | yes | `WallClock`, `sqrt`/`exp` intrinsics |
 //! | `alloc` | with `std` | MOSUM, KAMA, WindowedMedian, BoolWindow, adaptive filters, optimizers |
 //! | `libm` | no | Pure Rust `sqrt`/`exp` fallback for `no_std` (enables Shiryaev-Roberts, etc.) |
 //! | `smoothing` | no | Advanced smoothing types (Holt, KAMA, Spring, Kalman1d, WindowedMedian) |
@@ -101,6 +101,9 @@
 
 // Re-export core types at crate root
 pub use nexus_stats_core::{Condition, ConfigError, DataError, Direction};
+
+/// Clock trait and implementations for time-aware stats types.
+pub use nexus_stats_core::clock;
 
 // Re-export the math module (doc-hidden, for subcrate use)
 #[doc(hidden)]

@@ -95,8 +95,6 @@ pub struct BucketAccumulator {
     last: f64,
     accumulated_volume: f64,
     start_nanos: u64,
-    #[cfg(feature = "std")]
-    base_instant: Option<std::time::Instant>,
 }
 
 /// Builder for [`BucketAccumulator`].
@@ -210,49 +208,6 @@ impl BucketAccumulator {
         }
     }
 
-    /// Feed an observation with an `Instant` timestamp (WallTime policy, std).
-    ///
-    /// Returns `Some(summary)` when elapsed time reaches the threshold.
-    ///
-    /// # Errors
-    ///
-    /// Returns `DataError` if the value is NaN or infinite.
-    #[cfg(feature = "std")]
-    #[inline]
-    pub fn update_at(
-        &mut self,
-        value: f64,
-        now: std::time::Instant,
-    ) -> Result<Option<BucketSummary>, crate::DataError> {
-        check_finite!(value);
-        self.accumulate(value);
-
-        let should_close = match self.policy {
-            BucketPolicy::WallTimeNanos(duration_ns) => {
-                let base = self.base_instant.get_or_insert(now);
-                let elapsed_nanos = now.saturating_duration_since(*base).as_nanos();
-                let elapsed_ns = if elapsed_nanos > u64::MAX as u128 {
-                    u64::MAX
-                } else {
-                    elapsed_nanos as u64
-                };
-                if elapsed_ns >= duration_ns {
-                    // base_instant is reset in close_inner() — no need to set here.
-                    true
-                } else {
-                    false
-                }
-            }
-            _ => false,
-        };
-
-        if should_close {
-            Ok(Some(self.close_inner()))
-        } else {
-            Ok(None)
-        }
-    }
-
     /// Force close the current bucket and return its summary.
     /// Returns `None` if the bucket is empty.
     #[inline]
@@ -286,10 +241,6 @@ impl BucketAccumulator {
         self.last = 0.0;
         self.accumulated_volume = 0.0;
         self.start_nanos = 0;
-        #[cfg(feature = "std")]
-        {
-            self.base_instant = None;
-        }
         summary
     }
 
@@ -315,10 +266,6 @@ impl BucketAccumulator {
         self.last = 0.0;
         self.accumulated_volume = 0.0;
         self.start_nanos = 0;
-        #[cfg(feature = "std")]
-        {
-            self.base_instant = None;
-        }
     }
 }
 
@@ -346,8 +293,6 @@ impl BucketAccumulatorBuilder {
             last: 0.0,
             accumulated_volume: 0.0,
             start_nanos: 0,
-            #[cfg(feature = "std")]
-            base_instant: None,
         })
     }
 }
@@ -412,33 +357,6 @@ mod tests {
         assert!(bucket.update_at_raw(2.0, 500_000_000).unwrap().is_none());
         // At t=1.1s — closes
         let s = bucket.update_at_raw(3.0, 1_100_000_000).unwrap().unwrap();
-        assert_eq!(s.count(), 3);
-        assert!((s.first() - 1.0).abs() < f64::EPSILON);
-        assert!((s.last() - 3.0).abs() < f64::EPSILON);
-    }
-
-    #[cfg(feature = "std")]
-    #[test]
-    fn wall_time_instant_policy() {
-        use std::time::{Duration, Instant};
-
-        let mut bucket = BucketAccumulator::builder()
-            .policy(BucketPolicy::WallTimeNanos(1_000_000)) // 1ms
-            .build()
-            .unwrap();
-
-        let start = Instant::now();
-        assert!(bucket.update_at(1.0, start).unwrap().is_none());
-        assert!(
-            bucket
-                .update_at(2.0, start + Duration::from_micros(500))
-                .unwrap()
-                .is_none()
-        );
-        let s = bucket
-            .update_at(3.0, start + Duration::from_millis(2))
-            .unwrap()
-            .unwrap();
         assert_eq!(s.count(), 3);
         assert!((s.first() - 1.0).abs() < f64::EPSILON);
         assert!((s.last() - 3.0).abs() < f64::EPSILON);
