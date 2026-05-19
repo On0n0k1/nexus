@@ -46,7 +46,7 @@ if let Some(mean) = stats.mean() {
 
 ## Algorithms
 
-55+ algorithms across 10 categories. See [full documentation](docs/INDEX.md)
+58+ algorithms across 10 categories. See [full documentation](docs/INDEX.md)
 for deep-dives on each algorithm.
 
 ### Change Detection
@@ -59,6 +59,8 @@ for deep-dives on each algorithm.
 | `MultiGateF64` | Graded anomalies: Accept/Unusual/Suspect/Reject | 12 |
 | `RobustZScoreF64` | MAD-based outlier scoring with estimator freeze | 12 |
 | `AdaptiveThresholdF64` | Z-score anomalies with self-learning baseline | 15 |
+| `PageHinkleyF64` | Sequential mean drift (Page-Hinkley test) | TBD |
+| `AdwinF64` | Adaptive window distribution change (ADWIN) | TBD |
 
 ### Smoothing & Filtering
 
@@ -108,6 +110,7 @@ for deep-dives on each algorithm.
 |------|-----------------|-----|
 | `EntropyF64` | Shannon entropy over K categories | 3 |
 | `TransferEntropyF64` *(alloc, std\|libm)* | Directed information flow (Granger causality) | 14 |
+| `PredictiveInfoBoundF64` *(alloc, std\|libm)* | Binned mutual information I(X;Y) with Miller-Madow | TBD |
 
 ### Monitoring
 
@@ -168,6 +171,9 @@ intrinsics; integer types use bit-shift arithmetic.
 | TransferEntropy | | ✓ | | | |
 | Holt, KAMA, Kalman1D, Spring | ✓ | ✓ | | | |
 | MultiGate, RobustZScore, AdaptiveThreshold | ✓ | ✓ | | | |
+| PageHinkley | ✓ | ✓ | | | |
+| ADWIN | ✓ | ✓ | | | |
+| PredictiveInfoBound | ✓ | ✓ | | | |
 | Saturation, ErrorRate, TrendAlert | ✓ | ✓ | | | |
 | ShiryaevRoberts | | ✓ | | | |
 
@@ -228,7 +234,7 @@ stats.update(sample).unwrap();
 
 | Feature | Default | What |
 |---------|---------|------|
-| `std` | yes | Hardware intrinsics for `sqrt`/`exp` |
+| `std` | yes | `WallClock`, hardware intrinsics for `sqrt`/`exp` |
 | `libm` | no | Pure Rust math fallback for `no_std` |
 | `alloc` | no | Runtime-sized windows (MOSUM, WindowedMedian, KAMA, BoolWindow) |
 
@@ -240,7 +246,7 @@ and construction (`halflife()`).
 
 nexus-stats is split into five workspace crates for independent compilation and feature gating:
 
-- **nexus-stats-core** — shared traits, error types, and builder infrastructure
+- **nexus-stats-core** — shared traits, error types, clock (`Clock`, `WallClock`, `EpochClock`), and builder infrastructure
 - **nexus-stats-smoothing** — EMA, KAMA, Kalman, Holt, Spring, Slew, WindowedMedian
 - **nexus-stats-detection** — CUSUM, MOSUM, Shiryaev-Roberts, MultiGate, RobustZScore, AdaptiveThreshold
 - **nexus-stats-regression** — Linear, polynomial, exponential, logarithmic, power regression

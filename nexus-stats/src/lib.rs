@@ -76,8 +76,8 @@
 //! | Feature | Module | Contents |
 //! |---------|--------|----------|
 //! | `smoothing` | `smoothing` | + Holt, KAMA, Spring, Kalman1d, WindowedMedian |
-//! | `detection` | `detection` | + MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZ, TrendAlert, MultiGate |
-//! | `detection` | `signal` | Autocorrelation, CrossCorrelation, Entropy, TransferEntropy |
+//! | `detection` | `detection` | + MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZ, TrendAlert, MultiGate, PageHinkley, ADWIN |
+//! | `detection` | `signal` | Autocorrelation, CrossCorrelation, Entropy, TransferEntropy, PredictiveInfoBound |
 //! | `detection` | `estimation` | + SPRT |
 //! | `regression` | `regression` | Linear, Polynomial, EW variants, Transformed, LogisticRegression |
 //! | `regression` | `learning` | LMS, NLMS, RLS, OnlineKMeans, GD, AdaGrad, Adam |

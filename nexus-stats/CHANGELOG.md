@@ -10,6 +10,24 @@ contained.
 
 ## [Unreleased]
 
+## [5.0.0] — 2026-05-18
+
+Breaking: tracks nexus-stats-core 2.0.0.
+
+### Added
+
+- **`clock` module** re-exported from nexus-stats-core. `Clock` trait,
+  `WallClock`, `EpochClock`.
+
+### Changed
+
+- `std` feature now also provides `WallClock`.
+
+### Removed
+
+- All `Instant`-based stats types (see nexus-stats-core 2.0.0 CHANGELOG).
+- `Raw` suffix dropped from windowed/CoDel type names.
+
 ## [4.x] — workspace re-export pattern
 
 `nexus-stats` is the umbrella crate that re-exports from the

@@ -7,6 +7,8 @@ mod cross_correlation;
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 mod entropy;
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
+mod predictive_info;
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 mod transfer_entropy;
 
 #[cfg(feature = "alloc")]
@@ -15,5 +17,7 @@ pub use autocorrelation::*;
 pub use cross_correlation::*;
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 pub use entropy::*;
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
+pub use predictive_info::*;
 #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
 pub use transfer_entropy::*;

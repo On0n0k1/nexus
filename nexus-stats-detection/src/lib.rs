@@ -7,8 +7,8 @@
 //! and hypothesis testing types separated from the core `nexus-stats` crate.
 //!
 //! Types are organized into submodules:
-//! - [`detection`] — MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZ, TrendAlert, MultiGate
-//! - [`signal`] — Autocorrelation, CrossCorrelation, Entropy, TransferEntropy
+//! - [`detection`] — MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZ, TrendAlert, MultiGate, PageHinkley, ADWIN
+//! - [`signal`] — Autocorrelation, CrossCorrelation, Entropy, TransferEntropy, PredictiveInfoBound
 //! - [`estimation`] — SPRT (Bernoulli, Gaussian)
 
 #[cfg(feature = "alloc")]
@@ -29,11 +29,14 @@ macro_rules! check_finite {
 
 // Internal modules
 mod multi_gate;
+mod page_hinkley;
 mod robust_z;
 mod trend_alert;
 
 #[cfg(any(feature = "std", feature = "libm"))]
 mod adaptive_threshold;
+#[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
+mod adwin;
 #[cfg(feature = "alloc")]
 mod mosum;
 #[cfg(any(feature = "std", feature = "libm"))]
@@ -44,11 +47,14 @@ mod sprt;
 /// Advanced change detection types.
 pub mod detection {
     pub use super::multi_gate::*;
+    pub use super::page_hinkley::*;
     pub use super::robust_z::*;
     pub use super::trend_alert::*;
 
     #[cfg(any(feature = "std", feature = "libm"))]
     pub use super::adaptive_threshold::*;
+    #[cfg(all(feature = "alloc", any(feature = "std", feature = "libm")))]
+    pub use super::adwin::*;
     #[cfg(feature = "alloc")]
     pub use super::mosum::*;
     #[cfg(any(feature = "std", feature = "libm"))]

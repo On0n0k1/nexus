@@ -10,6 +10,8 @@ Advanced change detection and signal analysis for [nexus-stats](https://crates.i
 - **RobustZScoreF64** — Median-based robust Z-score anomaly detection
 - **TrendAlertF64** — Holt-based trend alerting
 - **MultiGateF64** — Multi-threshold gating
+- **PageHinkleyF64** — Sequential mean drift detection (Page-Hinkley test)
+- **AdwinF64** — Adaptive window distribution change detection (requires `alloc` + (`std` or `libm`))
 
 ## Signal Types
 
@@ -17,6 +19,7 @@ Advanced change detection and signal analysis for [nexus-stats](https://crates.i
 - **CrossCorrelationF64** — Lagged cross-correlation (requires `alloc`)
 - **EntropyF64** — Shannon entropy estimation (requires `alloc` + (`std` or `libm`))
 - **TransferEntropyF64** — Transfer entropy between series (requires `alloc` + (`std` or `libm`))
+- **PredictiveInfoBoundF64** — Binned mutual information estimation (requires `alloc` + (`std` or `libm`))
 
 ## Estimation Types
 
