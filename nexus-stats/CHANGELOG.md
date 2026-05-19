@@ -10,6 +10,16 @@ contained.
 
 ## [Unreleased]
 
+### Added
+
+- **`BipowerVariationF64/F32`** — jump-robust volatility (no_std).
+- **`RollSpreadF64/F32`** — Roll's implicit spread with Hasbrouck adjustment (std/libm).
+- **`TwoScaleRvF64`** — noise-corrected realized variance (alloc+std/libm).
+- **`HawkesIntensityF64/F32`** — self-exciting point process intensity (std/libm).
+- **`PageHinkleyF64/F32`** — Page-Hinkley change detection (detection feature).
+- **`AdwinF64/F32`** — ADWIN adaptive windowing (detection feature).
+- **`PredictiveInfoBoundF64/F32`** — predictive information bound (detection feature).
+
 ## [5.0.0] — 2026-05-18
 
 Breaking: tracks nexus-stats-core 2.0.0.
