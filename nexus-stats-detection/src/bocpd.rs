@@ -139,7 +139,7 @@ impl BocpdF64 {
         {
             // Pass 1: a[r] = nu_d*beta_n, b[r] = a + dx^2.
             // SAFETY: r < self.active <= self.max_run_length + 1.
-            // All arrays allocated with capacity >= max_run_length + 2.
+            // All arrays allocated with capacity max_run_length + 1.
             // Raw pointers hoisted outside loop so LLVM sees them as
             // loop-invariant and can auto-vectorize (writes through &mut self
             // force base pointer reloads otherwise).

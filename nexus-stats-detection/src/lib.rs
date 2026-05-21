@@ -7,7 +7,7 @@
 //! and hypothesis testing types separated from the core `nexus-stats` crate.
 //!
 //! Types are organized into submodules:
-//! - [`detection`] — MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZ, TrendAlert, MultiGate, PageHinkley, ADWIN
+//! - [`detection`] — MOSUM, Shiryaev-Roberts, AdaptiveThreshold, RobustZ, TrendAlert, MultiGate, PageHinkley, ADWIN, DistDrift, BOCPD
 //! - [`signal`] — Autocorrelation, CrossCorrelation, Entropy, TransferEntropy, PredictiveInfoBound
 //! - [`estimation`] — SPRT (Bernoulli, Gaussian)
 

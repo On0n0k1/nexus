@@ -327,6 +327,11 @@ macro_rules! impl_dist_drift {
                         "max_val must be > min_val",
                     ));
                 }
+                if self.min_samples == 0 {
+                    return Err(nexus_stats_core::ConfigError::Invalid(
+                        "min_samples must be >= 1",
+                    ));
+                }
 
                 let bin_width = (max_val - min_val) / num_bins as $ty;
 

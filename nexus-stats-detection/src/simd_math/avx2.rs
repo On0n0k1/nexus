@@ -122,6 +122,9 @@ unsafe fn exp_f64x4(x: __m256d) -> __m256d {
 
         // Range reduction: k = round(x / ln(2)), r = x - k*ln(2)
         let kf = _mm256_round_pd(_mm256_mul_pd(x, ln2_inv), _MM_FROUND_TO_NEAREST_INT);
+        // Clamp: k < -1023 produces invalid exponent bits (NaN/negative).
+        // k = -1023 → scale = 0.0 → exp(x) = 0, correct for x < -708.
+        let kf = _mm256_max_pd(kf, _mm256_set1_pd(-1023.0));
 
         // Cody-Waite: r = x - k*C1 - k*C2
         // FMA: r = -(k*C1 - x) then r = -(k*C2 - r) = r - k*C2
