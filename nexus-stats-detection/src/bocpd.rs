@@ -138,15 +138,33 @@ impl BocpdF64 {
         #[allow(clippy::suboptimal_flops)]
         {
             // Pass 1: a[r] = nu_d*beta_n, b[r] = a + dx^2.
-            for r in 0..self.active {
-                let mu_n = self.pre.mu_a[r] + self.pre.mu_b[r] * self.suf_mean[r];
-                let diff = self.suf_mean[r] - self.prior_mu;
-                let beta_n =
-                    self.prior_beta + self.suf_sum_sq[r] * 0.5 + self.pre.beta_c[r] * diff * diff;
-                let a = self.pre.nu_d[r] * beta_n;
-                let dx = sample - mu_n;
-                self.scratch[r] = a;
-                self.scratch2[r] = a + dx * dx;
+            // SAFETY: r < self.active <= self.max_run_length + 1.
+            // All arrays allocated with capacity >= max_run_length + 2.
+            // Raw pointers hoisted outside loop so LLVM sees them as
+            // loop-invariant and can auto-vectorize (writes through &mut self
+            // force base pointer reloads otherwise).
+            unsafe {
+                let p_mu_a = self.pre.mu_a.as_ptr();
+                let p_mu_b = self.pre.mu_b.as_ptr();
+                let p_beta_c = self.pre.beta_c.as_ptr();
+                let p_nu_d = self.pre.nu_d.as_ptr();
+                let p_sm = self.suf_mean.as_ptr();
+                let p_ssq = self.suf_sum_sq.as_ptr();
+                let p_sc = self.scratch.as_mut_ptr();
+                let p_sc2 = self.scratch2.as_mut_ptr();
+                let prior_mu = self.prior_mu;
+                let prior_beta = self.prior_beta;
+
+                for r in 0..self.active {
+                    let sm = *p_sm.add(r);
+                    let mu_n = *p_mu_a.add(r) + *p_mu_b.add(r) * sm;
+                    let diff = sm - prior_mu;
+                    let beta_n = prior_beta + *p_ssq.add(r) * 0.5 + *p_beta_c.add(r) * diff * diff;
+                    let a = *p_nu_d.add(r) * beta_n;
+                    let dx = sample - mu_n;
+                    *p_sc.add(r) = a;
+                    *p_sc2.add(r) = a + dx * dx;
+                }
             }
 
             // Pass 2: ln in-place (SIMD when available).
@@ -154,27 +172,45 @@ impl BocpdF64 {
             simd_math::ln_inplace(&mut self.scratch2[..self.active]);
 
             // Pass 3: combine and find CP mass max.
+            // SAFETY: same invariant as Pass 1.
             let mut max_cp_term = f64::NEG_INFINITY;
-            for r in 0..self.active {
-                let alpha_r = self.pre.alpha[r];
-                let log_pred = self.pre.lng_base[r] + alpha_r * self.scratch[r]
-                    - (alpha_r + 0.5) * self.scratch2[r];
+            unsafe {
+                let p_alpha = self.pre.alpha.as_ptr();
+                let p_lng = self.pre.lng_base.as_ptr();
+                let p_sc = self.scratch.as_mut_ptr();
+                let p_sc2 = self.scratch2.as_ptr();
+                let p_lp = self.log_posterior.as_ptr();
+                let log_hazard = self.log_hazard;
 
-                self.scratch[r] = log_pred;
+                for r in 0..self.active {
+                    let alpha_r = *p_alpha.add(r);
+                    let log_pred =
+                        *p_lng.add(r) + alpha_r * *p_sc.add(r) - (alpha_r + 0.5) * *p_sc2.add(r);
 
-                let term = self.log_posterior[r] + log_pred + self.log_hazard;
-                if term > max_cp_term {
-                    max_cp_term = term;
+                    *p_sc.add(r) = log_pred;
+
+                    let term = *p_lp.add(r) + log_pred + log_hazard;
+                    if term > max_cp_term {
+                        max_cp_term = term;
+                    }
                 }
             }
 
             // CP mass: exp-sum (SIMD when available).
             // Reuse scratch2 for the terms since pass 2 is done with it.
+            // SAFETY: same invariant as Pass 1.
             cp_terms = if max_cp_term == f64::NEG_INFINITY {
                 f64::NEG_INFINITY
             } else {
-                for r in 0..self.active {
-                    self.scratch2[r] = self.log_posterior[r] + self.scratch[r] + self.log_hazard;
+                unsafe {
+                    let p_lp = self.log_posterior.as_ptr();
+                    let p_sc = self.scratch.as_ptr();
+                    let p_sc2 = self.scratch2.as_mut_ptr();
+                    let log_hazard = self.log_hazard;
+
+                    for r in 0..self.active {
+                        *p_sc2.add(r) = *p_lp.add(r) + *p_sc.add(r) + log_hazard;
+                    }
                 }
                 let sum = simd_math::exp_sum(&self.scratch2[..self.active], max_cp_term);
                 max_cp_term + ln(sum)
