@@ -36,10 +36,10 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 ┌────────────┐  ┌────────────────┐  ┌──────────────────┐
 │  nexus-rt  │  │ nexus-async-net│  │ nexus-stats      │
 │  (runtime) │  │ nexus-net      │  │ nexus-rate       │
-│            │  │ (networking)   │  │ (monitoring &    │
-│  World     │  │                │  │  flow control)   │
-│  Handlers  │  │  WebSocket     │  │                  │
-│  Pipelines │  │  REST HTTP/1.1 │  │                  │
+│            │  │ (networking)   │  │ nexus-inference  │
+│  World     │  │                │  │ (monitoring,     │
+│  Handlers  │  │  WebSocket     │  │  flow control,   │
+│  Pipelines │  │  REST HTTP/1.1 │  │  ML inference)   │
 │  Drivers   │  │  TLS, pools    │  │                  │
 └─────┬──────┘  └───────┬────────┘  └──────────────────┘
       │                 │
@@ -109,6 +109,12 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 | Crate | Description |
 |-------|-------------|
 | [**nexus-decimal**](./nexus-decimal) | Fixed-point decimal arithmetic with compile-time precision. `Decimal<i64, 8>` for prices, `Decimal<i128, 12>` for DeFi. Const fn, `no_std`, zero allocation. Financial methods: midpoint, tick rounding, basis points. Chunked magic division avoids `__divti3`. |
+
+### Inference
+
+| Crate | Description |
+|-------|-------------|
+| [**nexus-inference**](./nexus-inference) | Real-time CPU inference for small, pre-trained models. GBDT (LightGBM-compatible), MLP, LUT, LSTM, GRU, and causal 1D convolution. Sub-microsecond prediction, zero allocation after construction. Models trained in PyTorch/LightGBM, exported as flat weight arrays. AVX2+FMA SIMD acceleration. |
 
 ### Identity & Encoding
 

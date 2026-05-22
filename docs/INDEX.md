@@ -72,6 +72,7 @@ a specific primitive, go there — not here.
 | `nexus-rt` | `nexus-rt/docs/` (extensive — start with `INDEX.md`) |
 | `nexus-async-rt` | `nexus-async-rt/docs/`, `nexus-async-rt/BENCHMARKS.md` |
 | `nexus-timer` | `nexus-timer/docs/` |
+| `nexus-inference` | `nexus-inference/docs/` (start with `INDEX.md`) |
 | `nexus-smartptr` | `nexus-smartptr/docs/` |
 
 Rustdoc: `cargo doc --workspace --no-deps --open`.

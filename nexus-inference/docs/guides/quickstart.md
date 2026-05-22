@@ -75,6 +75,64 @@ model.predict_into(&[0.5, 1.2, -0.3, 0.8], &mut output);
 // output[0], output[1], output[2] now contain the three predictions
 ```
 
+## LSTM — streaming temporal inference
+
+```rust
+use nexus_inference::TinyLstmF32;
+
+// Weights exported from PyTorch nn.LSTM + nn.Linear
+let mut lstm = TinyLstmF32::from_parts(
+    4, 16, 1,   // 4 inputs, 16 hidden, 1 output
+    &weight_ih, &weight_hh,
+    &bias_ih, &bias_hh,
+    &w_out, &b_out,
+).unwrap();
+
+// Process a sequence — state carries between steps
+let score1 = lstm.step(&[0.5, 1.2, -0.3, 0.8]);
+let score2 = lstm.step(&[0.3, 0.9, -0.1, 1.1]);
+
+// Reset for a new sequence
+lstm.reset_state();
+```
+
+## GRU — lighter temporal inference
+
+```rust
+use nexus_inference::TinyGruF32;
+
+// Same API as LSTM, ~25% less compute
+let mut gru = TinyGruF32::from_parts(
+    4, 16, 1,
+    &weight_ih, &weight_hh,
+    &bias_ih, &bias_hh,
+    &w_out, &b_out,
+).unwrap();
+
+let score = gru.step(&[0.5, 1.2, -0.3, 0.8]);
+```
+
+## Causal 1D Convolution — fixed-window temporal
+
+```rust
+use nexus_inference::{Causal1dConvF32, Activation};
+
+// 4 input channels, kernel 3, 8 filters, 1 output
+let mut conv = Causal1dConvF32::from_parts(
+    4, 3, 8, 1,
+    &w_conv, &b_conv,
+    &w_out, &b_out,
+    Activation::Relu,
+).unwrap();
+
+let score = conv.step(&[0.5, 1.0, 0.2, 0.8]);
+assert!(!conv.is_primed());  // needs 3 steps to fill kernel buffer
+
+conv.step(&[0.3, 0.9, 0.1, 1.1]);
+conv.step(&[0.1, 0.4, 0.6, 0.3]);
+assert!(conv.is_primed());   // buffer fully populated
+```
+
 ## Handling errors
 
 ```rust
