@@ -174,6 +174,18 @@ impl TinyLstmF32 {
 
     /// Process one timestep, writing output into caller's buffer.
     ///
+    /// LSTM equations (PyTorch formulation, fused weights):
+    /// ```text
+    /// gates = W_fused @ [x; h] + b_fused
+    /// i = sigmoid(gates[0..H])
+    /// f = sigmoid(gates[H..2H])
+    /// g = tanh(gates[2H..3H])
+    /// o = sigmoid(gates[3H..4H])
+    /// c' = f * c + i * g
+    /// h' = o * tanh(c')
+    /// output = W_out @ h' + b_out
+    /// ```
+    ///
     /// # Panics
     ///
     /// Panics if `input.len() != input_size` or

@@ -113,6 +113,7 @@ pub(crate) fn matvec_bias_f32(
 ///
 /// `weight` is `(out_size, in_size)` row-major.
 #[inline]
+// Used by GRU (gated on std|libm), but dot module compiles under alloc alone.
 #[allow(dead_code)]
 pub(crate) fn matvec_f32(
     weight: &[f32],
