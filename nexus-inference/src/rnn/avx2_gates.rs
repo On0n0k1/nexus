@@ -6,6 +6,9 @@ use core::arch::x86_64::*;
 #[cfg(target_arch = "x86_64")]
 unsafe fn tanh_8wide(x: __m256) -> __m256 {
     unsafe {
+        // Detect NaN lanes before clamping (min/max would swallow them).
+        let nan_mask = _mm256_cmp_ps(x, x, _CMP_UNORD_Q);
+
         let pos_clip = _mm256_set1_ps(4.97);
         let neg_clip = _mm256_set1_ps(-4.97);
         let xc = _mm256_min_ps(_mm256_max_ps(x, neg_clip), pos_clip);
@@ -23,7 +26,10 @@ unsafe fn tanh_8wide(x: __m256) -> __m256 {
         let d_mid = _mm256_fmadd_ps(x2, d_inner, _mm256_set1_ps(62_370.0));
         let den = _mm256_fmadd_ps(x2, d_mid, _mm256_set1_ps(135_135.0));
 
-        _mm256_div_ps(num, den)
+        let result = _mm256_div_ps(num, den);
+
+        // Restore NaN lanes that clamping would have silently replaced.
+        _mm256_blendv_ps(result, x, nan_mask)
     }
 }
 

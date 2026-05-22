@@ -15,7 +15,10 @@ pub use lstm::TinyLstmF32;
 ///
 /// Max relative error ~1.2e-7 in [-4.97, 4.97] (full f32 precision,
 /// within 1-2 ULP of correctly-rounded result). Saturates to ±1
-/// outside that range where IEEE tanh would return ±1 anyway.
+/// for |x| >= 4.97; IEEE f32 tanh doesn't reach exactly 1.0 until
+/// ~9.1, so this introduces up to ~1e-4 absolute error in the
+/// saturation region. Negligible for gate activations — values in
+/// this range are already deep in sigmoid/tanh saturation.
 ///
 /// This matches the precision used during training (PyTorch computes
 /// activations in f32 on GPU). The same polynomial approximation
