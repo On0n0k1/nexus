@@ -124,20 +124,20 @@ fn bench_gbdt(c: &mut Criterion) {
 
     let text_50x6 = build_lightgbm_model(50, 6, 8);
     let model_50x6 = GbdtF64::from_lightgbm(text_50x6.as_bytes()).unwrap();
-    c.bench_function("GbdtF64::predict_unchecked 50x6 8feat", |b| {
-        b.iter(|| model_50x6.predict_unchecked(black_box(&features_8)));
+    c.bench_function("GbdtF64::predict 50x6 8feat", |b| {
+        b.iter(|| model_50x6.predict(black_box(&features_8)));
     });
 
     let text_100x6 = build_lightgbm_model(100, 6, 8);
     let model_100x6 = GbdtF64::from_lightgbm(text_100x6.as_bytes()).unwrap();
-    c.bench_function("GbdtF64::predict_unchecked 100x6 8feat", |b| {
-        b.iter(|| model_100x6.predict_unchecked(black_box(&features_8)));
+    c.bench_function("GbdtF64::predict 100x6 8feat", |b| {
+        b.iter(|| model_100x6.predict(black_box(&features_8)));
     });
 
     let text_200x8 = build_lightgbm_model(200, 8, 16);
     let model_200x8 = GbdtF64::from_lightgbm(text_200x8.as_bytes()).unwrap();
-    c.bench_function("GbdtF64::predict_unchecked 200x8 16feat", |b| {
-        b.iter(|| model_200x8.predict_unchecked(black_box(&features_16)));
+    c.bench_function("GbdtF64::predict 200x8 16feat", |b| {
+        b.iter(|| model_200x8.predict(black_box(&features_16)));
     });
 
     let text_100x6b = build_lightgbm_model(100, 6, 8);
@@ -155,22 +155,22 @@ fn bench_mlp(c: &mut Criterion) {
     // 8 → 16 → 1
     let (w, b) = build_mlp_weights(&[8, 16, 1]);
     let mut model = MlpF64::from_parts(&[8, 16, 1], &w, &b, Activation::Relu).unwrap();
-    c.bench_function("MlpF64::predict_unchecked 8→16→1 relu", |b| {
-        b.iter(|| model.predict_unchecked(black_box(&features_8)));
+    c.bench_function("MlpF64::predict 8→16→1 relu", |b| {
+        b.iter(|| model.predict(black_box(&features_8)));
     });
 
     // 16 → 32 → 8 → 1
     let (w, b) = build_mlp_weights(&[16, 32, 8, 1]);
     let mut model = MlpF64::from_parts(&[16, 32, 8, 1], &w, &b, Activation::Relu).unwrap();
-    c.bench_function("MlpF64::predict_unchecked 16→32→8→1 relu", |b| {
-        b.iter(|| model.predict_unchecked(black_box(&features_16)));
+    c.bench_function("MlpF64::predict 16→32→8→1 relu", |b| {
+        b.iter(|| model.predict(black_box(&features_16)));
     });
 
     // 64 → 64 → 1
     let (w, b) = build_mlp_weights(&[64, 64, 1]);
     let mut model = MlpF64::from_parts(&[64, 64, 1], &w, &b, Activation::Relu).unwrap();
-    c.bench_function("MlpF64::predict_unchecked 64→64→1 relu", |b| {
-        b.iter(|| model.predict_unchecked(black_box(&features_64)));
+    c.bench_function("MlpF64::predict 64→64→1 relu", |b| {
+        b.iter(|| model.predict(black_box(&features_64)));
     });
 }
 
@@ -178,15 +178,15 @@ fn bench_lut(c: &mut Criterion) {
     // 2 features × 10 bins
     let table_2x10: Vec<f64> = (0..100).map(|i| i as f64 * 0.01).collect();
     let model = LutF64::from_parts(2, 10, &[0.0, 0.0], &[1.0, 1.0], &table_2x10).unwrap();
-    c.bench_function("LutF64::predict_unchecked 2feat×10bins", |b| {
-        b.iter(|| model.predict_unchecked(black_box(&[0.35, 0.72])));
+    c.bench_function("LutF64::predict 2feat×10bins", |b| {
+        b.iter(|| model.predict(black_box(&[0.35, 0.72])));
     });
 
     // 3 features × 20 bins
     let table_3x20: Vec<f64> = (0..8000).map(|i| i as f64 * 0.001).collect();
     let model = LutF64::from_parts(3, 20, &[0.0, 0.0, 0.0], &[1.0, 1.0, 1.0], &table_3x20).unwrap();
-    c.bench_function("LutF64::predict_unchecked 3feat×20bins", |b| {
-        b.iter(|| model.predict_unchecked(black_box(&[0.35, 0.72, 0.15])));
+    c.bench_function("LutF64::predict 3feat×20bins", |b| {
+        b.iter(|| model.predict(black_box(&[0.35, 0.72, 0.15])));
     });
 }
 

@@ -70,17 +70,9 @@ table size explodes and you're better off with an MLP.
 
 ## NaN Handling
 
-Two prediction modes:
-
-| Method | NaN behavior | Cost |
-|--------|-------------|------|
-| `predict` | Scans inputs, returns `Err(NanInput)` | O(n_features) scan + lookup |
-| `predict_unchecked` | NaN maps to bin 0 | lookup only |
-
-Rust's saturating float-to-int cast maps `NaN as usize` to 0.
-This means NaN features silently produce bin 0's value in the
-unchecked path — a valid but meaningless result. The checked path
-catches this before it happens.
+NaN features map to bin 0 (Rust's saturating float-to-int cast
+maps `NaN as usize` to 0). The result is a valid number from the
+table but meaningless. Validate inputs in the feature pipeline.
 
 ## When to Use It
 
@@ -116,11 +108,7 @@ let model = LutF64::from_parts(
     &table,         // 100 pre-computed values
 ).unwrap();
 
-// Checked prediction (rejects NaN)
-let value = model.predict(&[0.35, 0.72]).unwrap();
-
-// Unchecked (fastest, NaN → bin 0)
-let value = model.predict_unchecked(&[0.35, 0.72]);
+let value = model.predict(&[0.35, 0.72]);
 ```
 
 ## Building the Table
@@ -153,7 +141,6 @@ for idx, point in enumerate(itertools.product(*grids)):
 | Operation | Time | Space |
 |-----------|------|-------|
 | Construction | O(n_bins^n_features) | O(n_bins^n_features) |
-| `predict_unchecked` | O(n_features) | O(1) |
 | `predict` | O(n_features) | O(1) |
 
 Prediction cost is constant regardless of table size — the table

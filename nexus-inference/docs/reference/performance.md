@@ -6,18 +6,18 @@ measurements, see the [benchmarking guide](../../CLAUDE.md).
 
 ## GBDT
 
-| Configuration | `predict_unchecked` | `predict` (NaN-aware) | NaN overhead |
-|--------------|-------------------:|---------------------:|------------:|
+| Configuration | `predict` | `predict_nan_aware` | NaN overhead |
+|--------------|----------:|-------------------:|------------:|
 | 50 trees x depth 6, 8 features | 218 ns | — | — |
 | 100 trees x depth 6, 8 features | 409 ns | 1.01 us | ~2.5x |
 | 200 trees x depth 8, 16 features | 2.21 us | — | — |
 
-Per-node cost: **~4.7 cycles** (unchecked), **~6 cycles** (NaN-aware).
+Per-node cost: **~4.7 cycles** (predict), **~6 cycles** (NaN-aware).
 
-At L1 load latency of 4 cycles, the unchecked path is within ~1 cycle
-of the hardware floor for data-dependent tree traversal. The
-false-branch-next layout ensures ~50% of traversal steps are
-sequential (served by hardware prefetcher from L1).
+At L1 load latency of 4 cycles, `predict` is within ~1 cycle of the
+hardware floor for data-dependent tree traversal. The false-branch-next
+layout ensures ~50% of traversal steps are sequential (served by
+hardware prefetcher from L1).
 
 ### GBDT optimization history
 
@@ -35,45 +35,34 @@ See [perf.md](../../.claude/perf.md) for detailed analysis.
 
 ## MLP
 
-| Configuration | FMAs | `predict_unchecked` |
-|--------------|-----:|-------------------:|
-| 8→16→1 relu | 144 | 99 ns |
-| 16→32→8→1 relu | 776 | 372 ns |
-| 64→64→1 relu | 4,160 | 2.00 us |
+| Configuration | FMAs | `predict` (AVX2+FMA) |
+|--------------|-----:|--------------------:|
+| 8→16→1 relu | 144 | 53 ns |
+| 16→32→8→1 relu | 776 | 133 ns |
+| 64→64→1 relu | 4,160 | 373 ns |
 
-Cost scales linearly with FMA count at scalar throughput.
+### MLP optimization history
 
-### FMA throughput analysis
+| Optimization | Impact (64→64→1) |
+|-------------|------------------|
+| Bounds check elimination (slice to exact size) | 2.0µs → 1.17µs |
+| Pre-allocated scratch buffers | zero (correct for production) |
+| Explicit AVX2+FMA dot product | ~8% improvement |
+| Tiled GEMV (4 neurons sharing input loads) | 549ns → 373ns (-32%) |
+| **Total** | **5.4x speedup** |
 
-At 3.2 GHz with scalar f64 FMA (~2 cycles throughput for a
-reduction chain):
-
-| Configuration | Expected (arithmetic only) | Measured | Overhead |
-|--------------|-------------------------:|--------:|---------:|
-| 8→16→1 | 90 ns | 99 ns | ~10% (Vec alloc) |
-| 16→32→8→1 | 485 ns | 372 ns | Faster (LLVM optimization) |
-| 64→64→1 | 2,600 ns | 2,000 ns | Faster (better than expected) |
-
-The Vec allocation overhead is visible for small networks but
-negligible for larger ones. SIMD vectorization (AVX2, 4-wide f64)
-would reduce all configurations by ~4x.
-
-### NaN scan overhead
-
-The checked `predict` adds `input.iter().any(|x| x.is_nan())`
-before the forward pass. For 8-64 features, this is 8-64 `ucomisd`
-self-comparisons — negligible relative to hundreds of FMAs.
+Compile with `RUSTFLAGS="-C target-cpu=native"` for AVX2+FMA dispatch.
+Scalar fallback auto-vectorizes to SSE2 2-wide or AVX 4-wide.
 
 ## LUT
 
-| Configuration | `predict_unchecked` |
-|--------------|-------------------:|
+| Configuration | `predict` |
+|--------------|----------:|
 | 2 features x 10 bins | 4.9 ns |
 | 3 features x 20 bins | 7.5 ns |
 
 LUT prediction is dominated by the per-feature division
-`(value - min) / step`. LLVM may convert this to multiply-by-reciprocal
-when the step is constant.
+`(value - min) / step`. LLVM converts this to multiply-by-reciprocal.
 
 ## Complexity Summary
 

@@ -64,16 +64,15 @@ Compact 16-byte `repr(C)` nodes:
 
 ## NaN Handling
 
-Two prediction modes matching the checked/unchecked pattern:
-
 | Method | NaN behavior | Cost |
 |--------|-------------|------|
-| `predict` | Routes NaN via learned default direction | ~6 cycles/node |
-| `predict_unchecked` | No NaN check, undefined routing | ~4.7 cycles/node |
+| `predict` | NaN routes right (`NaN <= threshold` is false) | ~4.7 cycles/node |
+| `predict_nan_aware` | Routes NaN via learned default direction | ~6 cycles/node |
 
-GBDT is unique among the three model types: it *handles* NaN rather
-than rejecting it. The training framework (LightGBM) learns which
-direction gives better predictions when a feature is missing.
+GBDT is unique among the three model types: it can *handle* NaN
+rather than just propagating it. The training framework (LightGBM)
+learns which direction gives better predictions when a feature is
+missing. Use `predict_nan_aware` when features may contain NaN.
 
 ## When to Use It
 
@@ -106,12 +105,11 @@ use nexus_inference::GbdtF64;
 // Load from LightGBM text format
 let model = GbdtF64::from_lightgbm(model_bytes).unwrap();
 
-// Checked prediction (NaN-aware routing)
 let features = vec![0.5, 1.2, -0.3, 0.8];
 let score = model.predict(&features);
 
-// Unchecked (faster, caller guarantees no NaN)
-let score = model.predict_unchecked(&features);
+// NaN-aware routing (when features may contain NaN)
+let score = model.predict_nan_aware(&features);
 
 // Buffer form
 let mut output = [0.0_f64];
@@ -124,7 +122,7 @@ model.predict_into(&features, &mut output);
 |-----------|------|-------|
 | Construction (`from_lightgbm`) | O(total_nodes) | O(total_nodes) |
 | `predict` | O(trees x depth) | O(1) |
-| `predict_unchecked` | O(trees x depth) | O(1) |
+| `predict` | O(trees x depth) | O(1) |
 | `predict_n` | O(n x depth) | O(1) |
 
 Typical configurations:

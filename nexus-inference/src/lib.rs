@@ -26,7 +26,7 @@ mod mlp;
 #[cfg(feature = "loader-lightgbm")]
 mod loader;
 
-pub use error::{LoadError, NanInput};
+pub use error::LoadError;
 #[cfg(feature = "alloc")]
 pub use gbdt::{GbdtF32, GbdtF64};
 #[cfg(feature = "alloc")]

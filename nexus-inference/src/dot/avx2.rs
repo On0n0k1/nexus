@@ -66,10 +66,7 @@ pub fn dot_f64(a: &[f64], b: &[f64]) -> f64 {
             i += 4;
         }
 
-        acc0 = _mm256_add_pd(
-            _mm256_add_pd(acc0, acc1),
-            _mm256_add_pd(acc2, acc3),
-        );
+        acc0 = _mm256_add_pd(_mm256_add_pd(acc0, acc1), _mm256_add_pd(acc2, acc3));
 
         hsum_f64(acc0)
     };
@@ -114,10 +111,7 @@ pub fn dot_f32(a: &[f32], b: &[f32]) -> f32 {
             i += 8;
         }
 
-        acc0 = _mm256_add_ps(
-            _mm256_add_ps(acc0, acc1),
-            _mm256_add_ps(acc2, acc3),
-        );
+        acc0 = _mm256_add_ps(_mm256_add_ps(acc0, acc1), _mm256_add_ps(acc2, acc3));
 
         hsum_f32(acc0)
     };

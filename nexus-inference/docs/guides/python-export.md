@@ -59,7 +59,7 @@ with open("mlp_weights.json", "w") as f:
         "layer_sizes": layer_sizes,
         "weights": weights,
         "biases": biases,
-        "activation": "relu",  # or "leaky_relu", "tanh", "sigmoid"
+        "activation": "relu",
     }, f)
 ```
 
@@ -75,6 +75,28 @@ let model = MlpF64::from_parts(
     &layer_sizes, &weights, &biases, Activation::Relu,
 ).unwrap();
 ```
+
+### Activation mapping
+
+Map your PyTorch activation module to the Rust enum:
+
+| PyTorch | Rust `Activation` | Note |
+|---------|-------------------|------|
+| `nn.ReLU` | `Relu` | |
+| `nn.LeakyReLU(negative_slope=α)` | `LeakyRelu(α)` | |
+| `nn.Tanh` | `Tanh` | |
+| `nn.Sigmoid` | `Sigmoid` | |
+| `nn.Identity` | `Identity` | |
+| `nn.ELU(alpha=α)` | `Elu(α)` | typically α=1.0 |
+| `nn.GELU(approximate='tanh')` | `Gelu` | must use tanh mode |
+| `nn.SiLU` | `Swish` | |
+
+**GELU approximation**: We use the tanh approximation
+(`0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715x³)))`), which
+matches `nn.GELU(approximate='tanh')`. If your model was trained
+with `approximate='none'` (exact erf), expect ~1e-4 numerical
+drift. Retrain with `approximate='tanh'` for exact match, or
+accept the drift if it's within your tolerance.
 
 ### Activation limitation
 

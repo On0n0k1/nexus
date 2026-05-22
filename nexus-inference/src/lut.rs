@@ -5,7 +5,7 @@ extern crate alloc;
 use alloc::{boxed::Box, vec::Vec};
 
 #[cfg(feature = "alloc")]
-use crate::{LoadError, NanInput};
+use crate::LoadError;
 
 #[cfg(feature = "alloc")]
 macro_rules! impl_lut {
@@ -29,7 +29,7 @@ macro_rules! impl_lut {
         ///     &[0.0], &[1.0],
         ///     &[10.0, 20.0, 30.0, 40.0],
         /// ).unwrap();
-        /// assert_eq!(model.predict(&[0.1]).unwrap(), 10.0);
+        /// assert_eq!(model.predict(&[0.1]), 10.0);
         /// ```
         #[derive(Debug, Clone)]
         pub struct $name {
@@ -105,28 +105,14 @@ macro_rules! impl_lut {
                 })
             }
 
-            /// Predict with NaN input check.
-            ///
-            /// Returns `Err(NanInput)` if any feature is NaN.
-            ///
-            /// # Panics
-            ///
-            /// Panics if `features.len() != self.n_features()`.
-            pub fn predict(&self, features: &[$ty]) -> Result<$ty, NanInput> {
-                if features.iter().any(|x| x.is_nan()) {
-                    return Err(NanInput);
-                }
-                Ok(self.predict_unchecked(features))
-            }
-
-            /// Predict without NaN check.
+            /// Predict a single output value.
             ///
             /// NaN features map to bin 0 (Rust's saturating float-to-int cast).
             ///
             /// # Panics
             ///
             /// Panics if `features.len() != self.n_features()`.
-            pub fn predict_unchecked(&self, features: &[$ty]) -> $ty {
+            pub fn predict(&self, features: &[$ty]) -> $ty {
                 assert_eq!(features.len(), self.n_features as usize);
                 let nb = self.n_bins as usize;
                 let max_bin = nb - 1;
@@ -139,31 +125,15 @@ macro_rules! impl_lut {
                 self.table[idx]
             }
 
-            /// Write prediction to output buffer with NaN input check.
-            ///
-            /// Returns `Err(NanInput)` if any feature is NaN.
+            /// Write prediction to output buffer.
             ///
             /// # Panics
             ///
             /// Panics if `features.len() != self.n_features()` or
             /// `output.len() != 1`.
-            pub fn predict_into(&self, features: &[$ty], output: &mut [$ty]) -> Result<(), NanInput> {
-                if features.iter().any(|x| x.is_nan()) {
-                    return Err(NanInput);
-                }
-                self.predict_into_unchecked(features, output);
-                Ok(())
-            }
-
-            /// Write prediction to output buffer without NaN check.
-            ///
-            /// # Panics
-            ///
-            /// Panics if `features.len() != self.n_features()` or
-            /// `output.len() != 1`.
-            pub fn predict_into_unchecked(&self, features: &[$ty], output: &mut [$ty]) {
+            pub fn predict_into(&self, features: &[$ty], output: &mut [$ty]) {
                 assert_eq!(output.len(), 1);
-                output[0] = self.predict_unchecked(features);
+                output[0] = self.predict(features);
             }
 
             /// Number of input features.
@@ -209,10 +179,10 @@ mod tests {
         // 1 feature, 4 bins over [0, 1)
         // bins: [0, 0.25), [0.25, 0.5), [0.5, 0.75), [0.75, 1.0)
         let model = LutF64::from_parts(1, 4, &[0.0], &[1.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
-        assert_eq!(model.predict(&[0.1]).unwrap(), 10.0);
-        assert_eq!(model.predict(&[0.3]).unwrap(), 20.0);
-        assert_eq!(model.predict(&[0.6]).unwrap(), 30.0);
-        assert_eq!(model.predict(&[0.8]).unwrap(), 40.0);
+        assert_eq!(model.predict(&[0.1]), 10.0);
+        assert_eq!(model.predict(&[0.3]), 20.0);
+        assert_eq!(model.predict(&[0.6]), 30.0);
+        assert_eq!(model.predict(&[0.8]), 40.0);
     }
 
     #[test]
@@ -225,23 +195,23 @@ mod tests {
         let table: Vec<f64> = (0..9).map(|i| i as f64).collect();
         let model = LutF64::from_parts(2, 3, &[0.0, 0.0], &[3.0, 3.0], &table).unwrap();
         // f0=0.5 → bin 0, f1=1.5 → bin 1 → idx = 0*3 + 1 = 1
-        assert_eq!(model.predict(&[0.5, 1.5]).unwrap(), 1.0);
+        assert_eq!(model.predict(&[0.5, 1.5]), 1.0);
         // f0=2.5 → bin 2, f1=0.5 → bin 0 → idx = 2*3 + 0 = 6
-        assert_eq!(model.predict(&[2.5, 0.5]).unwrap(), 6.0);
+        assert_eq!(model.predict(&[2.5, 0.5]), 6.0);
     }
 
     #[test]
     #[cfg(feature = "alloc")]
     fn clamp_low() {
         let model = LutF64::from_parts(1, 4, &[0.0], &[1.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
-        assert_eq!(model.predict(&[-5.0]).unwrap(), 10.0);
+        assert_eq!(model.predict(&[-5.0]), 10.0);
     }
 
     #[test]
     #[cfg(feature = "alloc")]
     fn clamp_high() {
         let model = LutF64::from_parts(1, 4, &[0.0], &[1.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
-        assert_eq!(model.predict(&[99.0]).unwrap(), 40.0);
+        assert_eq!(model.predict(&[99.0]), 40.0);
     }
 
     #[test]
@@ -251,10 +221,10 @@ mod tests {
         // bins: [0,1), [1,2), [2,3), [3,4)
         let model = LutF64::from_parts(1, 4, &[0.0], &[4.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
         // Exactly at bin boundary → floor to that bin
-        assert_eq!(model.predict(&[0.0]).unwrap(), 10.0);
-        assert_eq!(model.predict(&[1.0]).unwrap(), 20.0);
-        assert_eq!(model.predict(&[2.0]).unwrap(), 30.0);
-        assert_eq!(model.predict(&[3.0]).unwrap(), 40.0);
+        assert_eq!(model.predict(&[0.0]), 10.0);
+        assert_eq!(model.predict(&[1.0]), 20.0);
+        assert_eq!(model.predict(&[2.0]), 30.0);
+        assert_eq!(model.predict(&[3.0]), 40.0);
     }
 
     #[test]
@@ -262,7 +232,7 @@ mod tests {
     #[should_panic]
     fn wrong_feature_count_panics() {
         let model = LutF64::from_parts(1, 4, &[0.0], &[1.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
-        model.predict_unchecked(&[1.0, 2.0]); // expects 1 feature
+        model.predict(&[1.0, 2.0]); // expects 1 feature
     }
 
     #[test]
@@ -286,7 +256,7 @@ mod tests {
     fn f32_variant() {
         let model =
             LutF32::from_parts(1, 4, &[0.0_f32], &[1.0], &[10.0_f32, 20.0, 30.0, 40.0]).unwrap();
-        assert_eq!(model.predict(&[0.3_f32]).unwrap(), 20.0_f32);
+        assert_eq!(model.predict(&[0.3_f32]), 20.0_f32);
     }
 
     #[test]
@@ -297,22 +267,15 @@ mod tests {
         let table: Vec<f64> = (0..125).map(|i| i as f64).collect();
         let model = LutF64::from_parts(3, 5, &[0.0, 0.0, 0.0], &[5.0, 5.0, 5.0], &table).unwrap();
         // f0=0.5→bin0, f1=2.5→bin2, f2=4.5→bin4 → idx = 0*25 + 2*5 + 4 = 14
-        assert_eq!(model.predict(&[0.5, 2.5, 4.5]).unwrap(), 14.0);
+        assert_eq!(model.predict(&[0.5, 2.5, 4.5]), 14.0);
         // f0=3.5→bin3, f1=1.5→bin1, f2=0.5→bin0 → idx = 3*25 + 1*5 + 0 = 80
-        assert_eq!(model.predict(&[3.5, 1.5, 0.5]).unwrap(), 80.0);
+        assert_eq!(model.predict(&[3.5, 1.5, 0.5]), 80.0);
     }
 
     #[test]
     #[cfg(feature = "alloc")]
-    fn nan_input_returns_error() {
+    fn nan_maps_to_bin_zero() {
         let model = LutF64::from_parts(1, 4, &[0.0], &[1.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
-        assert!(model.predict(&[f64::NAN]).is_err());
-    }
-
-    #[test]
-    #[cfg(feature = "alloc")]
-    fn nan_unchecked_maps_to_bin_zero() {
-        let model = LutF64::from_parts(1, 4, &[0.0], &[1.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
-        assert_eq!(model.predict_unchecked(&[f64::NAN]), 10.0);
+        assert_eq!(model.predict(&[f64::NAN]), 10.0);
     }
 }

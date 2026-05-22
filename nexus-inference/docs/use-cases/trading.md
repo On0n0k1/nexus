@@ -41,7 +41,7 @@ let features = [
 ];
 
 // NaN-aware — missing features route via learned direction
-let signal = model.predict(&features);
+let signal = model.predict_nan_aware(&features);
 ```
 
 **Why GBDT here:** Tabular features from different data sources with
@@ -56,13 +56,13 @@ captured by a single tree ensemble:
 ```rust
 use nexus_inference::{MlpF64, Activation};
 
-let model = MlpF64::from_parts(
+let mut model = MlpF64::from_parts(
     &[8, 16, 1], &weights, &biases, Activation::Relu,
 ).unwrap();
 
 // Features must be clean — MLP rejects NaN
 let features = impute_and_normalize(&raw_features);
-let signal = model.predict_unchecked(&features);
+let signal = model.predict(&features);
 ```
 
 **Why MLP here:** The signal depends on interactions between features
@@ -87,7 +87,7 @@ let spread_lut = LutF64::from_parts(
 ).unwrap();
 
 // ~5ns lookup instead of ~500ns model evaluation
-let fair_spread = spread_lut.predict_unchecked(&[current_vol, time_frac]);
+let fair_spread = spread_lut.predict(&[current_vol, time_frac]);
 ```
 
 **Why LUT here:** The fair spread model is expensive (involves
@@ -101,7 +101,7 @@ Models can be chained — one model's output feeds another:
 
 ```rust
 // Stage 1: GBDT feature extraction (NaN-tolerant)
-let gbdt_score = gbdt_model.predict(&raw_features);
+let gbdt_score = gbdt_model.predict_nan_aware(&raw_features);
 
 // Stage 2: MLP combines GBDT score with embedding features
 let mlp_features = [
@@ -110,7 +110,7 @@ let mlp_features = [
     embedding[1],
     embedding[2],
 ];
-let final_signal = mlp_model.predict_unchecked(&mlp_features);
+let final_signal = mlp_model.predict(&mlp_features);
 ```
 
 ## Output Interpretation
@@ -119,7 +119,7 @@ All model types return **raw scores**, not probabilities or actions.
 The strategy layer decides what to do:
 
 ```rust
-let score = model.predict_unchecked(&features);
+let score = model.predict(&features);
 
 // Strategy layer owns the decision
 if score > entry_threshold {
@@ -132,7 +132,7 @@ if score > entry_threshold {
 For classification models, apply the link function yourself:
 
 ```rust
-let logit = model.predict_unchecked(&features);
+let logit = model.predict(&features);
 let probability = 1.0 / (1.0 + (-logit).exp());  // sigmoid
 ```
 
@@ -153,22 +153,21 @@ feature pipeline first — that's where the most time goes.
 
 ## Model Updates
 
-Models are immutable after construction. To update a live model:
+To update a live model, swap via `Arc`:
 
 ```rust
 use std::sync::Arc;
 
-// Initial load
+// GBDT: prediction takes &self, so Arc sharing is natural
 let model = Arc::new(GbdtF64::from_lightgbm(&bytes).unwrap());
-
-// Hot path reads via Arc clone (cheap, just refcount)
 let m = model.clone();
-let score = m.predict_unchecked(&features);
+let score = m.predict(&features);
 
 // Cold path: load new model, swap the Arc
 let new_model = Arc::new(GbdtF64::from_lightgbm(&new_bytes).unwrap());
-// Swap atomically — old model dropped when last reader finishes
 ```
 
-All prediction methods take `&self`, so sharing via `Arc` is
-natural. No `Mutex` needed — models are read-only.
+**MLP/LUT note:** MLP prediction takes `&mut self` (pre-allocated
+scratch buffers). For concurrent access, use per-thread model
+instances via `Clone` rather than `Arc<Mutex<MlpF64>>`. Each
+clone gets its own scratch buffers — no contention.

@@ -25,9 +25,10 @@ nexus-inference supports `no_std` environments through feature flags.
 nexus-inference = { version = "0.1", default-features = false, features = ["alloc"] }
 ```
 
-This gives you all three model types with `Relu` and `LeakyRelu`
-activations. `Tanh` and `Sigmoid` are rejected at construction time
-(`from_parts` returns `LoadError::Validation`).
+This gives you all three model types with `Relu`, `LeakyRelu`, and
+`Identity` activations. `Tanh`, `Sigmoid`, `Elu`, `Gelu`, and `Swish`
+are rejected at construction time (`from_parts` returns
+`LoadError::Validation`).
 
 ## With transcendental activations
 
@@ -47,9 +48,9 @@ a different math backend.
 nexus-inference = { version = "0.1", default-features = false }
 ```
 
-This compiles but provides no model types — only the error types
-(`LoadError`, `NanInput`). Useful if you need the error types in a
-shared crate that's `no_std` without an allocator.
+This compiles but provides no model types — only `LoadError`. Useful
+if you need the error type in a shared crate that's `no_std` without
+an allocator.
 
 ## What uses `alloc`
 
@@ -58,8 +59,8 @@ shared crate that's `no_std` without an allocator.
 | Model structs | `Box<[T]>` for weights, biases, nodes, tables |
 | `from_parts()` | Copies input slices into owned storage |
 | `from_lightgbm()` | Parses text, builds node vectors |
-| MLP `predict_into_unchecked()` | Two `Vec` scratch buffers per call |
-| `LoadError`, `NanInput` | No allocation (stack types) |
+| MLP scratch buffers | Pre-allocated in struct at construction |
+| `LoadError` | No allocation (stack type) |
 
-The only per-prediction allocation is MLP's scratch buffers. GBDT
-and LUT allocate nothing after construction.
+No per-prediction allocation. MLP scratch buffers are pre-allocated
+in the struct. GBDT and LUT allocate nothing after construction.

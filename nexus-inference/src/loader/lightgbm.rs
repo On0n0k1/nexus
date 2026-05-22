@@ -487,7 +487,7 @@ end of trees
 ";
         let model = GbdtF64::from_lightgbm(model_text.as_bytes()).unwrap();
         // NaN should go left (default_left flag set)
-        assert_eq!(model.predict(&[f64::NAN]), -1.0);
+        assert_eq!(model.predict_nan_aware(&[f64::NAN]), -1.0);
     }
 
     #[test]

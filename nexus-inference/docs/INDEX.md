@@ -36,7 +36,7 @@ loaded once at startup via `from_parts()`, and served immutably with
 ```
 src/
 ├── lib.rs              — Public API, re-exports
-├── error.rs            — LoadError, NanInput
+├── error.rs            — LoadError
 ├── gbdt.rs             — GbdtF64/F32, Node, RawNode, reorder_and_compact
 ├── mlp.rs              — MlpF64/F32, Activation
 ├── lut.rs              — LutF64/F32, checked_pow

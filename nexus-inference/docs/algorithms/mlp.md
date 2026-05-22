@@ -64,9 +64,13 @@ The output layer is always linear.
 | Activation | Formula | Feature required | Use case |
 |-----------|---------|-----------------|----------|
 | `Relu` | `max(0, x)` | None | Default, most common |
-| `LeakyRelu(alpha)` | `x if x >= 0, alpha*x otherwise` | None | Prevents dead neurons |
+| `LeakyRelu(alpha)` | `x >= 0 ? x : alpha*x` | None | Prevents dead neurons |
+| `Identity` | `x` | None | No transformation |
 | `Tanh` | `tanh(x)` | `std` or `libm` | Bounded output [-1, 1] |
 | `Sigmoid` | `1 / (1 + exp(-x))` | `std` or `libm` | Bounded output [0, 1] |
+| `Elu(alpha)` | `x >= 0 ? x : alpha*(exp(x)-1)` | `std` or `libm` | Smooth negative region |
+| `Gelu` | `0.5x(1 + tanh(√(2/π)(x + 0.044715x³)))` | `std` or `libm` | Transformer default |
+| `Swish` | `x * sigmoid(x)` | `std` or `libm` | aka SiLU in PyTorch |
 
 **Design note:** The current API uses a single activation for the
 entire model. Per-layer activations (e.g., relu hidden + tanh final
@@ -74,33 +78,26 @@ hidden) would require a builder API and is a potential future extension.
 
 ## NaN Handling
 
-Two prediction modes:
-
-| Method | NaN behavior | Cost |
-|--------|-------------|------|
-| `predict` | Scans inputs, returns `Err(NanInput)` | O(n_inputs) scan + matmul |
-| `predict_unchecked` | NaN propagates through computation | matmul only |
-
+NaN inputs propagate through the computation — the caller is
+responsible for ensuring clean inputs (standard ML convention).
 NaN propagates correctly through all activations:
 - **Relu**: NaN passes through (three-branch comparison, matches PyTorch)
 - **LeakyRelu**: `NaN * alpha = NaN`
-- **Tanh/Sigmoid**: transcendentals propagate NaN
+- **Identity**: direct passthrough
+- **Tanh/Sigmoid/Elu/Gelu/Swish**: transcendentals propagate NaN
 
 Unlike GBDT, MLP has no learned NaN behavior — there is no meaningful
-"default direction" for missing features. The checked path rejects
-NaN; the unchecked path propagates it so the caller can detect it
-in the output.
+"default direction" for missing features.
 
 ## Scratch Buffers
 
-The forward pass needs intermediate storage between layers (ping-pong
-buffers). Two `Vec` allocations happen per `predict_into_unchecked`
-call, sized to the maximum layer dimension.
+The forward pass uses pre-allocated ping-pong buffers stored in
+the struct. These are allocated once at construction, sized to
+the maximum layer dimension. No allocation happens on the
+prediction path.
 
-For small networks (8-64 neurons), this is 64-512 bytes and the
-allocator typically reuses memory. For latency-critical paths where
-even this matters, a future `predict_with_scratch` API could accept
-caller-provided buffers.
+This means `predict` methods take `&mut self`. For concurrent
+access, use per-thread model instances rather than `Arc<MlpF64>`.
 
 ## When to Use It
 
@@ -114,7 +111,7 @@ caller-provided buffers.
 - Features are sparse/tabular with many categorical variables (use [GBDT](gbdt.md))
 - The function can be precomputed over a small grid (use [LUT](lut.md))
 - You need sub-10ns predictions (use [LUT](lut.md))
-- Network has >64 neurons per layer and you need <500ns (needs SIMD, not yet implemented)
+- Network has >128 neurons per layer (weights spill to L2)
 
 ## Code Example
 
@@ -122,23 +119,19 @@ caller-provided buffers.
 use nexus_inference::{MlpF64, Activation};
 
 // 4 inputs → 8 hidden (relu) → 1 output
-let model = MlpF64::from_parts(
+let mut model = MlpF64::from_parts(
     &[4, 8, 1],
     &weights,  // 4*8 + 8*1 = 40 weights, row-major
     &biases,   // 8 + 1 = 9 biases
     Activation::Relu,
 ).unwrap();
 
-// Checked prediction (rejects NaN inputs)
-let score = model.predict(&[0.5, 1.2, -0.3, 0.8]).unwrap();
-
-// Unchecked (faster, NaN propagates)
-let score = model.predict_unchecked(&[0.5, 1.2, -0.3, 0.8]);
+let score = model.predict(&[0.5, 1.2, -0.3, 0.8]);
 
 // Multi-output
-let model = MlpF64::from_parts(&[4, 8, 3], &w, &b, Activation::Relu).unwrap();
+let mut model = MlpF64::from_parts(&[4, 8, 3], &w, &b, Activation::Relu).unwrap();
 let mut output = [0.0_f64; 3];
-model.predict_into_unchecked(&[0.5, 1.2, -0.3, 0.8], &mut output);
+model.predict_into(&[0.5, 1.2, -0.3, 0.8], &mut output);
 ```
 
 ## Complexity
@@ -146,17 +139,16 @@ model.predict_into_unchecked(&[0.5, 1.2, -0.3, 0.8], &mut output);
 | Operation | Time | Space |
 |-----------|------|-------|
 | Construction | O(total_weights) | O(total_weights + total_biases) |
-| `predict_unchecked` | O(Σ layer[i] x layer[i+1]) | O(max_layer_size) scratch |
-| `predict` | O(n_inputs) + O(matmul) | O(max_layer_size) scratch |
+| `predict` | O(Σ layer[i] x layer[i+1]) | O(max_layer_size) scratch |
 
 The cost is dominated by FMA count:
 
-| Topology | FMAs | Approx. latency |
-|----------|------|----------------|
-| 8→16→1 | 144 | ~100 ns |
-| 16→32→8→1 | 776 | ~370 ns |
-| 64→64→1 | 4,160 | ~2 us |
+| Topology | FMAs | Latency (AVX2+FMA) |
+|----------|------|--------------------|
+| 8→16→1 | 144 | 53 ns |
+| 16→32→8→1 | 776 | 133 ns |
+| 64→64→1 | 4,160 | 373 ns |
 
-Latency scales linearly with FMA count at scalar throughput.
-SIMD vectorization (AVX2, 4-wide f64) would reduce the larger
-configurations by ~4x.
+With AVX2+FMA tiled GEMV (4 neurons sharing input loads), the
+hot path is load-port bound, not compute bound. Compile with
+`RUSTFLAGS="-C target-cpu=native"` for AVX2+FMA dispatch.

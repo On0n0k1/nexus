@@ -5,7 +5,7 @@ extern crate alloc;
 use alloc::{boxed::Box, vec::Vec};
 
 #[cfg(feature = "alloc")]
-use crate::{LoadError, NanInput};
+use crate::LoadError;
 
 /// Hidden-layer activation function.
 ///
@@ -22,6 +22,14 @@ pub enum Activation {
     Tanh,
     /// 1 / (1 + exp(-x)). Requires `std` or `libm`.
     Sigmoid,
+    /// Pass-through (no transformation).
+    Identity,
+    /// x if x >= 0, alpha * (exp(x) - 1) otherwise. Requires `std` or `libm`.
+    Elu(f64),
+    /// Gaussian error linear unit (tanh approximation). Requires `std` or `libm`.
+    Gelu,
+    /// x * sigmoid(x), also known as SiLU in PyTorch. Requires `std` or `libm`.
+    Swish,
 }
 
 #[cfg(feature = "alloc")]
@@ -45,7 +53,7 @@ macro_rules! impl_mlp {
         ///     &[0.0, 0.0, 0.0, 0.0],
         ///     Activation::Relu,
         /// ).unwrap();
-        /// let score = model.predict(&[1.0, 2.0]).unwrap();
+        /// let score = model.predict(&[1.0, 2.0]);
         /// ```
         #[derive(Debug, Clone)]
         pub struct $name {
@@ -110,9 +118,13 @@ macro_rules! impl_mlp {
 
                 #[cfg(not(any(feature = "std", feature = "libm")))]
                 match activation {
-                    Activation::Tanh | Activation::Sigmoid => {
+                    Activation::Tanh
+                    | Activation::Sigmoid
+                    | Activation::Elu(_)
+                    | Activation::Gelu
+                    | Activation::Swish => {
                         return Err(LoadError::Validation(
-                            "Tanh/Sigmoid require std or libm feature",
+                            "Tanh/Sigmoid/Elu/Gelu/Swish require std or libm feature",
                         ));
                     }
                     _ => {}
@@ -136,49 +148,22 @@ macro_rules! impl_mlp {
                 })
             }
 
-            /// Single-output prediction with NaN input check.
+            /// Single-output prediction.
             ///
-            /// Returns `Err(NanInput)` if any input is NaN.
+            /// NaN inputs propagate through the computation.
             /// Panics if `n_outputs() != 1`.
-            pub fn predict(&mut self, input: &[$ty]) -> Result<$ty, NanInput> {
-                if input.iter().any(|x| x.is_nan()) {
-                    return Err(NanInput);
-                }
-                Ok(self.predict_unchecked(input))
-            }
-
-            /// Single-output prediction without NaN check.
-            ///
-            /// NaN inputs propagate through the computation (including
-            /// through relu). Panics if `n_outputs() != 1`.
-            pub fn predict_unchecked(&mut self, input: &[$ty]) -> $ty {
+            pub fn predict(&mut self, input: &[$ty]) -> $ty {
                 assert_eq!(
                     self.n_outputs(),
                     1,
-                    "predict_unchecked() requires n_outputs == 1, use predict_into_unchecked()"
+                    "predict() requires n_outputs == 1, use predict_into()"
                 );
                 let mut out = [0.0 as $ty];
-                self.predict_into_unchecked(input, &mut out);
+                self.predict_into(input, &mut out);
                 out[0]
             }
 
-            /// General prediction with NaN input check.
-            ///
-            /// Returns `Err(NanInput)` if any input is NaN.
-            ///
-            /// # Panics
-            ///
-            /// Panics if `input.len() != self.n_inputs()` or
-            /// `output.len() != self.n_outputs()`.
-            pub fn predict_into(&mut self, input: &[$ty], output: &mut [$ty]) -> Result<(), NanInput> {
-                if input.iter().any(|x| x.is_nan()) {
-                    return Err(NanInput);
-                }
-                self.predict_into_unchecked(input, output);
-                Ok(())
-            }
-
-            /// General prediction without NaN check.
+            /// General prediction (multi-output).
             ///
             /// NaN inputs propagate through the computation.
             ///
@@ -186,7 +171,7 @@ macro_rules! impl_mlp {
             ///
             /// Panics if `input.len() != self.n_inputs()` or
             /// `output.len() != self.n_outputs()`.
-            pub fn predict_into_unchecked(&mut self, input: &[$ty], output: &mut [$ty]) {
+            pub fn predict_into(&mut self, input: &[$ty], output: &mut [$ty]) {
                 assert_eq!(input.len(), self.n_inputs());
                 assert_eq!(output.len(), self.n_outputs());
 
@@ -291,6 +276,41 @@ macro_rules! impl_mlp {
                         #[cfg(not(any(feature = "std", feature = "libm")))]
                         { let _ = x; unreachable!() }
                     }
+                    Activation::Identity => x,
+                    Activation::Elu(alpha) => {
+                        if x >= 0.0 as $ty {
+                            x
+                        } else {
+                            #[cfg(feature = "std")]
+                            { (alpha * (x as f64).exp_m1()) as $ty }
+                            #[cfg(all(not(feature = "std"), feature = "libm"))]
+                            { (alpha * libm::expm1(x as f64)) as $ty }
+                            #[cfg(not(any(feature = "std", feature = "libm")))]
+                            { let _ = (x, alpha); unreachable!() }
+                        }
+                    }
+                    Activation::Gelu => {
+                        #[cfg(feature = "std")]
+                        {
+                            let xf = x as f64;
+                            (0.5 * xf * (1.0 + (0.7978845608028654 * (0.044715 * xf * xf).mul_add(xf, xf)).tanh())) as $ty
+                        }
+                        #[cfg(all(not(feature = "std"), feature = "libm"))]
+                        {
+                            let xf = x as f64;
+                            (0.5 * xf * (1.0 + libm::tanh(0.7978845608028654 * (xf + 0.044715 * xf * xf * xf)))) as $ty
+                        }
+                        #[cfg(not(any(feature = "std", feature = "libm")))]
+                        { let _ = x; unreachable!() }
+                    }
+                    Activation::Swish => {
+                        #[cfg(feature = "std")]
+                        { let xf = x as f64; (xf / (1.0 + (-xf).exp())) as $ty }
+                        #[cfg(all(not(feature = "std"), feature = "libm"))]
+                        { let xf = x as f64; (xf / (1.0 + libm::exp(-xf))) as $ty }
+                        #[cfg(not(any(feature = "std", feature = "libm")))]
+                        { let _ = x; unreachable!() }
+                    }
                 }
             }
         }
@@ -314,7 +334,7 @@ mod tests {
     fn single_neuron_no_hidden() {
         // 1 input → 1 output, w=2.0, b=0.5 → 2*x + 0.5
         let mut model = MlpF64::from_parts(&[1, 1], &[2.0], &[0.5], Activation::Relu).unwrap();
-        assert!((model.predict(&[3.0]).unwrap() - 6.5).abs() < 1e-12);
+        assert!((model.predict(&[3.0]) - 6.5).abs() < 1e-12);
     }
 
     #[test]
@@ -328,8 +348,9 @@ mod tests {
         //   o0 = 1.0*h0 + 1.0*h1 + 0.0
         let weights = vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0];
         let biases = vec![0.0, 0.0, 0.0];
-        let mut model = MlpF64::from_parts(&[2, 2, 1], &weights, &biases, Activation::Relu).unwrap();
-        assert!((model.predict(&[3.0, 4.0]).unwrap() - 7.0).abs() < 1e-12);
+        let mut model =
+            MlpF64::from_parts(&[2, 2, 1], &weights, &biases, Activation::Relu).unwrap();
+        assert!((model.predict(&[3.0, 4.0]) - 7.0).abs() < 1e-12);
     }
 
     #[test]
@@ -340,8 +361,8 @@ mod tests {
         // o0 = 1.0 * h0 + 0.0
         let mut model =
             MlpF64::from_parts(&[1, 1, 1], &[1.0, 1.0], &[-5.0, 0.0], Activation::Relu).unwrap();
-        assert!((model.predict(&[3.0]).unwrap() - 0.0).abs() < 1e-12); // relu(3 - 5) = 0
-        assert!((model.predict(&[7.0]).unwrap() - 2.0).abs() < 1e-12); // relu(7 - 5) = 2
+        assert!((model.predict(&[3.0]) - 0.0).abs() < 1e-12); // relu(3 - 5) = 0
+        assert!((model.predict(&[7.0]) - 2.0).abs() < 1e-12); // relu(7 - 5) = 2
     }
 
     #[test]
@@ -357,8 +378,8 @@ mod tests {
             Activation::LeakyRelu(0.1),
         )
         .unwrap();
-        assert!((model.predict(&[2.0]).unwrap() - 2.0).abs() < 1e-12);
-        assert!((model.predict(&[-3.0]).unwrap() - (-0.3)).abs() < 1e-12);
+        assert!((model.predict(&[2.0]) - 2.0).abs() < 1e-12);
+        assert!((model.predict(&[-3.0]) - (-0.3)).abs() < 1e-12);
     }
 
     #[test]
@@ -371,7 +392,7 @@ mod tests {
         let mut model =
             MlpF64::from_parts(&[1, 1, 1], &[1.0, 1.0], &[0.0, 0.0], Activation::Tanh).unwrap();
         let expected = 2.0_f64.tanh();
-        assert!((model.predict(&[2.0]).unwrap() - expected).abs() < 1e-12);
+        assert!((model.predict(&[2.0]) - expected).abs() < 1e-12);
     }
 
     #[test]
@@ -384,7 +405,7 @@ mod tests {
         let mut model =
             MlpF64::from_parts(&[1, 1, 1], &[1.0, 1.0], &[0.0, 0.0], Activation::Sigmoid).unwrap();
         let expected = 1.0 / (1.0 + (-2.0_f64).exp());
-        assert!((model.predict(&[2.0]).unwrap() - expected).abs() < 1e-12);
+        assert!((model.predict(&[2.0]) - expected).abs() < 1e-12);
     }
 
     #[test]
@@ -428,11 +449,12 @@ mod tests {
         biases.extend_from_slice(&b1);
         biases.extend_from_slice(&b2);
 
-        let mut model = MlpF64::from_parts(&[3, 4, 2, 1], &weights, &biases, Activation::Relu).unwrap();
+        let mut model =
+            MlpF64::from_parts(&[3, 4, 2, 1], &weights, &biases, Activation::Relu).unwrap();
 
         // x = [1, 2, 3]
         // h = [1, 2, 3, 6], g = [1+2, 3+6] = [3, 9], o = 3+9 = 12
-        assert!((model.predict(&[1.0, 2.0, 3.0]).unwrap() - 12.0).abs() < 1e-12);
+        assert!((model.predict(&[1.0, 2.0, 3.0]) - 12.0).abs() < 1e-12);
     }
 
     #[test]
@@ -445,7 +467,7 @@ mod tests {
         let mut model =
             MlpF64::from_parts(&[1, 1, 1], &[1.0, 1.0], &[0.0, -10.0], Activation::Relu).unwrap();
         // x=5 → h=relu(5)=5 → o=5-10=-5 (NOT relu'd)
-        assert!((model.predict(&[5.0]).unwrap() - (-5.0)).abs() < 1e-12);
+        assert!((model.predict(&[5.0]) - (-5.0)).abs() < 1e-12);
     }
 
     #[test]
@@ -453,7 +475,7 @@ mod tests {
     #[should_panic]
     fn wrong_input_panics() {
         let mut model = MlpF64::from_parts(&[2, 1], &[1.0, 1.0], &[0.0], Activation::Relu).unwrap();
-        model.predict_unchecked(&[1.0]); // expects 2 inputs
+        model.predict(&[1.0]); // expects 2 inputs
     }
 
     #[test]
@@ -491,34 +513,17 @@ mod tests {
             Activation::Relu,
         )
         .unwrap();
-        assert!((model.predict(&[3.0_f32, 4.0]).unwrap() - 7.0_f32).abs() < 1e-5);
+        assert!((model.predict(&[3.0_f32, 4.0]) - 7.0_f32).abs() < 1e-5);
     }
 
     #[test]
     #[cfg(feature = "alloc")]
-    fn nan_through_relu_propagates_unchecked() {
+    fn nan_through_relu_propagates() {
         // 1 input → 1 hidden (relu) → 1 output
         // NaN goes through relu hidden layer — must come out as NaN
         let mut model =
             MlpF64::from_parts(&[1, 1, 1], &[1.0, 1.0], &[0.0, 0.0], Activation::Relu).unwrap();
-        assert!(model.predict_unchecked(&[f64::NAN]).is_nan());
-    }
-
-    #[test]
-    #[cfg(feature = "alloc")]
-    fn nan_input_returns_error() {
-        let mut model =
-            MlpF64::from_parts(&[1, 1, 1], &[1.0, 1.0], &[0.0, 0.0], Activation::Relu).unwrap();
-        assert!(model.predict(&[f64::NAN]).is_err());
-    }
-
-    #[test]
-    #[cfg(feature = "alloc")]
-    fn nan_input_predict_into_returns_error() {
-        let mut model =
-            MlpF64::from_parts(&[1, 1, 1], &[1.0, 1.0], &[0.0, 0.0], Activation::Relu).unwrap();
-        let mut out = [0.0_f64];
-        assert!(model.predict_into(&[f64::NAN], &mut out).is_err());
+        assert!(model.predict(&[f64::NAN]).is_nan());
     }
 
     #[test]
@@ -550,11 +555,12 @@ mod tests {
         biases.extend_from_slice(&b0);
         biases.extend_from_slice(&b1);
 
-        let mut model = MlpF64::from_parts(&[2, 4, 3], &weights, &biases, Activation::Relu).unwrap();
+        let mut model =
+            MlpF64::from_parts(&[2, 4, 3], &weights, &biases, Activation::Relu).unwrap();
         assert_eq!(model.n_outputs(), 3);
 
         let mut out = [0.0_f64; 3];
-        model.predict_into(&[5.0, 3.0], &mut out).unwrap();
+        model.predict_into(&[5.0, 3.0], &mut out);
         assert!((out[0] - 5.0).abs() < 1e-12);
         assert!((out[1] - 3.0).abs() < 1e-12);
         assert!((out[2] - 8.0).abs() < 1e-12);
@@ -564,8 +570,9 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[should_panic]
     fn predict_panics_multi_output() {
-        let mut model = MlpF64::from_parts(&[2, 3], &[1.0; 6], &[0.0; 3], Activation::Relu).unwrap();
-        model.predict_unchecked(&[1.0, 2.0]); // n_outputs=3, should panic
+        let mut model =
+            MlpF64::from_parts(&[2, 3], &[1.0; 6], &[0.0; 3], Activation::Relu).unwrap();
+        model.predict(&[1.0, 2.0]); // n_outputs=3, should panic
     }
 
     #[test]
@@ -574,6 +581,64 @@ mod tests {
     fn predict_into_wrong_output_len() {
         let mut model = MlpF64::from_parts(&[1, 1], &[1.0], &[0.0], Activation::Relu).unwrap();
         let mut out = [0.0_f64; 2];
-        model.predict_into_unchecked(&[1.0], &mut out);
+        model.predict_into(&[1.0], &mut out);
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    fn identity_activation() {
+        // 1 input → 1 hidden (identity) → 1 output
+        // h0 = identity(1.0*x + 0.0) = x (no clipping)
+        // o0 = 1.0*h0 + 0.0
+        let mut model =
+            MlpF64::from_parts(&[1, 1, 1], &[1.0, 1.0], &[0.0, 0.0], Activation::Identity).unwrap();
+        assert!((model.predict(&[5.0]) - 5.0).abs() < 1e-12);
+        assert!((model.predict(&[-3.0]) - (-3.0)).abs() < 1e-12);
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    #[cfg(any(feature = "std", feature = "libm"))]
+    fn elu_activation() {
+        // 1 input → 1 hidden (elu alpha=1.0) → 1 output
+        // h0 = elu(1.0*x + 0.0)
+        // o0 = 1.0*h0 + 0.0
+        let mut model =
+            MlpF64::from_parts(&[1, 1, 1], &[1.0, 1.0], &[0.0, 0.0], Activation::Elu(1.0)).unwrap();
+        // Positive: passthrough
+        assert!((model.predict(&[2.0]) - 2.0).abs() < 1e-12);
+        // Negative: alpha * (exp(x) - 1)
+        let expected = 1.0 * ((-1.0_f64).exp() - 1.0);
+        assert!((model.predict(&[-1.0]) - expected).abs() < 1e-12);
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    #[cfg(any(feature = "std", feature = "libm"))]
+    fn gelu_activation() {
+        // 1 input → 1 hidden (gelu) → 1 output
+        let mut model =
+            MlpF64::from_parts(&[1, 1, 1], &[1.0, 1.0], &[0.0, 0.0], Activation::Gelu).unwrap();
+        // GELU(1.0) ≈ 0.8411920 (tanh approximation)
+        let x = 1.0_f64;
+        let expected =
+            0.5 * x * (1.0 + (0.7978845608028654 * (0.044715 * x * x).mul_add(x, x)).tanh());
+        assert!((model.predict(&[1.0]) - expected).abs() < 1e-12);
+        // GELU(0) = 0
+        assert!((model.predict(&[0.0]) - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    #[cfg(any(feature = "std", feature = "libm"))]
+    fn swish_activation() {
+        // 1 input → 1 hidden (swish) → 1 output
+        let mut model =
+            MlpF64::from_parts(&[1, 1, 1], &[1.0, 1.0], &[0.0, 0.0], Activation::Swish).unwrap();
+        // Swish(2.0) = 2.0 * sigmoid(2.0) = 2.0 / (1 + exp(-2))
+        let expected = 2.0 / (1.0 + (-2.0_f64).exp());
+        assert!((model.predict(&[2.0]) - expected).abs() < 1e-12);
+        // Swish(0) = 0
+        assert!((model.predict(&[0.0]) - 0.0).abs() < 1e-12);
     }
 }
