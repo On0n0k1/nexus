@@ -79,6 +79,66 @@ pub(crate) fn dot4_f64(rows: &[f64], input: &[f64]) -> [f64; 4] {
     }
 }
 
+/// Matrix-vector product: output[j] = bias[j] + dot(weight[j], input).
+///
+/// `weight` is `(out_size, in_size)` row-major.
+#[inline]
+pub(crate) fn matvec_bias_f32(
+    weight: &[f32],
+    input: &[f32],
+    bias: &[f32],
+    output: &mut [f32],
+    out_size: usize,
+    in_size: usize,
+) {
+    let out_4 = out_size & !3;
+    let mut j = 0;
+    while j < out_4 {
+        let rows = &weight[j * in_size..(j + 4) * in_size];
+        let dots = dot4_f32(rows, &input[..in_size]);
+        output[j] = bias[j] + dots[0];
+        output[j + 1] = bias[j + 1] + dots[1];
+        output[j + 2] = bias[j + 2] + dots[2];
+        output[j + 3] = bias[j + 3] + dots[3];
+        j += 4;
+    }
+    while j < out_size {
+        let row = &weight[j * in_size..(j + 1) * in_size];
+        output[j] = bias[j] + dot_f32(row, &input[..in_size]);
+        j += 1;
+    }
+}
+
+/// Matrix-vector product without bias: output[j] = dot(weight[j], input).
+///
+/// `weight` is `(out_size, in_size)` row-major.
+#[inline]
+#[allow(dead_code)]
+pub(crate) fn matvec_f32(
+    weight: &[f32],
+    input: &[f32],
+    output: &mut [f32],
+    out_size: usize,
+    in_size: usize,
+) {
+    let out_4 = out_size & !3;
+    let mut j = 0;
+    while j < out_4 {
+        let rows = &weight[j * in_size..(j + 4) * in_size];
+        let dots = dot4_f32(rows, &input[..in_size]);
+        output[j] = dots[0];
+        output[j + 1] = dots[1];
+        output[j + 2] = dots[2];
+        output[j + 3] = dots[3];
+        j += 4;
+    }
+    while j < out_size {
+        let row = &weight[j * in_size..(j + 1) * in_size];
+        output[j] = dot_f32(row, &input[..in_size]);
+        j += 1;
+    }
+}
+
 /// Compute 4 dot products simultaneously: dot(rows[k*n..], input) for k in 0..4.
 /// `rows` layout: [row0 | row1 | row2 | row3], each row has `input.len()` elements.
 #[inline]
