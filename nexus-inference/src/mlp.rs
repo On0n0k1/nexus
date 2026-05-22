@@ -26,7 +26,7 @@ pub enum Activation {
 
 #[cfg(feature = "alloc")]
 macro_rules! impl_mlp {
-    ($name:ident, $ty:ty) => {
+    ($name:ident, $ty:ty, $dot_fn:path) => {
         /// Feedforward neural network (multi-layer perceptron).
         ///
         /// Immutable after construction. All prediction methods take `&self`.
@@ -205,23 +205,7 @@ macro_rules! impl_mlp {
                     for j in 0..out_size {
                         let row = &self.weights[w_offset + j * in_size..w_offset + (j + 1) * in_size];
                         let src = if src_is_a { &self.scratch_a[..in_size] } else { &self.scratch_b[..in_size] };
-                        let mut s0 = 0.0 as $ty;
-                        let mut s1 = 0.0 as $ty;
-                        let mut s2 = 0.0 as $ty;
-                        let mut s3 = 0.0 as $ty;
-                        let n4 = in_size & !3;
-                        let (row_bulk, row_tail) = row.split_at(n4);
-                        let (src_bulk, src_tail) = src.split_at(n4);
-                        for (rc, sc) in row_bulk.chunks_exact(4).zip(src_bulk.chunks_exact(4)) {
-                            s0 += rc[0] * sc[0];
-                            s1 += rc[1] * sc[1];
-                            s2 += rc[2] * sc[2];
-                            s3 += rc[3] * sc[3];
-                        }
-                        for (&r, &s) in row_tail.iter().zip(src_tail) {
-                            s0 += r * s;
-                        }
-                        let mut sum = self.biases[b_offset + j] + (s0 + s2) + (s1 + s3);
+                        let mut sum = self.biases[b_offset + j] + $dot_fn(row, src);
                         if !is_last {
                             sum = Self::activate(sum, self.activation);
                         }
@@ -292,9 +276,9 @@ macro_rules! impl_mlp {
 }
 
 #[cfg(feature = "alloc")]
-impl_mlp!(MlpF64, f64);
+impl_mlp!(MlpF64, f64, crate::dot::dot_f64);
 #[cfg(feature = "alloc")]
-impl_mlp!(MlpF32, f32);
+impl_mlp!(MlpF32, f32, crate::dot::dot_f32);
 
 #[cfg(test)]
 mod tests {

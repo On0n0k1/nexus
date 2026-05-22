@@ -16,6 +16,8 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+#[cfg(feature = "alloc")]
+mod dot;
 mod error;
 mod gbdt;
 mod lut;
