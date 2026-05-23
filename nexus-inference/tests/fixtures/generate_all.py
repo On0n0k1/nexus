@@ -11,6 +11,7 @@ Install dependencies:
 
 import json
 import math
+import random
 
 import torch
 import torch.nn as nn
@@ -161,7 +162,7 @@ def generate_gru_multi_output():
 
 
 def generate_mlp(name, layer_sizes, activation_cls, activation_name, dtype,
-                 inputs, prefix, init_fn, tolerance):
+                 inputs, prefix, init_fn, tolerance, activation_param=None):
     layers = []
     for i in range(len(layer_sizes) - 1):
         layers.append(nn.Linear(layer_sizes[i], layer_sizes[i + 1]))
@@ -191,17 +192,16 @@ def generate_mlp(name, layer_sizes, activation_cls, activation_name, dtype,
             outputs.append(y.tolist())
 
     with open(FIXTURES_DIR / f"{name}_expected.json", "w") as f:
-        json.dump(
-            {
-                "prefix": prefix,
-                "activation": activation_name,
-                "inputs": inputs,
-                "outputs": outputs,
-                "tolerance": tolerance,
-            },
-            f,
-            indent=2,
-        )
+        meta = {
+            "prefix": prefix,
+            "activation": activation_name,
+            "inputs": inputs,
+            "outputs": outputs,
+            "tolerance": tolerance,
+        }
+        if activation_param is not None:
+            meta["activation_param"] = activation_param
+        json.dump(meta, f, indent=2)
         f.write("\n")
 
     sizes_str = "->".join(str(s) for s in layer_sizes)
@@ -262,12 +262,32 @@ def generate_mlp_f64_tanh():
                  prefix="model", init_fn=init_linspace, tolerance=1e-10)
 
 
+def generate_mlp_f32_swish():
+    generate_mlp("mlp_f32_swish", [3, 6, 2], nn.SiLU, "swish", torch.float32,
+                 inputs=make_inputs(4, 3, seed=30),
+                 prefix="silu", init_fn=init_sinusoidal, tolerance=1e-5)
+
+
+def generate_mlp_f32_elu():
+    generate_mlp("mlp_f32_elu", [4, 8, 3], nn.ELU, "elu", torch.float32,
+                 inputs=make_inputs(4, 4, seed=31),
+                 prefix="elu_net", init_fn=init_linspace, tolerance=1e-5,
+                 activation_param=1.0)
+
+
+def generate_mlp_f32_leaky_relu():
+    generate_mlp("mlp_f32_leaky_relu", [3, 6, 4, 2], nn.LeakyReLU, "leaky_relu", torch.float32,
+                 inputs=make_inputs(5, 3, seed=32),
+                 prefix="lrelu", init_fn=init_sinusoidal, tolerance=1e-5,
+                 activation_param=0.01)
+
+
 # ---- Conv1d generators ----
 
 
 def generate_conv(name, input_ch, kernel_size, filters, output_size,
                   activation_cls, activation_name, inputs, conv_prefix,
-                  proj_prefix, init_fn):
+                  proj_prefix, init_fn, activation_param=None):
     conv = nn.Conv1d(input_ch, filters, kernel_size)
     proj = nn.Linear(filters, output_size)
 
@@ -284,12 +304,25 @@ def generate_conv(name, input_ch, kernel_size, filters, output_size,
         state[f"{proj_prefix}.{k}"] = v
     save_file(state, FIXTURES_DIR / f"{name}.safetensors")
 
-    activation_fn = {
+    _base_fns = {
         "relu": F.relu,
         "tanh": torch.tanh,
         "sigmoid": torch.sigmoid,
         "identity": lambda x: x,
-    }[activation_name]
+        "swish": F.silu,
+    }
+    if activation_name in _base_fns:
+        activation_fn = _base_fns[activation_name]
+    elif activation_name == "gelu":
+        activation_fn = lambda x: F.gelu(x, approximate='tanh')
+    elif activation_name == "elu":
+        _p = activation_param if activation_param is not None else 1.0
+        activation_fn = lambda x, p=_p: F.elu(x, alpha=p)
+    elif activation_name == "leaky_relu":
+        _p = activation_param if activation_param is not None else 0.01
+        activation_fn = lambda x, p=_p: F.leaky_relu(x, negative_slope=p)
+    else:
+        raise ValueError(f"unknown activation: {activation_name}")
 
     outputs = []
     with torch.no_grad():
@@ -302,18 +335,17 @@ def generate_conv(name, input_ch, kernel_size, filters, output_size,
             outputs.append(y.tolist())
 
     with open(FIXTURES_DIR / f"{name}_expected.json", "w") as f:
-        json.dump(
-            {
-                "conv_prefix": conv_prefix,
-                "proj_prefix": proj_prefix,
-                "activation": activation_name,
-                "inputs": inputs,
-                "outputs": outputs,
-                "tolerance": 1e-5,
-            },
-            f,
-            indent=2,
-        )
+        meta = {
+            "conv_prefix": conv_prefix,
+            "proj_prefix": proj_prefix,
+            "activation": activation_name,
+            "inputs": inputs,
+            "outputs": outputs,
+            "tolerance": 1e-5,
+        }
+        if activation_param is not None:
+            meta["activation_param"] = activation_param
+        json.dump(meta, f, indent=2)
         f.write("\n")
 
     print(f"  {name}: C={input_ch} K={kernel_size} F={filters} O={output_size}, "
@@ -355,6 +387,126 @@ def generate_conv1d_sigmoid():
                   conv_prefix="sig_conv", proj_prefix="sig_proj", init_fn=init_linspace)
 
 
+def generate_conv1d_swish():
+    generate_conv("conv1d_swish", input_ch=3, kernel_size=3, filters=4, output_size=2,
+                  activation_cls=nn.SiLU, activation_name="swish",
+                  inputs=make_inputs(6, 3, seed=33),
+                  conv_prefix="swish_conv", proj_prefix="swish_proj", init_fn=init_sinusoidal)
+
+
+def generate_conv1d_elu():
+    generate_conv("conv1d_elu", input_ch=2, kernel_size=4, filters=3, output_size=1,
+                  activation_cls=None, activation_name="elu",
+                  inputs=make_inputs(8, 2, seed=34),
+                  conv_prefix="elu_conv", proj_prefix="elu_proj", init_fn=init_linspace,
+                  activation_param=1.5)
+
+
+def generate_conv1d_leaky_relu():
+    generate_conv("conv1d_leaky_relu", input_ch=2, kernel_size=3, filters=4, output_size=1,
+                  activation_cls=None, activation_name="leaky_relu",
+                  inputs=make_inputs(6, 2, seed=35),
+                  conv_prefix="lr_conv", proj_prefix="lr_proj", init_fn=init_sinusoidal,
+                  activation_param=0.1)
+
+
+# ---- Fuzz generators (seeded random configs) ----
+
+
+def generate_fuzz():
+    rng = random.Random(42)
+
+    activations_mlp = [
+        ("relu", nn.ReLU, None),
+        ("tanh", nn.Tanh, None),
+        ("sigmoid", nn.Sigmoid, None),
+        ("gelu", lambda: nn.GELU(approximate='tanh'), None),
+        ("identity", nn.Identity, None),
+        ("swish", nn.SiLU, None),
+        ("elu", nn.ELU, 1.0),
+        ("leaky_relu", nn.LeakyReLU, 0.01),
+    ]
+
+    activations_conv = [
+        ("relu", None),
+        ("tanh", None),
+        ("sigmoid", None),
+        ("gelu", None),
+        ("identity", None),
+        ("swish", None),
+        ("elu", 1.0),
+        ("leaky_relu", 0.01),
+    ]
+
+    init_fns = [init_linspace, init_sinusoidal]
+
+    # Fuzz LSTM
+    for i in range(4):
+        input_size = rng.randint(1, 8)
+        hidden_size = rng.randint(2, 16)
+        output_size = rng.randint(1, 4)
+        n_steps = rng.randint(5, 20)
+        generate_rnn(f"fuzz_lstm_{i}", nn.LSTM, 4,
+                     input_size=input_size, hidden_size=hidden_size, output_size=output_size,
+                     inputs=make_inputs(n_steps, input_size, seed=100+i),
+                     init_fn=rng.choice(init_fns),
+                     rnn_prefix=f"fuzz{i}.lstm", proj_prefix=f"fuzz{i}.fc")
+
+    # Fuzz GRU
+    for i in range(4):
+        input_size = rng.randint(1, 8)
+        hidden_size = rng.randint(2, 16)
+        output_size = rng.randint(1, 4)
+        n_steps = rng.randint(5, 20)
+        generate_rnn(f"fuzz_gru_{i}", nn.GRU, 3,
+                     input_size=input_size, hidden_size=hidden_size, output_size=output_size,
+                     inputs=make_inputs(n_steps, input_size, seed=200+i),
+                     init_fn=rng.choice(init_fns),
+                     rnn_prefix=f"fuzz{i}.gru", proj_prefix=f"fuzz{i}.proj")
+
+    # Fuzz MLP f32
+    for i in range(4):
+        n_hidden = rng.randint(0, 3)
+        input_size = rng.randint(1, 8)
+        sizes = [input_size]
+        for _ in range(n_hidden):
+            sizes.append(rng.randint(2, 10))
+        sizes.append(rng.randint(1, 4))
+        act_name, act_cls, act_param = rng.choice(activations_mlp)
+        generate_mlp(f"fuzz_mlp_f32_{i}", sizes, act_cls, act_name, torch.float32,
+                     inputs=make_inputs(rng.randint(3, 8), input_size, seed=300+i),
+                     prefix=f"fuzz{i}", init_fn=rng.choice(init_fns), tolerance=1e-5,
+                     activation_param=act_param)
+
+    # Fuzz MLP f64
+    for i in range(2):
+        n_hidden = rng.randint(0, 2)
+        input_size = rng.randint(1, 6)
+        sizes = [input_size]
+        for _ in range(n_hidden):
+            sizes.append(rng.randint(2, 8))
+        sizes.append(rng.randint(1, 3))
+        act_name, act_cls, act_param = rng.choice(activations_mlp)
+        generate_mlp(f"fuzz_mlp_f64_{i}", sizes, act_cls, act_name, torch.float64,
+                     inputs=make_inputs(rng.randint(3, 6), input_size, seed=400+i),
+                     prefix=f"fuzz{i}", init_fn=rng.choice(init_fns), tolerance=1e-10,
+                     activation_param=act_param)
+
+    # Fuzz Conv1d
+    for i in range(4):
+        input_ch = rng.randint(1, 6)
+        kernel_size = rng.randint(2, 6)
+        filters = rng.randint(1, 8)
+        output_size = rng.randint(1, 4)
+        n_steps = rng.randint(5, 15)
+        act_name, act_param = rng.choice(activations_conv)
+        generate_conv(f"fuzz_conv1d_{i}", input_ch, kernel_size, filters, output_size,
+                      activation_cls=None, activation_name=act_name,
+                      inputs=make_inputs(n_steps, input_ch, seed=500+i),
+                      conv_prefix=f"fuzz{i}.conv", proj_prefix=f"fuzz{i}.proj",
+                      init_fn=rng.choice(init_fns), activation_param=act_param)
+
+
 if __name__ == "__main__":
     print("Generating fixtures...")
     # LSTM
@@ -372,6 +524,9 @@ if __name__ == "__main__":
     generate_mlp_f32_gelu()
     generate_mlp_f32_single_layer()
     generate_mlp_f32_deep()
+    generate_mlp_f32_swish()
+    generate_mlp_f32_elu()
+    generate_mlp_f32_leaky_relu()
     # MLP f64
     generate_mlp_f64()
     generate_mlp_f64_no_prefix()
@@ -382,4 +537,9 @@ if __name__ == "__main__":
     generate_conv1d_identity()
     generate_conv1d_large()
     generate_conv1d_sigmoid()
+    generate_conv1d_swish()
+    generate_conv1d_elu()
+    generate_conv1d_leaky_relu()
+    # Fuzz (seeded random configs)
+    generate_fuzz()
     print("Done.")
