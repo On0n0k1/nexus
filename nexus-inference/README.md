@@ -64,6 +64,39 @@ your own code if needed for classification. Use `MlpF32` for
 PyTorch-trained models (PyTorch defaults to f32). `MlpF64` is available
 for precision-sensitive applications.
 
+#### Normalization layers
+
+Neural network layers can output values at wildly different scales.
+When these feed into the next layer, the varying magnitudes create
+instability during training — weight updates in one layer cascade
+through the network and shift the distributions that downstream layers
+were learning on. Normalization addresses this by rescaling each
+layer's output to a consistent range (zero mean, unit variance) before
+passing it forward, so each layer can learn independently without
+chasing a moving target.
+
+**BatchNorm** (`nn.BatchNorm1d`): Normalizes using fixed statistics
+(mean and variance) collected during training across batches of data.
+Because these statistics are constants at inference time, the loader
+fuses them directly into the preceding linear layer's weights at load
+time — `fused_weight = scale * W`, `fused_bias = scale * (b - mean) + beta`.
+Zero runtime cost. Detected automatically by the presence of
+`running_mean` tensors in the safetensors file. Both `affine=True`
+(learned scale/shift) and `affine=False` are supported.
+
+**LayerNorm** (`nn.LayerNorm`): Normalizes across features within a
+single sample at runtime — `y = gamma * (x - mean) / sqrt(var + eps) + beta`
+where mean and variance are computed from the actual activation values
+each time. Cannot be fused because the statistics depend on each
+input. Detected automatically by 1D `.weight` tensors between linear
+layers. Adds two extra passes over the hidden layer output per layer
+(mean, then variance), which is negligible for typical hidden sizes.
+Uses eps=1e-5 (PyTorch default).
+
+Both are detected and handled automatically by `from_safetensors`.
+Models without normalization layers have zero overhead — the code
+path is skipped entirely. Requires `std` or `libm` for `sqrt`.
+
 ### Lookup Table — `LutF64` / `LutF32`
 
 Pre-computed prediction table indexed by discretized features. Each
@@ -167,6 +200,7 @@ not a gating mechanism. Small kernels (3-8) and moderate filter counts
 - `alloc` — enables MLP, LUT, GBDT, Conv types (heap allocation for weight storage)
 - `libm` — no_std math fallback (enables LSTM/GRU without std)
 - `loader-lightgbm` — LightGBM text format parser (implies `std`)
+- `safetensors` — PyTorch safetensors loader for MLP, LSTM, GRU, Conv (implies `alloc`)
 
 ## Usage
 

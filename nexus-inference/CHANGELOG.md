@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **`bias=False` support** — MLP safetensors loader handles PyTorch
+  `nn.Linear(bias=False)`. Missing bias tensors are treated as zero bias.
+- **BatchNorm fusion** — `nn.BatchNorm1d` layers between linear layers
+  are detected by `running_mean` presence and fused into the preceding
+  linear layer's weights at load time. `fused_weight = scale * W`,
+  `fused_bias = scale * (b - mean) + beta`. Zero runtime cost. Both
+  `affine=True` (learned gamma/beta) and `affine=False` (gamma=1,
+  beta=0) are supported. Requires `std` or `libm` for `sqrt`.
+- **LayerNorm support** — `nn.LayerNorm` layers between linear layers
+  are detected by 1D `.weight` tensors (without `running_mean`) and
+  applied at inference time: `y = gamma * (x - mean) / sqrt(var + eps) + beta`.
+  Cannot be fused because statistics depend on each input. New
+  `from_parts_with_layer_norm` constructor for manual construction.
+  Uses eps=1e-5 (PyTorch default). Requires `std` or `libm`.
 - **`TinyLstmF32`** — Single-layer LSTM for streaming temporal inference.
   Four gates (input, forget, cell candidate, output) with hidden and cell
   state carried between `step` calls. Fused `(4H, I+H)` gate matrix for

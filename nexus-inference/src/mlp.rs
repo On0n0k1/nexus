@@ -9,6 +9,16 @@ use crate::LoadError;
 #[cfg(feature = "alloc")]
 use crate::activation::Activation;
 
+#[cfg(all(feature = "alloc", feature = "std"))]
+fn sqrt_f64(x: f64) -> f64 {
+    x.sqrt()
+}
+
+#[cfg(all(feature = "alloc", not(feature = "std"), feature = "libm"))]
+fn sqrt_f64(x: f64) -> f64 {
+    libm::sqrt(x)
+}
+
 #[cfg(feature = "alloc")]
 macro_rules! impl_mlp {
     ($name:ident, $ty:ty, $dot_fn:path, $dot4_fn:path, $activate_fn:path) => {
@@ -36,6 +46,8 @@ macro_rules! impl_mlp {
         pub struct $name {
             weights: Box<[$ty]>,
             biases: Box<[$ty]>,
+            ln_gamma: Option<Box<[$ty]>>,
+            ln_beta: Option<Box<[$ty]>>,
             layer_sizes: Box<[u16]>,
             activation: Activation,
             scratch_a: Vec<$ty>,
@@ -118,11 +130,61 @@ macro_rules! impl_mlp {
                 Ok(Self {
                     weights: weights.into(),
                     biases: biases.into(),
+                    ln_gamma: None,
+                    ln_beta: None,
                     layer_sizes: layer_sizes_u16,
                     activation,
                     scratch_a: alloc::vec![0.0 as $ty; max_dim],
                     scratch_b: alloc::vec![0.0 as $ty; max_dim],
                 })
+            }
+
+            /// Construct from pre-trained weights with LayerNorm parameters.
+            ///
+            /// Same as [`from_parts`](Self::from_parts), but with per-hidden-layer
+            /// LayerNorm gamma and beta packed contiguously. The packed layout
+            /// matches bias layout for hidden layers: `[gamma_layer0, gamma_layer1, ...]`.
+            ///
+            /// Total length of `ln_gamma` and `ln_beta` must equal the sum of
+            /// all hidden layer sizes (i.e. total biases minus output size).
+            ///
+            /// LayerNorm uses eps=1e-5 (PyTorch default).
+            #[cfg(any(feature = "std", feature = "libm"))]
+            pub fn from_parts_with_layer_norm(
+                layer_sizes: &[usize],
+                weights: &[$ty],
+                biases: &[$ty],
+                ln_gamma: &[$ty],
+                ln_beta: &[$ty],
+                activation: Activation,
+            ) -> Result<Self, LoadError> {
+                let mut mlp = Self::from_parts(layer_sizes, weights, biases, activation)?;
+
+                let n_layers = layer_sizes.len() - 1;
+                let expected_ln: usize = (0..n_layers.saturating_sub(1))
+                    .map(|i| layer_sizes[i + 1])
+                    .sum();
+
+                if ln_gamma.len() != expected_ln {
+                    return Err(LoadError::Validation("ln_gamma length mismatch"));
+                }
+                if ln_beta.len() != expected_ln {
+                    return Err(LoadError::Validation("ln_beta length mismatch"));
+                }
+                for &g in ln_gamma {
+                    if !g.is_finite() {
+                        return Err(LoadError::Validation("non-finite ln_gamma"));
+                    }
+                }
+                for &b in ln_beta {
+                    if !b.is_finite() {
+                        return Err(LoadError::Validation("non-finite ln_beta"));
+                    }
+                }
+
+                mlp.ln_gamma = Some(ln_gamma.into());
+                mlp.ln_beta = Some(ln_beta.into());
+                Ok(mlp)
             }
 
             /// Single-output prediction.
@@ -163,6 +225,7 @@ macro_rules! impl_mlp {
                     let in_size = self.layer_sizes[layer] as usize;
                     let out_size = self.layer_sizes[layer + 1] as usize;
                     let is_last = layer == n_layers - 1;
+                    let apply_ln = !is_last && self.ln_gamma.is_some();
                     let out_size_4 = out_size & !3;
 
                     let mut j = 0;
@@ -172,7 +235,7 @@ macro_rules! impl_mlp {
                         let dots = $dot4_fn(rows, src);
                         for k in 0..4 {
                             let mut sum = self.biases[b_offset + j + k] + dots[k];
-                            if !is_last {
+                            if !is_last && !apply_ln {
                                 sum = $activate_fn(sum, self.activation);
                             }
                             if is_last {
@@ -189,7 +252,7 @@ macro_rules! impl_mlp {
                         let row = &self.weights[w_offset + j * in_size..w_offset + (j + 1) * in_size];
                         let src = if src_is_a { &self.scratch_a[..in_size] } else { &self.scratch_b[..in_size] };
                         let mut sum = self.biases[b_offset + j] + $dot_fn(row, src);
-                        if !is_last {
+                        if !is_last && !apply_ln {
                             sum = $activate_fn(sum, self.activation);
                         }
                         if is_last {
@@ -200,6 +263,43 @@ macro_rules! impl_mlp {
                             self.scratch_a[j] = sum;
                         }
                         j += 1;
+                    }
+
+                    #[cfg(any(feature = "std", feature = "libm"))]
+                    if apply_ln {
+                        let ln_g = self.ln_gamma.as_ref().unwrap();
+                        let ln_b = self.ln_beta.as_ref().unwrap();
+
+                        let (mean, inv_std) = {
+                            let src_slice = if src_is_a {
+                                &self.scratch_b[..out_size]
+                            } else {
+                                &self.scratch_a[..out_size]
+                            };
+                            let mut mean_acc = 0.0_f64;
+                            for v in src_slice {
+                                mean_acc += *v as f64;
+                            }
+                            let mean = mean_acc / out_size as f64;
+                            let mut var_acc = 0.0_f64;
+                            for v in src_slice {
+                                let d = *v as f64 - mean;
+                                var_acc = d.mul_add(d, var_acc);
+                            }
+                            (mean, 1.0_f64 / sqrt_f64(var_acc / out_size as f64 + 1e-5))
+                        };
+
+                        let dst = if src_is_a {
+                            &mut self.scratch_b[..out_size]
+                        } else {
+                            &mut self.scratch_a[..out_size]
+                        };
+                        for (k, v) in dst.iter_mut().enumerate() {
+                            let normalized = (*v as f64 - mean) * inv_std;
+                            let ln_val = (ln_g[b_offset + k] as f64)
+                                .mul_add(normalized, ln_b[b_offset + k] as f64);
+                            *v = $activate_fn(ln_val as $ty, self.activation);
+                        }
                     }
 
                     w_offset += in_size * out_size;
@@ -566,5 +666,129 @@ mod tests {
         assert!((model.predict(&[2.0]) - expected).abs() < 1e-12);
         // Swish(0) = 0
         assert!((model.predict(&[0.0]) - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    #[cfg(any(feature = "std", feature = "libm"))]
+    fn layer_norm_identity_weights() {
+        // 2 inputs → 4 hidden (LN + relu) → 1 output
+        // LN with gamma=1, beta=0 should normalize hidden activations
+        let w0: Vec<f64> = vec![1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, -1.0];
+        let b0: Vec<f64> = vec![0.0; 4];
+        let w1: Vec<f64> = vec![1.0, 1.0, 1.0, 1.0];
+        let b1: Vec<f64> = vec![0.0];
+
+        let mut weights = Vec::new();
+        weights.extend_from_slice(&w0);
+        weights.extend_from_slice(&w1);
+        let mut biases = Vec::new();
+        biases.extend_from_slice(&b0);
+        biases.extend_from_slice(&b1);
+
+        let ln_gamma: Vec<f64> = vec![1.0; 4];
+        let ln_beta: Vec<f64> = vec![0.0; 4];
+
+        let mut model = MlpF64::from_parts_with_layer_norm(
+            &[2, 4, 1],
+            &weights,
+            &biases,
+            &ln_gamma,
+            &ln_beta,
+            Activation::Relu,
+        )
+        .unwrap();
+
+        // Input [3, 5]: linear out = [3, 5, 8, -2]
+        // LN: mean=3.5, var=((3-3.5)^2+(5-3.5)^2+(8-3.5)^2+(-2-3.5)^2)/4 = 13.25
+        // inv_std = 1/sqrt(13.25+1e-5)
+        // normalized = [(3-3.5)*inv, (5-3.5)*inv, (8-3.5)*inv, (-2-3.5)*inv]
+        // gamma=1, beta=0 → normalized values
+        // relu clips negatives
+        let input = [3.0_f64, 5.0];
+        let out = model.predict(&input);
+
+        let linear_out = [3.0_f64, 5.0, 8.0, -2.0];
+        let mean = linear_out.iter().sum::<f64>() / 4.0;
+        let var: f64 = linear_out.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / 4.0;
+        let inv_std = 1.0 / (var + 1e-5_f64).sqrt();
+        let expected: f64 = linear_out
+            .iter()
+            .map(|x| ((x - mean) * inv_std).max(0.0))
+            .sum();
+        assert!(
+            (out - expected).abs() < 1e-10,
+            "got {out}, expected {expected}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    #[cfg(any(feature = "std", feature = "libm"))]
+    fn layer_norm_with_scale_shift() {
+        // 1 input → 2 hidden (LN gamma=2, beta=0.5 + identity) → 1 output
+        let weights: Vec<f64> = vec![1.0, -1.0, 1.0, 1.0];
+        let biases: Vec<f64> = vec![0.0, 0.0, 0.0];
+        let ln_gamma: Vec<f64> = vec![2.0, 2.0];
+        let ln_beta: Vec<f64> = vec![0.5, 0.5];
+
+        let mut model = MlpF64::from_parts_with_layer_norm(
+            &[1, 2, 1],
+            &weights,
+            &biases,
+            &ln_gamma,
+            &ln_beta,
+            Activation::Identity,
+        )
+        .unwrap();
+
+        // Input [3]: linear out = [3, -3]
+        // LN: mean=0, var=9, inv_std=1/sqrt(9+1e-5)
+        // normalized = [3*inv, -3*inv]
+        // gamma*normalized+beta = [2*3*inv+0.5, 2*(-3)*inv+0.5]
+        // output = sum = 1.0 (the gammas cancel out, only betas survive)
+        let out = model.predict(&[3.0]);
+
+        let linear_out = [3.0_f64, -3.0];
+        let mean = 0.0_f64;
+        let var = 9.0_f64;
+        let inv_std = 1.0 / (var + 1e-5_f64).sqrt();
+        let ln_out: Vec<f64> = linear_out
+            .iter()
+            .enumerate()
+            .map(|(k, &x)| ln_gamma[k] * (x - mean) * inv_std + ln_beta[k])
+            .collect();
+        let expected: f64 = ln_out.iter().sum();
+        assert!(
+            (out - expected).abs() < 1e-10,
+            "got {out}, expected {expected}"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "alloc")]
+    #[cfg(any(feature = "std", feature = "libm"))]
+    fn layer_norm_validation() {
+        // Wrong ln_gamma length
+        let err = MlpF64::from_parts_with_layer_norm(
+            &[2, 4, 1],
+            &[1.0; 12],
+            &[0.0; 5],
+            &[1.0; 3], // should be 4
+            &[0.0; 4],
+            Activation::Relu,
+        );
+        assert!(err.is_err());
+
+        // Wrong ln_beta length
+        let err = MlpF64::from_parts_with_layer_norm(
+            &[2, 4, 1],
+            &[1.0; 12],
+            &[0.0; 5],
+            &[1.0; 4],
+            &[0.0; 3], // should be 4
+            Activation::Relu,
+        );
+        assert!(err.is_err());
     }
 }
