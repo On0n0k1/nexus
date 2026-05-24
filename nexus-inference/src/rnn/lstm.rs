@@ -269,6 +269,7 @@ impl TinyLstmF32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::{sigmoid_f32, tanh_f32};
 
     fn make_lstm(
         input: usize,

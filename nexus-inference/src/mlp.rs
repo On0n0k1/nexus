@@ -19,9 +19,81 @@ fn sqrt_f64(x: f64) -> f64 {
     libm::sqrt(x)
 }
 
+#[cfg(all(
+    feature = "alloc",
+    target_arch = "x86_64",
+    any(
+        target_feature = "avx512f",
+        all(target_feature = "avx2", target_feature = "fma"),
+    )
+))]
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn mlp_tiled_simd_f32(
+    weights: &[f32],
+    biases: &[f32],
+    src: &[f32],
+    dst: &mut [f32],
+    in_size: usize,
+    out_size_4: usize,
+    activation: Activation,
+    apply_activation: bool,
+) -> usize {
+    use crate::dot::dot4_f32_m128;
+    use core::arch::x86_64::*;
+    let mut j = 0;
+    unsafe {
+        if apply_activation && matches!(activation, Activation::Relu) {
+            let zero = _mm_setzero_ps();
+            while j < out_size_4 {
+                let rows = &weights[j * in_size..(j + 4) * in_size];
+                let dots = dot4_f32_m128(rows, src);
+                let bias_v = _mm_loadu_ps(biases.as_ptr().add(j));
+                _mm_storeu_ps(
+                    dst.as_mut_ptr().add(j),
+                    _mm_max_ps(_mm_add_ps(dots, bias_v), zero),
+                );
+                j += 4;
+            }
+        } else if !apply_activation || matches!(activation, Activation::Identity) {
+            while j < out_size_4 {
+                let rows = &weights[j * in_size..(j + 4) * in_size];
+                let dots = dot4_f32_m128(rows, src);
+                let bias_v = _mm_loadu_ps(biases.as_ptr().add(j));
+                _mm_storeu_ps(dst.as_mut_ptr().add(j), _mm_add_ps(dots, bias_v));
+                j += 4;
+            }
+        }
+    }
+    j
+}
+
+#[cfg(all(
+    feature = "alloc",
+    target_arch = "x86_64",
+    any(
+        target_feature = "avx512f",
+        all(target_feature = "avx2", target_feature = "fma"),
+    )
+))]
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+fn mlp_tiled_noop<T>(
+    _: &[T],
+    _: &[T],
+    _: &[T],
+    _: &mut [T],
+    _: usize,
+    _: usize,
+    _: Activation,
+    _: bool,
+) -> usize {
+    0
+}
+
 #[cfg(feature = "alloc")]
 macro_rules! impl_mlp {
-    ($name:ident, $ty:ty, $dot_fn:path, $dot4_fn:path, $activate_fn:path) => {
+    ($name:ident, $ty:ty, $dot_fn:path, $dot4_fn:path, $activate_fn:path, $tiled_fn:path) => {
         /// Feedforward neural network (multi-layer perceptron).
         ///
         /// Immutable after construction. All prediction methods take `&self`.
@@ -228,7 +300,66 @@ macro_rules! impl_mlp {
                     let apply_ln = !is_last && self.ln_gamma.is_some();
                     let out_size_4 = out_size & !3;
 
-                    let mut j = 0;
+                    // SIMD tiled path: dot4_f32_m128 + vectorized bias/activation/store.
+                    // 3 branches because borrow checker needs disjoint src/dst proof.
+                    #[cfg(all(
+                        target_arch = "x86_64",
+                        any(
+                            target_feature = "avx512f",
+                            all(target_feature = "avx2", target_feature = "fma"),
+                        )
+                    ))]
+                    let mut j = {
+                        let apply_activation = !is_last && !apply_ln;
+                        if is_last {
+                            let src = if src_is_a {
+                                &self.scratch_a[..in_size]
+                            } else {
+                                &self.scratch_b[..in_size]
+                            };
+                            $tiled_fn(
+                                &self.weights[w_offset..],
+                                &self.biases[b_offset..],
+                                src,
+                                output,
+                                in_size,
+                                out_size_4,
+                                self.activation,
+                                false,
+                            )
+                        } else if src_is_a {
+                            $tiled_fn(
+                                &self.weights[w_offset..],
+                                &self.biases[b_offset..],
+                                &self.scratch_a[..in_size],
+                                &mut self.scratch_b,
+                                in_size,
+                                out_size_4,
+                                self.activation,
+                                apply_activation,
+                            )
+                        } else {
+                            $tiled_fn(
+                                &self.weights[w_offset..],
+                                &self.biases[b_offset..],
+                                &self.scratch_b[..in_size],
+                                &mut self.scratch_a,
+                                in_size,
+                                out_size_4,
+                                self.activation,
+                                apply_activation,
+                            )
+                        }
+                    };
+                    #[cfg(not(all(
+                        target_arch = "x86_64",
+                        any(
+                            target_feature = "avx512f",
+                            all(target_feature = "avx2", target_feature = "fma"),
+                        )
+                    )))]
+                    let mut j = 0usize;
+
                     while j < out_size_4 {
                         let rows = &self.weights[w_offset + j * in_size..w_offset + (j + 4) * in_size];
                         let src = if src_is_a { &self.scratch_a[..in_size] } else { &self.scratch_b[..in_size] };
@@ -337,7 +468,8 @@ impl_mlp!(
     f64,
     crate::dot::dot_f64,
     crate::dot::dot4_f64,
-    crate::activation::activate_f64
+    crate::activation::activate_f64,
+    mlp_tiled_noop
 );
 #[cfg(feature = "alloc")]
 impl_mlp!(
@@ -345,7 +477,8 @@ impl_mlp!(
     f32,
     crate::dot::dot_f32,
     crate::dot::dot4_f32,
-    crate::activation::activate_f32
+    crate::activation::activate_f32,
+    mlp_tiled_simd_f32
 );
 
 #[cfg(test)]

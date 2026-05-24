@@ -1,5 +1,5 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use nexus_inference::{Activation, GbdtF64, LutF64, MlpF64};
+use nexus_inference::{Activation, GbdtF64, LutF64, MlpF32, MlpF64};
 
 const LIGHTGBM_HEADER: &str = "\
 tree
@@ -174,6 +174,57 @@ fn bench_mlp(c: &mut Criterion) {
     });
 }
 
+fn bench_mlp_f32(c: &mut Criterion) {
+    let features_8: Vec<f32> = vec![0.5; 8];
+    let features_16: Vec<f32> = vec![0.5; 16];
+    let features_64: Vec<f32> = vec![0.5; 64];
+
+    let (w, b) = build_mlp_weights(&[8, 16, 1]);
+    let w: Vec<f32> = w.into_iter().map(|x| x as f32).collect();
+    let b: Vec<f32> = b.into_iter().map(|x| x as f32).collect();
+    let mut model = MlpF32::from_parts(&[8, 16, 1], &w, &b, Activation::Relu).unwrap();
+    c.bench_function("MlpF32::predict 8→16→1 relu", |b| {
+        b.iter(|| model.predict(black_box(&features_8)));
+    });
+
+    let (w, b) = build_mlp_weights(&[16, 32, 8, 1]);
+    let w: Vec<f32> = w.into_iter().map(|x| x as f32).collect();
+    let b: Vec<f32> = b.into_iter().map(|x| x as f32).collect();
+    let mut model = MlpF32::from_parts(&[16, 32, 8, 1], &w, &b, Activation::Relu).unwrap();
+    c.bench_function("MlpF32::predict 16→32→8→1 relu", |b| {
+        b.iter(|| model.predict(black_box(&features_16)));
+    });
+
+    let (w, b) = build_mlp_weights(&[64, 64, 1]);
+    let w: Vec<f32> = w.into_iter().map(|x| x as f32).collect();
+    let b: Vec<f32> = b.into_iter().map(|x| x as f32).collect();
+    let mut model = MlpF32::from_parts(&[64, 64, 1], &w, &b, Activation::Relu).unwrap();
+    c.bench_function("MlpF32::predict 64→64→1 relu", |b| {
+        b.iter(|| model.predict(black_box(&features_64)));
+    });
+
+    // Deep stacked configs
+    let features_32: Vec<f32> = vec![0.5; 32];
+
+    // 32 → 32 → 32 → 32 → 1 (4 layers)
+    let (w, b) = build_mlp_weights(&[32, 32, 32, 32, 1]);
+    let w: Vec<f32> = w.into_iter().map(|x| x as f32).collect();
+    let b: Vec<f32> = b.into_iter().map(|x| x as f32).collect();
+    let mut model = MlpF32::from_parts(&[32, 32, 32, 32, 1], &w, &b, Activation::Relu).unwrap();
+    c.bench_function("MlpF32::predict 32→32→32→32→1 relu", |b| {
+        b.iter(|| model.predict(black_box(&features_32)));
+    });
+
+    // 64 → 64 → 64 → 1 (3 layers)
+    let (w, b) = build_mlp_weights(&[64, 64, 64, 1]);
+    let w: Vec<f32> = w.into_iter().map(|x| x as f32).collect();
+    let b: Vec<f32> = b.into_iter().map(|x| x as f32).collect();
+    let mut model = MlpF32::from_parts(&[64, 64, 64, 1], &w, &b, Activation::Relu).unwrap();
+    c.bench_function("MlpF32::predict 64→64→64→1 relu", |b| {
+        b.iter(|| model.predict(black_box(&features_64)));
+    });
+}
+
 fn bench_lut(c: &mut Criterion) {
     // 2 features × 10 bins
     let table_2x10: Vec<f64> = (0..100).map(|i| i as f64 * 0.01).collect();
@@ -190,5 +241,5 @@ fn bench_lut(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_gbdt, bench_mlp, bench_lut);
+criterion_group!(benches, bench_gbdt, bench_mlp, bench_mlp_f32, bench_lut);
 criterion_main!(benches);

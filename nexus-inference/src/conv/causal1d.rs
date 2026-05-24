@@ -6,6 +6,60 @@ use crate::LoadError;
 use crate::activation::{Activation, activate_f32};
 use crate::dot::{dot_f32, dot4_f32, matvec_bias_f32};
 
+#[cfg(all(
+    target_arch = "x86_64",
+    any(
+        target_feature = "avx512f",
+        all(target_feature = "avx2", target_feature = "fma"),
+    )
+))]
+#[inline(never)]
+fn conv_tiled_simd(
+    w_conv: &[f32],
+    b_conv: &[f32],
+    lin: &[f32],
+    filter_scratch: &mut [f32],
+    conv_len: usize,
+    filters_4: usize,
+    activation: Activation,
+) -> usize {
+    use crate::dot::dot4_f32_m128;
+    use core::arch::x86_64::*;
+
+    let mut f = 0;
+    // SAFETY: cfg guarantees SIMD availability.
+    // f + 4 <= filters_4 within the loop; bias/scratch accesses are in bounds.
+    unsafe {
+        match activation {
+            Activation::Relu => {
+                let zero = _mm_setzero_ps();
+                while f < filters_4 {
+                    let rows = &w_conv[f * conv_len..(f + 4) * conv_len];
+                    let dots = dot4_f32_m128(rows, lin);
+                    let bias_v = _mm_loadu_ps(b_conv.as_ptr().add(f));
+                    let activated = _mm_max_ps(_mm_add_ps(dots, bias_v), zero);
+                    _mm_storeu_ps(filter_scratch.as_mut_ptr().add(f), activated);
+                    f += 4;
+                }
+            }
+            Activation::Identity => {
+                while f < filters_4 {
+                    let rows = &w_conv[f * conv_len..(f + 4) * conv_len];
+                    let dots = dot4_f32_m128(rows, lin);
+                    let bias_v = _mm_loadu_ps(b_conv.as_ptr().add(f));
+                    _mm_storeu_ps(
+                        filter_scratch.as_mut_ptr().add(f),
+                        _mm_add_ps(dots, bias_v),
+                    );
+                    f += 4;
+                }
+            }
+            _ => {}
+        }
+    }
+    f
+}
+
 /// Streaming causal 1D convolution.
 ///
 /// Maintains a circular buffer of the last `kernel_size` inputs. Each
@@ -181,10 +235,35 @@ impl Causal1dConvF32 {
                 .copy_from_slice(&self.buffer[buf_pos * ch..(buf_pos + 1) * ch]);
         }
 
-        // Tiled convolution: 4 filters at a time via dot4_f32.
+        // Tiled convolution: 4 filters at a time.
         let lin = &self.lin_buf[..conv_len];
         let filters_4 = n_filters & !3;
-        let mut f = 0;
+
+        #[cfg(all(
+            target_arch = "x86_64",
+            any(
+                target_feature = "avx512f",
+                all(target_feature = "avx2", target_feature = "fma"),
+            )
+        ))]
+        let mut f = conv_tiled_simd(
+            &self.w_conv,
+            &self.b_conv,
+            lin,
+            &mut self.filter_scratch,
+            conv_len,
+            filters_4,
+            self.activation,
+        );
+        #[cfg(not(all(
+            target_arch = "x86_64",
+            any(
+                target_feature = "avx512f",
+                all(target_feature = "avx2", target_feature = "fma"),
+            )
+        )))]
+        let mut f = 0usize;
+
         while f < filters_4 {
             let rows = &self.w_conv[f * conv_len..(f + 4) * conv_len];
             let dots = dot4_f32(rows, lin);
