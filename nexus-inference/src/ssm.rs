@@ -10,8 +10,8 @@ use crate::dot::{dot_f32, matvec_f32};
 /// Pre-discretized dynamics applied once per [`step`](Self::step) call:
 ///
 /// ```text
-/// h_{t+1} = A ⊙ h_t + B @ u_t
-/// y_t     = C @ h_t + D @ u_t
+/// h_t = A ⊙ h_{t-1} + B @ u_t
+/// y_t = C @ h_t + D @ u_t
 /// ```
 ///
 /// A is diagonal (element-wise multiply), so per-step cost is
@@ -63,7 +63,7 @@ impl LinearSsmF32 {
     /// - `b`: input-to-state matrix, `[H, I]` row-major.
     /// - `c`: state-to-output matrix, `[O, H]` row-major.
     /// - `d`: skip connection, `[O, I]` row-major. Pass all zeros for no skip.
-    /// - `output_size`: number of outputs (inferred from `c` and `d` shapes).
+    /// - `output_size`: number of outputs (`c` and `d` lengths validated against this).
     ///
     /// # Errors
     ///
