@@ -241,5 +241,50 @@ fn bench_lut(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_gbdt, bench_mlp, bench_mlp_f32, bench_lut);
+fn bench_mlp_f32_layernorm(c: &mut Criterion) {
+    let features_16: Vec<f32> = vec![0.5; 16];
+    let features_32: Vec<f32> = vec![0.5; 32];
+    let features_64: Vec<f32> = vec![0.5; 64];
+
+    // 16 → 32 → 8 → 1: hidden layers are 32 and 8, so ln params = 40
+    let (w, b) = build_mlp_weights(&[16, 32, 8, 1]);
+    let w: Vec<f32> = w.into_iter().map(|x| x as f32).collect();
+    let b: Vec<f32> = b.into_iter().map(|x| x as f32).collect();
+    let ln_gamma: Vec<f32> = vec![1.0; 40];
+    let ln_beta: Vec<f32> = vec![0.0; 40];
+    let mut model = MlpF32::from_parts_with_layer_norm(
+        &[16, 32, 8, 1], &w, &b, &ln_gamma, &ln_beta, Activation::Relu,
+    ).unwrap();
+    c.bench_function("MlpF32::predict 16→32→8→1 relu+LN", |b| {
+        b.iter(|| model.predict(black_box(&features_16)));
+    });
+
+    // 32 → 32 → 32 → 32 → 1: hidden layers are 32,32,32, so ln params = 96
+    let (w, b) = build_mlp_weights(&[32, 32, 32, 32, 1]);
+    let w: Vec<f32> = w.into_iter().map(|x| x as f32).collect();
+    let b: Vec<f32> = b.into_iter().map(|x| x as f32).collect();
+    let ln_gamma: Vec<f32> = vec![1.0; 96];
+    let ln_beta: Vec<f32> = vec![0.0; 96];
+    let mut model = MlpF32::from_parts_with_layer_norm(
+        &[32, 32, 32, 32, 1], &w, &b, &ln_gamma, &ln_beta, Activation::Relu,
+    ).unwrap();
+    c.bench_function("MlpF32::predict 32→32→32→32→1 relu+LN", |b| {
+        b.iter(|| model.predict(black_box(&features_32)));
+    });
+
+    // 64 → 64 → 64 → 1: hidden layers are 64,64, so ln params = 128
+    let (w, b) = build_mlp_weights(&[64, 64, 64, 1]);
+    let w: Vec<f32> = w.into_iter().map(|x| x as f32).collect();
+    let b: Vec<f32> = b.into_iter().map(|x| x as f32).collect();
+    let ln_gamma: Vec<f32> = vec![1.0; 128];
+    let ln_beta: Vec<f32> = vec![0.0; 128];
+    let mut model = MlpF32::from_parts_with_layer_norm(
+        &[64, 64, 64, 1], &w, &b, &ln_gamma, &ln_beta, Activation::Relu,
+    ).unwrap();
+    c.bench_function("MlpF32::predict 64→64→64→1 relu+LN", |b| {
+        b.iter(|| model.predict(black_box(&features_64)));
+    });
+}
+
+criterion_group!(benches, bench_gbdt, bench_mlp, bench_mlp_f32, bench_mlp_f32_layernorm, bench_lut);
 criterion_main!(benches);

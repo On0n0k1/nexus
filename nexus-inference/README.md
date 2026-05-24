@@ -280,5 +280,9 @@ Target latency for typical configurations (single-threaded, AVX2+FMA):
 | GBDT | 100 trees × depth 6, 8 features | < 1 µs |
 | MLP  | 8 → 16 → 1, ReLU | < 100 ns |
 | LSTM | hidden=16, input=8 | ~250 ns |
+| LSTM | hidden=32, input=8, 2 layers | ~700 ns |
+| LSTM | hidden=32, input=8, 3 layers | ~1 µs |
 | GRU  | hidden=16, input=8 | ~200 ns |
+| GRU  | hidden=32, input=8, 2 layers | ~600 ns |
+| GRU  | hidden=32, input=8, 3 layers | ~900 ns |
 | Conv | 8 filters, kernel=4, 4 channels | ~50 ns |

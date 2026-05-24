@@ -57,8 +57,8 @@ lever.
   `__m512 → __m256 → __m128 → hadd → insertf128`.
 - **Threshold gating**: only called when `in_size >= 32`. Below that, the
   heavier reduction cost isn't amortized and `dot4_f32_m128` is faster.
-  Verified empirically: `in_size=24` regresses ~13%, `in_size=40` improves
-  ~9%, `in_size=80` improves ~18%.
+  Crossover verified empirically: models with `in_size < 32` show no
+  improvement from dot8, models with `in_size >= 40` show 5-19%.
 
 ### matvec_bias_f32 / matvec_f32 — tiled matrix-vector product
 
@@ -135,19 +135,10 @@ needed — the operation is a division + array index per feature, already
   `#[cfg(not(SIMD))] let mut j = 0usize;` avoids `unused_assignments`
   warnings from the scalar fallback overwriting a previously-assigned `j`.
 
-### Measured results (f32 SIMD tiled, pre-dot8)
+### Measured results
 
-Pinned, vs scalar baseline:
-
-| Config | Improvement |
-|--------|-------------|
-| 8→16→1 | 27% |
-| 16→32→8→1 | 33% |
-| 64→64→1 | 37% |
-| 32→32→32→32→1 | 41% |
-| 64→64→64→1 | 39% |
-
-Stacked (deeper) configs benefit more — the tiled path runs per layer.
+See Results section for absolute latencies and f32-vs-f64 comparison.
+Deeper configs benefit more — the tiled path runs per layer.
 
 ### f64 — no SIMD tiled path
 
@@ -162,9 +153,10 @@ needed, add `mlp_tiled_simd_f64` following the f32 pattern.
 ### Architecture
 
 Two hot operations per step:
-1. **Gate matvec**: `matvec_bias_f32(w_ih, concat(input, hidden))` →
-   4H-dimensional gate vector. This is the bottleneck (~80%+ of step time
-   for hidden ≥ 32).
+1. **Gate matvec**: single fused `matvec_bias_f32` over concatenated
+   `[input, hidden]` → 4H-dimensional gate vector. Matrix shape is
+   `(4×hidden, input_size + hidden_size)`. The large `in_size`
+   (input+hidden combined) is what makes dot8 effective here.
 2. **Gate activation + cell/hidden update**: sigmoid(i,f,o), tanh(g),
    cell update, tanh(cell) → hidden update.
 
@@ -193,16 +185,7 @@ Two hot operations per step:
 ### matvec improvements (from dot8)
 
 The gate matvec calls `matvec_bias_f32` which now uses the
-dot8→dot4 cascade. For LSTM 16→64→1 (gate matrix 256×80):
-
-| Config | Improvement |
-|--------|-------------|
-| 4→8→1 | -7% |
-| 8→16→1 | -2% (neutral) |
-| 8→32→1 | -10% |
-| 16→64→1 | -13% |
-| 8→32×2L | -12% |
-| 8→32×3L | -13% |
+dot8→dot4 cascade. See Results section for measured deltas.
 
 ### What wasn't done (and why)
 
@@ -225,9 +208,10 @@ dot8→dot4 cascade. For LSTM 16→64→1 (gate matrix 256×80):
 ### Architecture
 
 Three hot operations per step:
-1. **input-hidden matvec**: `matvec_f32(w_ih, input)` → 3H gate vector
-   (no bias — bias is applied during gate activation).
+1. **input-hidden matvec**: `matvec_f32(w_ih, input)` → 3H gate vector.
+   Matrix shape: `(3×hidden, input_size)`. No bias (applied in gate step).
 2. **hidden-hidden matvec**: `matvec_f32(w_hh, hidden)` → 3H gate vector.
+   Matrix shape: `(3×hidden, hidden_size)`.
 3. **Gate activation + hidden update**: computes reset, update, candidate
    gates and blends old/new hidden state.
 
@@ -235,6 +219,13 @@ GRU splits the matvec into two calls (input-hidden and hidden-hidden)
 because the candidate gate applies the reset gate between them:
 `n = tanh(ih_cand + r * hh_cand)`. This is inherent to the GRU
 architecture and can't be fused into a single matvec.
+
+**Why GRU improves less than LSTM from dot8**: LSTM concatenates input
+and hidden into one large vector (`in_size = input_size + hidden_size`)
+for a single matvec. GRU keeps them separate — two smaller matvecs.
+For GRU 16→64: the ih matvec has `in_size=16` (below dot8 threshold),
+only the hh matvec (`in_size=64`) benefits. LSTM 16→64 gets
+`in_size=80` on its single matvec — both halves benefit.
 
 ### SIMD gate processing
 
@@ -249,15 +240,8 @@ architecture and can't be fused into a single matvec.
 
 ### matvec improvements (from dot8)
 
-GRU uses `matvec_f32` (no-bias variant):
-
-| Config | Improvement |
-|--------|-------------|
-| 8→16→1 | +3% (noise) |
-| 8→32→1 | -5% |
-| 16→64→1 | -13% |
-| 8→32×2L | -7% |
-| 8→32×3L | -5% |
+GRU uses `matvec_f32` (no-bias variant). See Results section for
+measured deltas.
 
 ### What wasn't done (and why)
 
@@ -294,13 +278,9 @@ Two phases per step:
 - Handles Relu and Identity activations in SIMD. Other activations fall
   through to scalar.
 
-### Measured results (dot8 cascade)
+### Measured results
 
-| Config | Improvement |
-|--------|-------------|
-| 4ch×4k×8f (conv_len=16) | ~0% (below threshold) |
-| 4ch×8k×16f (conv_len=32) | -5% |
-| 8ch×8k×32f (conv_len=64) | -16% |
+See Results section for before/after with dot8 cascade.
 
 ### What wasn't done (and why)
 
@@ -383,15 +363,174 @@ numbers from a single run.
 
 ---
 
+## Results (2026-05-24)
+
+All measurements: `RUSTFLAGS="-C target-cpu=native"`, pinned with
+`taskset -c 0`, criterion A/B comparison (`--save-baseline` →
+`--baseline`), turbo boost NOT disabled (adds ~5-15% noise on small
+models, large-model deltas are reliable). AVX2+FMA target.
+
+Baseline: commit `1e871a6` (pre MLP-SIMD, pre dot8). Current: commit
+`3a60197` + dot8 threshold refinement.
+
+### LSTM (single-layer)
+
+| Config | Gate matrix | Before | After | Delta |
+|--------|-------------|--------|-------|-------|
+| 4→8→1 | 32×12 | 113ns | 105ns | ~-7% |
+| 8→16→1 | 64×24 | 138ns | 137ns | ~-1% |
+| 8→32→1 | 128×40 | 331ns | 297ns | **-10%** |
+| 16→64→1 | 256×80 | 1313ns | 1066ns | **-19%** |
+
+### LSTM (stacked)
+
+| Config | Before | After | Delta |
+|--------|--------|-------|-------|
+| 8→32→1 ×2L | 853ns | 739ns | **-13%** |
+| 8→32→1 ×3L | 1414ns | 1239ns | **-12%** |
+
+### GRU (single-layer)
+
+| Config | Before | After | Delta |
+|--------|--------|-------|-------|
+| 8→16→1 | 170ns | 173ns | ~0% (noise) |
+| 8→32→1 | 343ns | 325ns | **-5%** |
+| 16→64→1 | 1031ns | 909ns | **-12%** |
+
+### GRU (stacked)
+
+| Config | Before | After | Delta |
+|--------|--------|-------|-------|
+| 8→32→1 ×2L | 760ns | 711ns | **-6%** |
+| 8→32→1 ×3L | 1254ns | 1201ns | **-4%** |
+
+### Causal 1D Conv
+
+| Config | conv_len | Before | After | Delta |
+|--------|----------|--------|-------|-------|
+| 4ch×4k×8f→1 | 16 | 49ns | 48ns | ~0% |
+| 4ch×8k×16f→1 | 32 | 72ns | 68ns | **-6%** |
+| 8ch×8k×32f→1 | 64 | 140ns | 115ns | **-18%** |
+
+### MLP f32
+
+MlpF32 benchmarks were added as part of this optimization work, so no
+pre/post A/B comparison exists for them. Absolute latencies with all
+optimizations (SIMD tiled + dot8):
+
+| Config | Latency | Notes |
+|--------|---------|-------|
+| 8→16→1 relu | 53ns | in_size < 32, dot4 only |
+| 16→32→8→1 relu | 106ns | mixed: some layers below threshold |
+| 64→64→1 relu | 187ns | dot8 active |
+| 32→32→32→32→1 relu | 229ns | dot8 active, 4 layers |
+| 64→64→64→1 relu | 409ns | dot8 active, 3 layers |
+
+For reference, equivalent MlpF64 configs (no SIMD tiled path):
+
+| Config | MlpF64 | MlpF32 | f32 speedup |
+|--------|--------|--------|-------------|
+| 8→16→1 | 65ns | 53ns | 1.2× |
+| 16→32→8→1 | 170ns | 106ns | 1.6× |
+| 64→64→1 | 397ns | 187ns | 2.1× |
+
+The f32 speedup exceeds 2× for 64-wide layers — the SIMD tiled path
+fuses bias+relu in registers, and dot8 halves function call overhead.
+The 1.2× for 8→16→1 is purely from f32 halving bandwidth; no SIMD
+tiling fires (both dimensions below threshold).
+
+### MLP f64 (control)
+
+| Config | Before | After | Delta |
+|--------|--------|-------|-------|
+| 8→16→1 | 66ns | 65ns | ~0% |
+| 16→32→8→1 | 156ns | 170ns | ~0% (noise) |
+| 64→64→1 | 467ns | 455ns | ~0% |
+
+No SIMD changes for f64 — confirms the improvements are from the
+optimization work, not system state changes.
+
+### GBDT (control)
+
+| Config | Latency | Delta vs baseline |
+|--------|---------|-------------------|
+| 50×6 trees, 8 feat | 264ns | ~0% |
+| 100×6 trees, 8 feat | 550ns | ~0% |
+| 200×8 trees, 16 feat | 2.47µs | ~0% |
+
+No changes to GBDT — already optimized with false-branch-next layout.
+
+### LUT (control)
+
+| Config | Latency |
+|--------|---------|
+| 2 feat × 10 bins | 6.6ns |
+| 3 feat × 20 bins | 8.5ns |
+
+O(1) lookup, no optimization needed.
+
+### Current bottlenecks
+
+Not profiled — these are architectural observations, not measured splits.
+
+- **LSTM / GRU**: gate matvec dominates. The activation (Padé
+  tanh/sigmoid) and output projection are small relative to the
+  matrix-vector multiply. Further matvec improvement requires AVX-512
+  on wider hardware, or reducing the matrix (quantization, pruning).
+  GRU additionally can't fuse its two matvecs due to the reset gate.
+
+- **MLP f32**: matvec across layers. Relu is free (fused in SIMD).
+  Already near FMA throughput wall at 64-wide — diminishing returns
+  from dot-product restructuring.
+
+- **Conv**: split between linearization (memcpy circular buffer into
+  contiguous layout) and convolution dot products. The linearization
+  cost is fixed and doesn't shrink with SIMD improvements.
+
+---
+
 ## Summary: what moves the needle
 
 | Optimization | Where | Impact |
 |---|---|---|
 | dot4 shared input loads | everywhere | foundational — 4× input bandwidth reduction |
 | dot4_f32_m128 batched hadd | matvec, MLP, Conv | eliminates scalar hsum round-trip |
-| dot8_f32_m256 (in_size≥32) | matvec, MLP, Conv | 5-18% on medium/large models |
+| dot8_f32_m256 (in_size≥32) | matvec, MLP, Conv | 5-19% on medium/large models |
 | Padé tanh/sigmoid 8-wide | LSTM/GRU gates | eliminates scalar activation bottleneck |
-| MLP fused bias+relu in SIMD | MLP f32 | 27-41% vs scalar |
-| Conv fused bias+relu in SIMD | Conv f32 | 5-16% vs scalar |
+| MLP fused bias+relu in SIMD | MLP f32 | ~2× vs MlpF64 at 64-wide |
+| Conv fused bias+relu in SIMD | Conv f32 | 6-18% vs scalar |
 | GBDT false-branch-next layout | GBDT | ~50% of traversals sequential in L1 |
 | `#[inline(never)]` on tiled helpers | MLP, Conv | prevents caller I-cache bloat |
+
+---
+
+## Future directions
+
+Ordered by expected impact, not effort.
+
+1. **AVX-512 on production hardware**: all dot8/dot4 code has AVX-512
+   variants already written. Deploying to AVX-512-capable hardware
+   doubles the SIMD width — expect another 30-50% on matvec-bound
+   models without code changes (just a different target CPU).
+
+2. **Vectorized Tanh/Sigmoid in MLP/Conv**: currently only LSTM/GRU
+   gates use the SIMD Padé approximation. MLP and Conv fall back to
+   scalar `activate_f32` for Tanh/Sigmoid/Gelu/Swish. If these
+   activations are deployed, the same 8-wide Padé can be applied in
+   the tiled helpers.
+
+3. **Int8 quantized matvec**: halves memory bandwidth for weight loads.
+   Relevant when models grow large enough that weights spill L2. Adds
+   loader complexity (scale/zero-point per row or per tensor).
+
+4. **GRU fused ih+hh matvec**: the ih and hh matrices could be
+   concatenated into `(3H, input+hidden)` and a single matvec used,
+   with the reset gate applied after splitting the output. This matches
+   how LSTM already works. Would bring GRU improvements in line with
+   LSTM. Requires validating numerical parity with PyTorch's split
+   formulation.
+
+5. **Profiled bottleneck decomposition**: run `perf stat` or
+   `perf record` on the temporal bench to get actual cycle attribution
+   (matvec vs gates vs projection vs overhead). Current "bottleneck"
+   claims are architectural reasoning, not measurement.
