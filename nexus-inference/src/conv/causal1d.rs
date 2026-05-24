@@ -23,26 +23,54 @@ fn conv_tiled_simd(
     filters_4: usize,
     activation: Activation,
 ) -> usize {
-    use crate::dot::dot4_f32_m128;
+    use crate::dot::{dot4_f32_m128, dot8_f32_m256};
     use core::arch::x86_64::*;
 
+    let filters_8 = filters_4 & !7;
     let mut f = 0;
     // SAFETY: cfg guarantees SIMD availability.
-    // f + 4 <= filters_4 within the loop; bias/scratch accesses are in bounds.
+    // f + N <= filters_4 within respective loops; bias/scratch accesses are in bounds.
     unsafe {
         match activation {
             Activation::Relu => {
-                let zero = _mm_setzero_ps();
+                if conv_len >= 32 {
+                    let zero256 = _mm256_setzero_ps();
+                    while f < filters_8 {
+                        let rows = &w_conv[f * conv_len..(f + 8) * conv_len];
+                        let dots = dot8_f32_m256(rows, lin);
+                        let bias_v = _mm256_loadu_ps(b_conv.as_ptr().add(f));
+                        _mm256_storeu_ps(
+                            filter_scratch.as_mut_ptr().add(f),
+                            _mm256_max_ps(_mm256_add_ps(dots, bias_v), zero256),
+                        );
+                        f += 8;
+                    }
+                }
+                let zero128 = _mm_setzero_ps();
                 while f < filters_4 {
                     let rows = &w_conv[f * conv_len..(f + 4) * conv_len];
                     let dots = dot4_f32_m128(rows, lin);
                     let bias_v = _mm_loadu_ps(b_conv.as_ptr().add(f));
-                    let activated = _mm_max_ps(_mm_add_ps(dots, bias_v), zero);
-                    _mm_storeu_ps(filter_scratch.as_mut_ptr().add(f), activated);
+                    _mm_storeu_ps(
+                        filter_scratch.as_mut_ptr().add(f),
+                        _mm_max_ps(_mm_add_ps(dots, bias_v), zero128),
+                    );
                     f += 4;
                 }
             }
             Activation::Identity => {
+                if conv_len >= 32 {
+                    while f < filters_8 {
+                        let rows = &w_conv[f * conv_len..(f + 8) * conv_len];
+                        let dots = dot8_f32_m256(rows, lin);
+                        let bias_v = _mm256_loadu_ps(b_conv.as_ptr().add(f));
+                        _mm256_storeu_ps(
+                            filter_scratch.as_mut_ptr().add(f),
+                            _mm256_add_ps(dots, bias_v),
+                        );
+                        f += 8;
+                    }
+                }
                 while f < filters_4 {
                     let rows = &w_conv[f * conv_len..(f + 4) * conv_len];
                     let dots = dot4_f32_m128(rows, lin);

@@ -39,23 +39,46 @@ fn mlp_tiled_simd_f32(
     activation: Activation,
     apply_activation: bool,
 ) -> usize {
-    use crate::dot::dot4_f32_m128;
+    use crate::dot::{dot4_f32_m128, dot8_f32_m256};
     use core::arch::x86_64::*;
+    let out_size_8 = out_size_4 & !7;
     let mut j = 0;
     unsafe {
         if apply_activation && matches!(activation, Activation::Relu) {
-            let zero = _mm_setzero_ps();
+            if in_size >= 32 {
+                let zero256 = _mm256_setzero_ps();
+                while j < out_size_8 {
+                    let rows = &weights[j * in_size..(j + 8) * in_size];
+                    let dots = dot8_f32_m256(rows, src);
+                    let bias_v = _mm256_loadu_ps(biases.as_ptr().add(j));
+                    _mm256_storeu_ps(
+                        dst.as_mut_ptr().add(j),
+                        _mm256_max_ps(_mm256_add_ps(dots, bias_v), zero256),
+                    );
+                    j += 8;
+                }
+            }
+            let zero128 = _mm_setzero_ps();
             while j < out_size_4 {
                 let rows = &weights[j * in_size..(j + 4) * in_size];
                 let dots = dot4_f32_m128(rows, src);
                 let bias_v = _mm_loadu_ps(biases.as_ptr().add(j));
                 _mm_storeu_ps(
                     dst.as_mut_ptr().add(j),
-                    _mm_max_ps(_mm_add_ps(dots, bias_v), zero),
+                    _mm_max_ps(_mm_add_ps(dots, bias_v), zero128),
                 );
                 j += 4;
             }
         } else if !apply_activation || matches!(activation, Activation::Identity) {
+            if in_size >= 32 {
+                while j < out_size_8 {
+                    let rows = &weights[j * in_size..(j + 8) * in_size];
+                    let dots = dot8_f32_m256(rows, src);
+                    let bias_v = _mm256_loadu_ps(biases.as_ptr().add(j));
+                    _mm256_storeu_ps(dst.as_mut_ptr().add(j), _mm256_add_ps(dots, bias_v));
+                    j += 8;
+                }
+            }
             while j < out_size_4 {
                 let rows = &weights[j * in_size..(j + 4) * in_size];
                 let dots = dot4_f32_m128(rows, src);
