@@ -75,10 +75,7 @@ fn conv_tiled_simd(
                     let rows = &w_conv[f * conv_len..(f + 4) * conv_len];
                     let dots = dot4_f32_m128(rows, lin);
                     let bias_v = _mm_loadu_ps(b_conv.as_ptr().add(f));
-                    _mm_storeu_ps(
-                        filter_scratch.as_mut_ptr().add(f),
-                        _mm_add_ps(dots, bias_v),
-                    );
+                    _mm_storeu_ps(filter_scratch.as_mut_ptr().add(f), _mm_add_ps(dots, bias_v));
                     f += 4;
                 }
             }

@@ -84,8 +84,9 @@ struct BinaryLayer {
 ///
 /// Users train in Python (BinaryConnect, XNOR-Net, Larq, or custom
 /// STE training), fold batch normalization into biases, export binary
-/// weights as ±1 i8 via safetensors. Missing binary layers (N=0)
-/// produces a single fp32 layer with binarized intermediate.
+/// weights as ±1 i8 via safetensors. With no binary layers (N=0) the
+/// network is just the fp32 input and output layers with a binarization
+/// between them — no XNOR+popcount layers.
 ///
 /// Hidden size must be a multiple of 64 for clean bit packing.
 /// Binary weights are packed as `u64`: bit 1 = weight +1, bit 0 = weight −1.
@@ -632,16 +633,18 @@ mod tests {
 
     #[test]
     fn rejects_non_multiple_of_64() {
-        assert!(BnnF32::from_parts(
-            &vec![0.1_f32; 32 * 2],
-            &vec![0.0_f32; 32],
-            &[],
-            &[],
-            &vec![0.1_f32; 32],
-            &vec![0.0_f32; 1],
-            1,
-        )
-        .is_err());
+        assert!(
+            BnnF32::from_parts(
+                &vec![0.1_f32; 32 * 2],
+                &vec![0.0_f32; 32],
+                &[],
+                &[],
+                &vec![0.1_f32; 32],
+                &vec![0.0_f32; 1],
+                1,
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -652,30 +655,34 @@ mod tests {
     #[test]
     fn rejects_mismatched_binary_layers() {
         let bin_w = vec![0_u64; H * WPR];
-        assert!(BnnF32::from_parts(
-            &vec![0.1_f32; H * 2],
-            &vec![0.0_f32; H],
-            &[bin_w.as_slice()],
-            &[], // no biases
-            &vec![0.1_f32; H],
-            &vec![0.0_f32; 1],
-            1,
-        )
-        .is_err());
+        assert!(
+            BnnF32::from_parts(
+                &vec![0.1_f32; H * 2],
+                &vec![0.0_f32; H],
+                &[bin_w.as_slice()],
+                &[], // no biases
+                &vec![0.1_f32; H],
+                &vec![0.0_f32; 1],
+                1,
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn rejects_non_finite() {
-        assert!(BnnF32::from_parts(
-            &vec![f32::NAN; H * 2],
-            &vec![0.0_f32; H],
-            &[],
-            &[],
-            &vec![0.1_f32; H],
-            &vec![0.0_f32; 1],
-            1,
-        )
-        .is_err());
+        assert!(
+            BnnF32::from_parts(
+                &vec![f32::NAN; H * 2],
+                &vec![0.0_f32; H],
+                &[],
+                &[],
+                &vec![0.1_f32; H],
+                &vec![0.0_f32; 1],
+                1,
+            )
+            .is_err()
+        );
     }
 
     #[test]

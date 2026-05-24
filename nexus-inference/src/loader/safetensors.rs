@@ -1020,7 +1020,12 @@ fn pack_i8_to_u64(weights: &[i8], rows: usize, cols: usize) -> Vec<u64> {
     packed
 }
 
-fn count_bnn_binary_layers(st: &SafeTensors<'_>, prefix: &str) -> usize {
+/// Count consecutive `binary_weight_{k}` tensors. Zero is valid (a BNN
+/// with no binary layers is a single fp32 layer). A gap in the sequence
+/// (e.g. `binary_weight_0` and `_2` present but `_1` missing) means a
+/// malformed file or wrong `prefix`; reject it rather than silently load
+/// a truncated network.
+fn count_bnn_binary_layers(st: &SafeTensors<'_>, prefix: &str) -> Result<usize, LoadError> {
     let mut n = 0;
     loop {
         let name = prefixed(prefix, &format!("binary_weight_{n}"));
@@ -1030,7 +1035,21 @@ fn count_bnn_binary_layers(st: &SafeTensors<'_>, prefix: &str) -> usize {
             break;
         }
     }
-    n
+
+    // Reject orphaned higher-index layers past the consecutive run.
+    let stem = prefixed(prefix, "binary_weight_");
+    for name in st.names() {
+        if let Some(suffix) = name.strip_prefix(stem.as_str())
+            && let Ok(idx) = suffix.parse::<usize>()
+            && idx >= n
+        {
+            return Err(LoadError::Validation(
+                "non-consecutive BNN binary layer indices (gap in binary_weight_{k})",
+            ));
+        }
+    }
+
+    Ok(n)
 }
 
 impl crate::BnnF32 {
@@ -1087,8 +1106,16 @@ impl crate::BnnF32 {
                 "output_weight columns must equal hidden_size",
             ));
         }
+        // Validate before packing: pack_i8_to_u64 assumes H % 64 == 0 and
+        // would index out of bounds otherwise (from_parts checks this too,
+        // but it runs after packing).
+        if !hidden_size.is_multiple_of(64) {
+            return Err(LoadError::Validation(
+                "hidden_size must be a multiple of 64",
+            ));
+        }
 
-        let num_binary = count_bnn_binary_layers(&st, prefix);
+        let num_binary = count_bnn_binary_layers(&st, prefix)?;
 
         let mut binary_weights_packed = Vec::with_capacity(num_binary);
         let mut binary_biases = Vec::with_capacity(num_binary);
@@ -1101,14 +1128,15 @@ impl crate::BnnF32 {
             let bb = extract_f32_1d(&st, &bb_name)?;
 
             if bw_shape != [hidden_size, hidden_size] {
-                return Err(LoadError::Validation(
-                    "binary_weight shape must be [H, H]",
-                ));
+                return Err(LoadError::Validation("binary_weight shape must be [H, H]"));
             }
             if bb.len() != hidden_size {
                 return Err(LoadError::Validation(
                     "binary_bias length must equal hidden_size",
                 ));
+            }
+            if bw_i8.iter().any(|&v| v != -1 && v != 1) {
+                return Err(LoadError::Validation("binary weights must be -1 or 1"));
             }
 
             let packed = pack_i8_to_u64(&bw_i8, hidden_size, hidden_size);
@@ -2129,7 +2157,10 @@ mod tests {
 
         let y_st2 = st.step(&input);
         let y_fp2 = fp.step(&input);
-        assert!((y_st2 - y_fp2).abs() < 1e-7, "step 2: st={y_st2} fp={y_fp2}");
+        assert!(
+            (y_st2 - y_fp2).abs() < 1e-7,
+            "step 2: st={y_st2} fp={y_fp2}"
+        );
     }
 
     // ---- BNN ----
@@ -2161,9 +2192,15 @@ mod tests {
         let data = serialize_tensors(vec![
             ("bnn.input_weight", make_view(Dtype::F32, &[h, i], &w_in_b)),
             ("bnn.input_bias", make_view(Dtype::F32, &[h], &b_in_b)),
-            ("bnn.binary_weight_0", make_view(Dtype::I8, &[h, h], &bin_w_b)),
+            (
+                "bnn.binary_weight_0",
+                make_view(Dtype::I8, &[h, h], &bin_w_b),
+            ),
             ("bnn.binary_bias_0", make_view(Dtype::F32, &[h], &bin_b_b)),
-            ("bnn.output_weight", make_view(Dtype::F32, &[o, h], &w_out_b)),
+            (
+                "bnn.output_weight",
+                make_view(Dtype::F32, &[o, h], &w_out_b),
+            ),
             ("bnn.output_bias", make_view(Dtype::F32, &[o], &b_out_b)),
         ]);
 
@@ -2193,7 +2230,10 @@ mod tests {
         let data = serialize_tensors(vec![
             ("net.input_weight", make_view(Dtype::F32, &[h, i], &w_in_b)),
             ("net.input_bias", make_view(Dtype::F32, &[h], &b_in_b)),
-            ("net.output_weight", make_view(Dtype::F32, &[o, h], &w_out_b)),
+            (
+                "net.output_weight",
+                make_view(Dtype::F32, &[o, h], &w_out_b),
+            ),
             ("net.output_bias", make_view(Dtype::F32, &[o], &b_out_b)),
         ]);
 
@@ -2203,18 +2243,141 @@ mod tests {
     }
 
     #[test]
+    fn bnn_rejects_non_consecutive_binary_layers() {
+        // binary_weight_0 and _2 present, _1 missing. A gap means a
+        // malformed file; must error rather than silently load 1 layer.
+        let h = 64_usize;
+        let i = 2_usize;
+        let o = 1_usize;
+
+        let w_in = vec![0.1_f32; h * i];
+        let b_in = vec![0.0_f32; h];
+        let w_out = vec![0.1_f32; o * h];
+        let b_out = vec![0.0_f32; o];
+        let bin_w = vec![1_i8; h * h];
+        let bin_b = vec![0.0_f32; h];
+
+        let w_in_b = f32_bytes(&w_in);
+        let b_in_b = f32_bytes(&b_in);
+        let w_out_b = f32_bytes(&w_out);
+        let b_out_b = f32_bytes(&b_out);
+        let bin_w_b = i8_bytes(&bin_w);
+        let bin_b_b = f32_bytes(&bin_b);
+
+        let data = serialize_tensors(vec![
+            ("bnn.input_weight", make_view(Dtype::F32, &[h, i], &w_in_b)),
+            ("bnn.input_bias", make_view(Dtype::F32, &[h], &b_in_b)),
+            (
+                "bnn.binary_weight_0",
+                make_view(Dtype::I8, &[h, h], &bin_w_b),
+            ),
+            ("bnn.binary_bias_0", make_view(Dtype::F32, &[h], &bin_b_b)),
+            (
+                "bnn.binary_weight_2",
+                make_view(Dtype::I8, &[h, h], &bin_w_b),
+            ),
+            ("bnn.binary_bias_2", make_view(Dtype::F32, &[h], &bin_b_b)),
+            (
+                "bnn.output_weight",
+                make_view(Dtype::F32, &[o, h], &w_out_b),
+            ),
+            ("bnn.output_bias", make_view(Dtype::F32, &[o], &b_out_b)),
+        ]);
+
+        let err = crate::BnnF32::from_safetensors(&data, "bnn");
+        assert!(matches!(err, Err(LoadError::Validation(_))), "got {err:?}");
+    }
+
+    #[test]
+    fn bnn_rejects_hidden_size_not_multiple_of_64() {
+        // H=32 is not a multiple of 64. Must error before packing rather
+        // than panic / corrupt (pack_i8_to_u64 indexes by H/64).
+        let h = 32_usize;
+        let i = 2_usize;
+        let o = 1_usize;
+
+        let w_in_b = f32_bytes(&vec![0.1_f32; h * i]);
+        let b_in_b = f32_bytes(&vec![0.0_f32; h]);
+        let w_out_b = f32_bytes(&vec![0.1_f32; o * h]);
+        let b_out_b = f32_bytes(&vec![0.0_f32; o]);
+        let bin_w_b = i8_bytes(&vec![1_i8; h * h]);
+        let bin_b_b = f32_bytes(&vec![0.0_f32; h]);
+
+        let data = serialize_tensors(vec![
+            ("bnn.input_weight", make_view(Dtype::F32, &[h, i], &w_in_b)),
+            ("bnn.input_bias", make_view(Dtype::F32, &[h], &b_in_b)),
+            (
+                "bnn.binary_weight_0",
+                make_view(Dtype::I8, &[h, h], &bin_w_b),
+            ),
+            ("bnn.binary_bias_0", make_view(Dtype::F32, &[h], &bin_b_b)),
+            (
+                "bnn.output_weight",
+                make_view(Dtype::F32, &[o, h], &w_out_b),
+            ),
+            ("bnn.output_bias", make_view(Dtype::F32, &[o], &b_out_b)),
+        ]);
+
+        let err = crate::BnnF32::from_safetensors(&data, "bnn");
+        assert!(matches!(err, Err(LoadError::Validation(_))), "got {err:?}");
+    }
+
+    #[test]
+    fn bnn_rejects_non_pm1_binary_weights() {
+        // A binary weight of 0 (neither -1 nor 1) signals a corrupted or
+        // mis-exported model; reject rather than silently treat as -1.
+        let h = 64_usize;
+        let i = 2_usize;
+        let o = 1_usize;
+
+        let mut bin_w = vec![1_i8; h * h];
+        bin_w[0] = 0; // not ±1
+
+        let w_in_b = f32_bytes(&vec![0.1_f32; h * i]);
+        let b_in_b = f32_bytes(&vec![0.0_f32; h]);
+        let w_out_b = f32_bytes(&vec![0.1_f32; o * h]);
+        let b_out_b = f32_bytes(&vec![0.0_f32; o]);
+        let bin_w_b = i8_bytes(&bin_w);
+        let bin_b_b = f32_bytes(&vec![0.0_f32; h]);
+
+        let data = serialize_tensors(vec![
+            ("bnn.input_weight", make_view(Dtype::F32, &[h, i], &w_in_b)),
+            ("bnn.input_bias", make_view(Dtype::F32, &[h], &b_in_b)),
+            (
+                "bnn.binary_weight_0",
+                make_view(Dtype::I8, &[h, h], &bin_w_b),
+            ),
+            ("bnn.binary_bias_0", make_view(Dtype::F32, &[h], &bin_b_b)),
+            (
+                "bnn.output_weight",
+                make_view(Dtype::F32, &[o, h], &w_out_b),
+            ),
+            ("bnn.output_bias", make_view(Dtype::F32, &[o], &b_out_b)),
+        ]);
+
+        let err = crate::BnnF32::from_safetensors(&data, "bnn");
+        assert!(matches!(err, Err(LoadError::Validation(_))), "got {err:?}");
+    }
+
+    #[test]
     fn bnn_matches_from_parts() {
         let h = 64_usize;
         let i = 2_usize;
         let o = 1_usize;
 
-        let w_in: Vec<f32> = (0..h * i).map(|k| 0.1 * (k as f32 + 1.0) / (h * i) as f32).collect();
+        let w_in: Vec<f32> = (0..h * i)
+            .map(|k| 0.1 * (k as f32 + 1.0) / (h * i) as f32)
+            .collect();
         let b_in: Vec<f32> = (0..h).map(|k| 0.01 * k as f32).collect();
-        let w_out: Vec<f32> = (0..o * h).map(|k| -0.1 + 0.2 * k as f32 / (o * h) as f32).collect();
+        let w_out: Vec<f32> = (0..o * h)
+            .map(|k| -0.1 + 0.2 * k as f32 / (o * h) as f32)
+            .collect();
         let b_out = vec![0.05_f32; o];
 
         // Binary weights: alternating +1/-1 pattern
-        let bin_w_i8: Vec<i8> = (0..h * h).map(|k| if k % 2 == 0 { 1 } else { -1 }).collect();
+        let bin_w_i8: Vec<i8> = (0..h * h)
+            .map(|k| if k % 2 == 0 { 1 } else { -1 })
+            .collect();
         let bin_b: Vec<f32> = (0..h).map(|k| 0.5 - 0.01 * k as f32).collect();
 
         // Pack i8 → u64 (same logic as loader)
@@ -2230,9 +2393,8 @@ mod tests {
 
         let bw_refs: Vec<&[u64]> = vec![bin_w_u64.as_slice()];
         let bb_refs: Vec<&[f32]> = vec![bin_b.as_slice()];
-        let mut fp = crate::BnnF32::from_parts(
-            &w_in, &b_in, &bw_refs, &bb_refs, &w_out, &b_out, o,
-        ).unwrap();
+        let mut fp =
+            crate::BnnF32::from_parts(&w_in, &b_in, &bw_refs, &bb_refs, &w_out, &b_out, o).unwrap();
 
         // Build safetensors
         let w_in_b = f32_bytes(&w_in);

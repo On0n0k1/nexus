@@ -387,14 +387,38 @@ pub fn dot8_f32_m256(rows: &[f32], input: &[f32]) -> __m256 {
         );
 
         // Stage 2: __m256 → __m128
-        let lo0 = _mm_add_ps(_mm256_castps256_ps128(r0_256), _mm256_extractf128_ps(r0_256, 1));
-        let lo1 = _mm_add_ps(_mm256_castps256_ps128(r1_256), _mm256_extractf128_ps(r1_256, 1));
-        let lo2 = _mm_add_ps(_mm256_castps256_ps128(r2_256), _mm256_extractf128_ps(r2_256, 1));
-        let lo3 = _mm_add_ps(_mm256_castps256_ps128(r3_256), _mm256_extractf128_ps(r3_256, 1));
-        let lo4 = _mm_add_ps(_mm256_castps256_ps128(r4_256), _mm256_extractf128_ps(r4_256, 1));
-        let lo5 = _mm_add_ps(_mm256_castps256_ps128(r5_256), _mm256_extractf128_ps(r5_256, 1));
-        let lo6 = _mm_add_ps(_mm256_castps256_ps128(r6_256), _mm256_extractf128_ps(r6_256, 1));
-        let lo7 = _mm_add_ps(_mm256_castps256_ps128(r7_256), _mm256_extractf128_ps(r7_256, 1));
+        let lo0 = _mm_add_ps(
+            _mm256_castps256_ps128(r0_256),
+            _mm256_extractf128_ps(r0_256, 1),
+        );
+        let lo1 = _mm_add_ps(
+            _mm256_castps256_ps128(r1_256),
+            _mm256_extractf128_ps(r1_256, 1),
+        );
+        let lo2 = _mm_add_ps(
+            _mm256_castps256_ps128(r2_256),
+            _mm256_extractf128_ps(r2_256, 1),
+        );
+        let lo3 = _mm_add_ps(
+            _mm256_castps256_ps128(r3_256),
+            _mm256_extractf128_ps(r3_256, 1),
+        );
+        let lo4 = _mm_add_ps(
+            _mm256_castps256_ps128(r4_256),
+            _mm256_extractf128_ps(r4_256, 1),
+        );
+        let lo5 = _mm_add_ps(
+            _mm256_castps256_ps128(r5_256),
+            _mm256_extractf128_ps(r5_256, 1),
+        );
+        let lo6 = _mm_add_ps(
+            _mm256_castps256_ps128(r6_256),
+            _mm256_extractf128_ps(r6_256, 1),
+        );
+        let lo7 = _mm_add_ps(
+            _mm256_castps256_ps128(r7_256),
+            _mm256_extractf128_ps(r7_256, 1),
+        );
 
         // Stage 3: paired hadd
         let h01 = _mm_hadd_ps(lo0, lo1);
@@ -503,10 +527,22 @@ pub fn dot4_f32_m128(rows: &[f32], input: &[f32]) -> __m128 {
         );
 
         // Stage 2: __m256 → __m128
-        let lo0 = _mm_add_ps(_mm256_castps256_ps128(r0_256), _mm256_extractf128_ps(r0_256, 1));
-        let lo1 = _mm_add_ps(_mm256_castps256_ps128(r1_256), _mm256_extractf128_ps(r1_256, 1));
-        let lo2 = _mm_add_ps(_mm256_castps256_ps128(r2_256), _mm256_extractf128_ps(r2_256, 1));
-        let lo3 = _mm_add_ps(_mm256_castps256_ps128(r3_256), _mm256_extractf128_ps(r3_256, 1));
+        let lo0 = _mm_add_ps(
+            _mm256_castps256_ps128(r0_256),
+            _mm256_extractf128_ps(r0_256, 1),
+        );
+        let lo1 = _mm_add_ps(
+            _mm256_castps256_ps128(r1_256),
+            _mm256_extractf128_ps(r1_256, 1),
+        );
+        let lo2 = _mm_add_ps(
+            _mm256_castps256_ps128(r2_256),
+            _mm256_extractf128_ps(r2_256, 1),
+        );
+        let lo3 = _mm_add_ps(
+            _mm256_castps256_ps128(r3_256),
+            _mm256_extractf128_ps(r3_256, 1),
+        );
 
         // Stage 3: paired hadd
         let h01 = _mm_hadd_ps(lo0, lo1);

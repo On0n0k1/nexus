@@ -297,10 +297,7 @@ pub(crate) fn dot4_f32(rows: &[f32], input: &[f32]) -> [f32; 4] {
     )
 ))]
 #[inline]
-pub(crate) fn dot8_f32_m256(
-    rows: &[f32],
-    input: &[f32],
-) -> core::arch::x86_64::__m256 {
+pub(crate) fn dot8_f32_m256(rows: &[f32], input: &[f32]) -> core::arch::x86_64::__m256 {
     debug_assert_eq!(rows.len(), 8 * input.len());
 
     #[cfg(target_feature = "avx512f")]
@@ -329,10 +326,7 @@ pub(crate) fn dot8_f32_m256(
     )
 ))]
 #[inline]
-pub(crate) fn dot4_f32_m128(
-    rows: &[f32],
-    input: &[f32],
-) -> core::arch::x86_64::__m128 {
+pub(crate) fn dot4_f32_m128(rows: &[f32], input: &[f32]) -> core::arch::x86_64::__m128 {
     debug_assert_eq!(rows.len(), 4 * input.len());
 
     #[cfg(target_feature = "avx512f")]

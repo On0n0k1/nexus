@@ -443,11 +443,7 @@ fn run_ssm_test(name: &str) {
     let exp = load_expected(name);
     let tol = exp["tolerance"].as_f64().unwrap();
 
-    let mut ssm = LinearSsmF32::from_safetensors(
-        &data,
-        exp["prefix"].as_str().unwrap(),
-    )
-    .unwrap();
+    let mut ssm = LinearSsmF32::from_safetensors(&data, exp["prefix"].as_str().unwrap()).unwrap();
 
     for (i, (inp, exp_out)) in inputs_f32(&exp)
         .iter()
@@ -566,13 +562,7 @@ fuzz_tests!(
     fuzz_stacked_gru_2,
     fuzz_stacked_gru_3,
 );
-fuzz_tests!(
-    run_ssm_test,
-    fuzz_ssm_0,
-    fuzz_ssm_1,
-    fuzz_ssm_2,
-    fuzz_ssm_3,
-);
+fuzz_tests!(run_ssm_test, fuzz_ssm_0, fuzz_ssm_1, fuzz_ssm_2, fuzz_ssm_3,);
 
 // ---- BNN tests ----
 
@@ -616,10 +606,4 @@ fn bnn_large() {
     run_bnn_test("bnn_large");
 }
 
-fuzz_tests!(
-    run_bnn_test,
-    fuzz_bnn_0,
-    fuzz_bnn_1,
-    fuzz_bnn_2,
-    fuzz_bnn_3,
-);
+fuzz_tests!(run_bnn_test, fuzz_bnn_0, fuzz_bnn_1, fuzz_bnn_2, fuzz_bnn_3,);

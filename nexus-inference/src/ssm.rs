@@ -285,10 +285,10 @@ mod tests {
     #[test]
     fn state_decays_without_input() {
         let mut ssm = LinearSsmF32::from_parts(
-            &[0.5],        // fast decay
-            &[1.0],        // I=1, H=1
-            &[1.0],        // O=1, H=1 (identity)
-            &[0.0],        // no skip
+            &[0.5], // fast decay
+            &[1.0], // I=1, H=1
+            &[1.0], // O=1, H=1 (identity)
+            &[0.0], // no skip
             1,
         )
         .unwrap();
@@ -316,26 +316,21 @@ mod tests {
 
     #[test]
     fn rejects_mismatched_c() {
-        assert!(LinearSsmF32::from_parts(
-            &[0.9],
-            &[0.1],        // H=1, I=1
-            &[0.5, 0.6],  // expects O*H=1, got 2
-            &[0.0],
-            1,
-        )
-        .is_err());
+        assert!(
+            LinearSsmF32::from_parts(
+                &[0.9],
+                &[0.1],      // H=1, I=1
+                &[0.5, 0.6], // expects O*H=1, got 2
+                &[0.0],
+                1,
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn rejects_non_finite() {
-        assert!(LinearSsmF32::from_parts(
-            &[f32::NAN],
-            &[0.1],
-            &[0.5],
-            &[0.0],
-            1,
-        )
-        .is_err());
+        assert!(LinearSsmF32::from_parts(&[f32::NAN], &[0.1], &[0.5], &[0.0], 1,).is_err());
     }
 
     #[test]

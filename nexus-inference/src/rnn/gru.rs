@@ -258,8 +258,8 @@ impl TinyGruF32 {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::{sigmoid_f32, tanh_f32};
+    use super::*;
 
     fn make_gru(
         input: usize,

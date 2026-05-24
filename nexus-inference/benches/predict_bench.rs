@@ -253,8 +253,14 @@ fn bench_mlp_f32_layernorm(c: &mut Criterion) {
     let ln_gamma: Vec<f32> = vec![1.0; 40];
     let ln_beta: Vec<f32> = vec![0.0; 40];
     let mut model = MlpF32::from_parts_with_layer_norm(
-        &[16, 32, 8, 1], &w, &b, &ln_gamma, &ln_beta, Activation::Relu,
-    ).unwrap();
+        &[16, 32, 8, 1],
+        &w,
+        &b,
+        &ln_gamma,
+        &ln_beta,
+        Activation::Relu,
+    )
+    .unwrap();
     c.bench_function("MlpF32::predict 16→32→8→1 relu+LN", |b| {
         b.iter(|| model.predict(black_box(&features_16)));
     });
@@ -266,8 +272,14 @@ fn bench_mlp_f32_layernorm(c: &mut Criterion) {
     let ln_gamma: Vec<f32> = vec![1.0; 96];
     let ln_beta: Vec<f32> = vec![0.0; 96];
     let mut model = MlpF32::from_parts_with_layer_norm(
-        &[32, 32, 32, 32, 1], &w, &b, &ln_gamma, &ln_beta, Activation::Relu,
-    ).unwrap();
+        &[32, 32, 32, 32, 1],
+        &w,
+        &b,
+        &ln_gamma,
+        &ln_beta,
+        Activation::Relu,
+    )
+    .unwrap();
     c.bench_function("MlpF32::predict 32→32→32→32→1 relu+LN", |b| {
         b.iter(|| model.predict(black_box(&features_32)));
     });
@@ -279,8 +291,14 @@ fn bench_mlp_f32_layernorm(c: &mut Criterion) {
     let ln_gamma: Vec<f32> = vec![1.0; 128];
     let ln_beta: Vec<f32> = vec![0.0; 128];
     let mut model = MlpF32::from_parts_with_layer_norm(
-        &[64, 64, 64, 1], &w, &b, &ln_gamma, &ln_beta, Activation::Relu,
-    ).unwrap();
+        &[64, 64, 64, 1],
+        &w,
+        &b,
+        &ln_gamma,
+        &ln_beta,
+        Activation::Relu,
+    )
+    .unwrap();
     c.bench_function("MlpF32::predict 64→64→64→1 relu+LN", |b| {
         b.iter(|| model.predict(black_box(&features_64)));
     });
@@ -301,7 +319,13 @@ fn make_bnn(input: usize, hidden: usize, output: usize, n_binary: usize) -> BnnF
     let b_output = vec![0.0_f32; output];
 
     BnnF32::from_parts(
-        &w_input, &b_input, &bin_weights, &bin_biases, &w_output, &b_output, output,
+        &w_input,
+        &b_input,
+        &bin_weights,
+        &bin_biases,
+        &w_output,
+        &b_output,
+        output,
     )
     .unwrap()
 }
@@ -330,5 +354,13 @@ fn bench_bnn(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_gbdt, bench_mlp, bench_mlp_f32, bench_mlp_f32_layernorm, bench_lut, bench_bnn);
+criterion_group!(
+    benches,
+    bench_gbdt,
+    bench_mlp,
+    bench_mlp_f32,
+    bench_mlp_f32_layernorm,
+    bench_lut,
+    bench_bnn
+);
 criterion_main!(benches);

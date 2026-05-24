@@ -116,7 +116,15 @@ fn make_stacked_lstm(
     let w_out = vec![0.1_f32; output * hidden];
     let b_out = vec![0.0_f32; output];
     StackedLstmF32::from_parts(
-        input, hidden, output, &layers_wih, &layers_whh, &layers_bih, &layers_bhh, &w_out, &b_out,
+        input,
+        hidden,
+        output,
+        &layers_wih,
+        &layers_whh,
+        &layers_bih,
+        &layers_bhh,
+        &w_out,
+        &b_out,
     )
     .unwrap()
 }
@@ -148,7 +156,15 @@ fn make_stacked_gru(
     let w_out = vec![0.1_f32; output * hidden];
     let b_out = vec![0.0_f32; output];
     StackedGruF32::from_parts(
-        input, hidden, output, &layers_wih, &layers_whh, &layers_bih, &layers_bhh, &w_out, &b_out,
+        input,
+        hidden,
+        output,
+        &layers_wih,
+        &layers_whh,
+        &layers_bih,
+        &layers_bhh,
+        &w_out,
+        &b_out,
     )
     .unwrap()
 }
