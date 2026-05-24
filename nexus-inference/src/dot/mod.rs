@@ -121,15 +121,48 @@ pub(crate) fn matvec_bias_f32(
 ) {
     let out_4 = out_size & !3;
     let mut j = 0;
-    while j < out_4 {
-        let rows = &weight[j * in_size..(j + 4) * in_size];
-        let dots = dot4_f32(rows, &input[..in_size]);
-        output[j] = bias[j] + dots[0];
-        output[j + 1] = bias[j + 1] + dots[1];
-        output[j + 2] = bias[j + 2] + dots[2];
-        output[j + 3] = bias[j + 3] + dots[3];
-        j += 4;
+
+    #[cfg(all(
+        target_arch = "x86_64",
+        any(
+            target_feature = "avx512f",
+            all(target_feature = "avx2", target_feature = "fma"),
+        )
+    ))]
+    {
+        use core::arch::x86_64::*;
+        while j < out_4 {
+            let rows = &weight[j * in_size..(j + 4) * in_size];
+            // SAFETY: cfg guarantees SIMD availability.
+            // j + 4 <= out_size within this loop; bias/output accesses are in bounds.
+            unsafe {
+                let dots = dot4_f32_m128(rows, &input[..in_size]);
+                let bias_v = _mm_loadu_ps(bias.as_ptr().add(j));
+                _mm_storeu_ps(output.as_mut_ptr().add(j), _mm_add_ps(dots, bias_v));
+            }
+            j += 4;
+        }
     }
+
+    #[cfg(not(all(
+        target_arch = "x86_64",
+        any(
+            target_feature = "avx512f",
+            all(target_feature = "avx2", target_feature = "fma"),
+        )
+    )))]
+    {
+        while j < out_4 {
+            let rows = &weight[j * in_size..(j + 4) * in_size];
+            let dots = dot4_f32(rows, &input[..in_size]);
+            output[j] = bias[j] + dots[0];
+            output[j + 1] = bias[j + 1] + dots[1];
+            output[j + 2] = bias[j + 2] + dots[2];
+            output[j + 3] = bias[j + 3] + dots[3];
+            j += 4;
+        }
+    }
+
     while j < out_size {
         let row = &weight[j * in_size..(j + 1) * in_size];
         output[j] = bias[j] + dot_f32(row, &input[..in_size]);
@@ -198,5 +231,37 @@ pub(crate) fn dot4_f32(rows: &[f32], input: &[f32]) -> [f32; 4] {
     )))]
     {
         scalar::dot4_f32(rows, input)
+    }
+}
+
+/// Like [`dot4_f32`] but returns results packed in `__m128` to avoid
+/// per-lane horizontal sum overhead. Only available on x86_64 with
+/// AVX2+FMA or AVX-512F.
+#[cfg(all(
+    target_arch = "x86_64",
+    any(
+        target_feature = "avx512f",
+        all(target_feature = "avx2", target_feature = "fma"),
+    )
+))]
+#[inline]
+pub(crate) fn dot4_f32_m128(
+    rows: &[f32],
+    input: &[f32],
+) -> core::arch::x86_64::__m128 {
+    debug_assert_eq!(rows.len(), 4 * input.len());
+
+    #[cfg(target_feature = "avx512f")]
+    {
+        avx512::dot4_f32_m128(rows, input)
+    }
+
+    #[cfg(all(
+        target_feature = "avx2",
+        target_feature = "fma",
+        not(target_feature = "avx512f"),
+    ))]
+    {
+        avx2::dot4_f32_m128(rows, input)
     }
 }

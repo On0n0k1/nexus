@@ -262,3 +262,83 @@ pub fn dot4_f32(rows: &[f32], input: &[f32]) -> [f32; 4] {
     }
     out
 }
+
+/// 4 simultaneous f32 dot products returning batched `__m128`.
+/// Same accumulation as [`dot4_f32`] but uses paired `hadd` to
+/// reduce all 4 sums in 11 instructions instead of 28.
+#[inline]
+#[cfg(target_arch = "x86_64")]
+pub fn dot4_f32_m128(rows: &[f32], input: &[f32]) -> __m128 {
+    let in_size = input.len();
+    let mut i = 0;
+
+    // SAFETY: AVX2+FMA guaranteed by target_feature cfg on parent module.
+    // Row pointers: rows.len() == 4 * in_size, offsets k * in_size + i where k < 4.
+    // Input pointer: i + N <= in_size before every access.
+    unsafe {
+        let mut a0a = _mm256_setzero_ps();
+        let mut a0b = _mm256_setzero_ps();
+        let mut a1a = _mm256_setzero_ps();
+        let mut a1b = _mm256_setzero_ps();
+        let mut a2a = _mm256_setzero_ps();
+        let mut a2b = _mm256_setzero_ps();
+        let mut a3a = _mm256_setzero_ps();
+        let mut a3b = _mm256_setzero_ps();
+
+        let r0 = rows.as_ptr();
+        let r1 = r0.add(in_size);
+        let r2 = r1.add(in_size);
+        let r3 = r2.add(in_size);
+        let inp = input.as_ptr();
+
+        while i + 16 <= in_size {
+            let x0 = _mm256_loadu_ps(inp.add(i));
+            let x1 = _mm256_loadu_ps(inp.add(i + 8));
+
+            a0a = _mm256_fmadd_ps(_mm256_loadu_ps(r0.add(i)), x0, a0a);
+            a0b = _mm256_fmadd_ps(_mm256_loadu_ps(r0.add(i + 8)), x1, a0b);
+            a1a = _mm256_fmadd_ps(_mm256_loadu_ps(r1.add(i)), x0, a1a);
+            a1b = _mm256_fmadd_ps(_mm256_loadu_ps(r1.add(i + 8)), x1, a1b);
+            a2a = _mm256_fmadd_ps(_mm256_loadu_ps(r2.add(i)), x0, a2a);
+            a2b = _mm256_fmadd_ps(_mm256_loadu_ps(r2.add(i + 8)), x1, a2b);
+            a3a = _mm256_fmadd_ps(_mm256_loadu_ps(r3.add(i)), x0, a3a);
+            a3b = _mm256_fmadd_ps(_mm256_loadu_ps(r3.add(i + 8)), x1, a3b);
+
+            i += 16;
+        }
+
+        if i + 8 <= in_size {
+            let x = _mm256_loadu_ps(inp.add(i));
+            a0a = _mm256_fmadd_ps(_mm256_loadu_ps(r0.add(i)), x, a0a);
+            a1a = _mm256_fmadd_ps(_mm256_loadu_ps(r1.add(i)), x, a1a);
+            a2a = _mm256_fmadd_ps(_mm256_loadu_ps(r2.add(i)), x, a2a);
+            a3a = _mm256_fmadd_ps(_mm256_loadu_ps(r3.add(i)), x, a3a);
+            i += 8;
+        }
+
+        a0a = _mm256_add_ps(a0a, a0b);
+        a1a = _mm256_add_ps(a1a, a1b);
+        a2a = _mm256_add_ps(a2a, a2b);
+        a3a = _mm256_add_ps(a3a, a3b);
+
+        let lo0 = _mm_add_ps(_mm256_castps256_ps128(a0a), _mm256_extractf128_ps(a0a, 1));
+        let lo1 = _mm_add_ps(_mm256_castps256_ps128(a1a), _mm256_extractf128_ps(a1a, 1));
+        let lo2 = _mm_add_ps(_mm256_castps256_ps128(a2a), _mm256_extractf128_ps(a2a, 1));
+        let lo3 = _mm_add_ps(_mm256_castps256_ps128(a3a), _mm256_extractf128_ps(a3a, 1));
+        let h01 = _mm_hadd_ps(lo0, lo1);
+        let h23 = _mm_hadd_ps(lo2, lo3);
+        let mut sums = _mm_hadd_ps(h01, h23);
+
+        let mut t = [0.0_f32; 4];
+        for k in i..in_size {
+            let x = input[k];
+            t[0] += rows[k] * x;
+            t[1] += rows[in_size + k] * x;
+            t[2] += rows[2 * in_size + k] * x;
+            t[3] += rows[3 * in_size + k] * x;
+        }
+        sums = _mm_add_ps(sums, _mm_loadu_ps(t.as_ptr()));
+
+        sums
+    }
+}
