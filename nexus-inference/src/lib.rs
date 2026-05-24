@@ -14,6 +14,7 @@
 //! - [`GbdtF64`] / [`GbdtF32`] — Gradient-boosted decision tree ensemble
 //! - [`MlpF64`] / [`MlpF32`] — Feedforward neural network (multi-layer perceptron)
 //! - [`LutF64`] / [`LutF32`] — Lookup table predictor (discretized features)
+//! - [`BnnF32`] — Binary neural network (XNOR+popcount inference)
 //!
 //! # Stateful (streaming temporal)
 //!
@@ -40,6 +41,9 @@ mod mlp;
 mod rnn;
 
 #[cfg(feature = "alloc")]
+mod bnn;
+
+#[cfg(feature = "alloc")]
 mod ssm;
 
 #[cfg(feature = "alloc")]
@@ -50,6 +54,8 @@ mod loader;
 
 #[cfg(feature = "alloc")]
 pub use activation::Activation;
+#[cfg(feature = "alloc")]
+pub use bnn::BnnF32;
 #[cfg(feature = "alloc")]
 pub use conv::Causal1dConvF32;
 pub use error::LoadError;
