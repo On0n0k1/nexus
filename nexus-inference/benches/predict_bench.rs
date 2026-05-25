@@ -1,5 +1,5 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use nexus_inference::{Activation, BnnF32, GbdtF64, LutF64, MlpF32, MlpF64};
+use nexus_inference::{Activation, BnnF32, GbdtF64, LutF64, MlpF32, MlpF64, TinyTcnF32};
 
 const LIGHTGBM_HEADER: &str = "\
 tree
@@ -354,6 +354,93 @@ fn bench_bnn(c: &mut Criterion) {
     });
 }
 
+fn make_tcn(
+    input: usize,
+    filters: usize,
+    kernel: usize,
+    num_layers: usize,
+    output: usize,
+    residual: bool,
+) -> TinyTcnF32 {
+    let mut seed = 42u64;
+    let mut next_f32 = || -> f32 {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        (seed >> 33) as f32 / (1u64 << 31) as f32 * 0.2 - 0.1
+    };
+
+    let mut w_convs = Vec::new();
+    let mut b_convs = Vec::new();
+    for k in 0..num_layers {
+        let in_ch = if k == 0 { input } else { filters };
+        let n = filters * kernel * in_ch;
+        w_convs.push((0..n).map(|_| next_f32()).collect::<Vec<_>>());
+        b_convs.push(vec![0.01_f32; filters]);
+    }
+
+    let w_refs: Vec<&[f32]> = w_convs.iter().map(|v| v.as_slice()).collect();
+    let b_refs: Vec<&[f32]> = b_convs.iter().map(|v| v.as_slice()).collect();
+
+    let w_out: Vec<f32> = (0..output * filters).map(|_| next_f32()).collect();
+    let b_out = vec![0.0_f32; output];
+
+    TinyTcnF32::from_parts(
+        input,
+        filters,
+        kernel,
+        output,
+        residual,
+        &w_refs,
+        &b_refs,
+        &w_out,
+        &b_out,
+        Activation::Relu,
+    )
+    .unwrap()
+}
+
+fn bench_tcn(c: &mut Criterion) {
+    let input_4 = vec![0.5_f32; 4];
+
+    // 4→16, K=3, 2 layers, no residual
+    let mut m = make_tcn(4, 16, 3, 2, 1, false);
+    // Prime the model
+    for _ in 0..10 {
+        m.step(&input_4);
+    }
+    c.bench_function("TCN I=4 F=16 K=3 L=2", |b| {
+        b.iter(|| m.step(black_box(&input_4)));
+    });
+
+    // 4→16, K=3, 4 layers, residual
+    let mut m = make_tcn(4, 16, 3, 4, 1, true);
+    for _ in 0..40 {
+        m.step(&input_4);
+    }
+    c.bench_function("TCN I=4 F=16 K=3 L=4 res", |b| {
+        b.iter(|| m.step(black_box(&input_4)));
+    });
+
+    // 4→32, K=3, 3 layers
+    let mut m = make_tcn(4, 32, 3, 3, 1, false);
+    for _ in 0..20 {
+        m.step(&input_4);
+    }
+    c.bench_function("TCN I=4 F=32 K=3 L=3", |b| {
+        b.iter(|| m.step(black_box(&input_4)));
+    });
+
+    let input_8 = vec![0.5_f32; 8];
+
+    // 8→16, K=3, 4 layers, residual
+    let mut m = make_tcn(8, 16, 3, 4, 1, true);
+    for _ in 0..40 {
+        m.step(&input_8);
+    }
+    c.bench_function("TCN I=8 F=16 K=3 L=4 res", |b| {
+        b.iter(|| m.step(black_box(&input_8)));
+    });
+}
+
 criterion_group!(
     benches,
     bench_gbdt,
@@ -361,6 +448,7 @@ criterion_group!(
     bench_mlp_f32,
     bench_mlp_f32_layernorm,
     bench_lut,
-    bench_bnn
+    bench_bnn,
+    bench_tcn
 );
 criterion_main!(benches);

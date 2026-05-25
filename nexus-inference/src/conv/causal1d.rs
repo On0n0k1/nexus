@@ -14,7 +14,7 @@ use crate::dot::{dot_f32, dot4_f32, matvec_bias_f32};
     )
 ))]
 #[inline(never)]
-fn conv_tiled_simd(
+pub(super) fn conv_tiled_simd(
     w_conv: &[f32],
     b_conv: &[f32],
     lin: &[f32],

@@ -1005,6 +1005,157 @@ impl crate::LinearSsmF32 {
     }
 }
 
+// ---- TCN loader ----
+
+fn count_tcn_layers(st: &SafeTensors<'_>, prefix: &str) -> Result<usize, LoadError> {
+    let mut n = 0;
+    loop {
+        let name = format!("{prefix}.conv_{n}.weight");
+        if st.tensor(&name).is_ok() {
+            n += 1;
+        } else {
+            break;
+        }
+    }
+    if n == 0 {
+        return Err(LoadError::TensorNotFound(format!("{prefix}.conv_0.weight")));
+    }
+
+    let stem = format!("{prefix}.conv_");
+    for name in st.names() {
+        if let Some(suffix) = name.strip_prefix(stem.as_str())
+            && let Some(idx_str) = suffix.strip_suffix(".weight")
+            && let Ok(idx) = idx_str.parse::<usize>()
+            && idx >= n
+        {
+            return Err(LoadError::Validation(
+                "non-consecutive TCN layer indices (gap in conv_{k})",
+            ));
+        }
+    }
+
+    Ok(n)
+}
+
+impl crate::TinyTcnF32 {
+    /// Load from safetensors data.
+    ///
+    /// Tensor naming convention:
+    /// - `{prefix}.conv_0.weight` — F32 `[filters, input_ch, kernel_size]`
+    /// - `{prefix}.conv_0.bias` — F32 `[filters]`
+    /// - `{prefix}.conv_1.weight` — F32 `[filters, filters, kernel_size]`
+    /// - `{prefix}.conv_1.bias` — F32 `[filters]` ...
+    /// - `{prefix}.output.weight` — F32 `[output_size, filters]`
+    /// - `{prefix}.output.bias` — F32 `[output_size]`
+    ///
+    /// Layer count is auto-detected by scanning for consecutive
+    /// `conv_{k}` tensors. PyTorch stores Conv1d weights as
+    /// `(out_ch, in_ch, kernel)` where kernel position 0 is the oldest
+    /// input; this loader transposes and reverses the kernel dimension
+    /// to match our `(filters, kernel, in_ch)` layout where position 0
+    /// is the newest (current) input.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LoadError::TensorNotFound`] if required tensors are
+    /// missing, or [`LoadError::Validation`] if shapes are inconsistent.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let bytes = std::fs::read("tcn.safetensors")?;
+    /// let tcn = TinyTcnF32::from_safetensors(
+    ///     &bytes, "tcn", Activation::Relu, false,
+    /// )?;
+    /// ```
+    pub fn from_safetensors(
+        data: &[u8],
+        prefix: &str,
+        activation: crate::Activation,
+        residual: bool,
+    ) -> Result<Self, LoadError> {
+        let st = parse(data)?;
+        let num_layers = count_tcn_layers(&st, prefix)?;
+
+        let mut layers_w_conv = Vec::with_capacity(num_layers);
+        let mut layers_b_conv = Vec::with_capacity(num_layers);
+
+        let mut input_size = 0;
+        let mut filters = 0;
+        let mut kernel_size = 0;
+
+        for k in 0..num_layers {
+            let w_name = format!("{prefix}.conv_{k}.weight");
+            let b_name = format!("{prefix}.conv_{k}.bias");
+
+            let (wc_pt, wc_shape) = extract_f32_3d(&st, &w_name)?;
+            let b_conv = extract_f32_1d(&st, &b_name)?;
+
+            let f = wc_shape[0];
+            let ic = wc_shape[1];
+            let ks = wc_shape[2];
+
+            if k == 0 {
+                input_size = ic;
+                filters = f;
+                kernel_size = ks;
+            } else {
+                if f != filters {
+                    return Err(LoadError::Validation(
+                        "inconsistent filter count across TCN layers",
+                    ));
+                }
+                if ic != filters {
+                    return Err(LoadError::Validation(
+                        "TCN layer input channels must equal filters for layer > 0",
+                    ));
+                }
+                if ks != kernel_size {
+                    return Err(LoadError::Validation(
+                        "inconsistent kernel size across TCN layers",
+                    ));
+                }
+            }
+
+            // Transpose + reverse: PyTorch (F, C, K) → our (F, K, C) with kernel reversed
+            let mut w_conv = vec![0.0_f32; f * ks * ic];
+            for fi in 0..f {
+                for ki in 0..ks {
+                    let pt_k = ks - 1 - ki;
+                    for ci in 0..ic {
+                        w_conv[fi * ks * ic + ki * ic + ci] = wc_pt[fi * ic * ks + ci * ks + pt_k];
+                    }
+                }
+            }
+
+            layers_w_conv.push(w_conv);
+            layers_b_conv.push(b_conv);
+        }
+
+        let wo_name = format!("{prefix}.output.weight");
+        let bo_name = format!("{prefix}.output.bias");
+        let (w_out, wo_shape) = extract_f32_2d(&st, &wo_name)?;
+        let b_out = extract_f32_1d(&st, &bo_name)?;
+        let output_size = wo_shape[0];
+
+        let w_refs: Vec<&[f32]> = layers_w_conv.iter().map(Vec::as_slice).collect();
+        let b_refs: Vec<&[f32]> = layers_b_conv.iter().map(Vec::as_slice).collect();
+
+        Self::from_parts(
+            input_size,
+            filters,
+            kernel_size,
+            output_size,
+            residual,
+            &w_refs,
+            &b_refs,
+            &w_out,
+            &b_out,
+            activation,
+        )
+    }
+}
+
 fn pack_i8_to_u64(weights: &[i8], rows: usize, cols: usize) -> Vec<u64> {
     debug_assert_eq!(weights.len(), rows * cols);
     debug_assert_eq!(cols % 64, 0);

@@ -135,12 +135,7 @@ fn output_from_bits(
     )
 ))]
 #[inline(never)]
-fn output_from_bits_simd(
-    weights: &[f32],
-    bits: &[u64],
-    row_sum: f32,
-    bias: f32,
-) -> f32 {
+fn output_from_bits_simd(weights: &[f32], bits: &[u64], row_sum: f32, bias: f32) -> f32 {
     use core::arch::x86_64::*;
     unsafe {
         let bit_positions = _mm256_setr_epi32(1, 2, 4, 8, 16, 32, 64, 128);
