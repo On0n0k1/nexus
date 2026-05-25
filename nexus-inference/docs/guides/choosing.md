@@ -53,7 +53,7 @@
 | **Missing data** | Learned NaN routing | No (propagate) | No (clamp to bin 0) |
 | **Output** | Single scalar | Single or multi-output | Single scalar |
 | **Model source** | LightGBM | PyTorch/TF/sklearn | Python script |
-| **Memory** | 16B/node | 8B/weight | 8B/bin^features |
+| **Memory** | 16B/node | 4B/weight | 4B/bin^features |
 | **Loader** | `from_lightgbm()` | `from_parts()` | `from_parts()` |
 
 ### Temporal types

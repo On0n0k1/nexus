@@ -11,7 +11,7 @@ construction.
 **Design point:** Models are trained in external frameworks (LightGBM,
 PyTorch), exported as safetensors files, loaded once at startup, and
 then called millions of times. Every type pre-allocates all scratch
-buffers at construction. The inference methods (`predict`, `predict`) touch
+buffers at construction. The inference methods (`predict`, `predict_into`) touch
 only stack and pre-allocated memory.
 
 ## Model Types
@@ -64,8 +64,7 @@ outputs, learned representations).
 `[n_signals, 32, 16, 1]` is typical. Larger architectures belong on a
 GPU. The output layer is always linear; apply sigmoid or softmax in
 your own code if needed for classification. Use `Mlp` for
-PyTorch-trained models (PyTorch defaults to f32). `Mlp` is available
-for precision-sensitive applications.
+PyTorch-trained models (PyTorch defaults to f32).
 
 #### Normalization layers
 
@@ -98,7 +97,7 @@ Uses eps=1e-5 (PyTorch default).
 
 Both are detected and handled automatically by `from_safetensors`.
 Models without normalization layers have zero overhead — the code
-path is skipped entirely. Requires `std` or `libm` for `sqrt`.
+path is skipped entirely.
 
 #### Multi-layer RNN auto-detection
 
@@ -232,11 +231,8 @@ not a gating mechanism. Small kernels (3-8) and moderate filter counts
 
 ## Features
 
-- `std` (default) — standard library support
-- `safetensors` (default) — PyTorch safetensors loader for MLP, LSTM, GRU, Stacked LSTM/GRU, Conv (implies `alloc`)
-- `alloc` — enables MLP, LUT, GBDT, Conv types (heap allocation for weight storage)
-- `libm` — no_std math fallback (enables LSTM/GRU without std)
-- `loader-lightgbm` — LightGBM text format parser (implies `alloc`)
+- `safetensors` (default) — PyTorch safetensors loader for MLP, LSTM, GRU, Stacked LSTM/GRU, Conv
+- `loader-lightgbm` (default) — LightGBM text format parser
 
 ## Usage
 

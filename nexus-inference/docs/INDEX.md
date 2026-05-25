@@ -30,7 +30,7 @@ loaded once at startup via `from_parts()`, and served immutably with
 - [Quickstart](guides/quickstart.md) — Load a model, make predictions, handle errors
 - [Choosing a Model Type](guides/choosing.md) — Decision tree: which model for your use case
 - [NaN Handling](guides/nan-handling.md) — Checked vs unchecked contracts per type
-- [no_std Support](guides/no-std.md) — Feature flags: `alloc`, `std`, `libm`
+- [no_std Support](guides/no-std.md) — Crate requires `std`
 - [Exporting from Python](guides/python-export.md) — Get weights out of PyTorch/LightGBM into `from_parts()`
 
 ## Reference
@@ -68,7 +68,4 @@ src/
 
 | Flag | Default | Enables |
 |------|---------|---------|
-| `std` | Yes | Standard library (implies `alloc`) |
-| `alloc` | Via `std` | GBDT, MLP, LUT, Conv types (`Box`, `Vec`) |
-| `libm` | No | LSTM/GRU in no_std, `Tanh`/`Sigmoid` activations (implies `alloc`) |
-| `loader-lightgbm` | No | `Gbdt::from_lightgbm()` parser (implies `alloc`) |
+| `loader-lightgbm` | No | `Gbdt::from_lightgbm()` parser |

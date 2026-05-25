@@ -126,7 +126,7 @@ impl LinearSsm {
     pub fn predict(&mut self, input: &[f32]) -> f32 {
         assert_eq!(
             self.output_size, 1,
-            "step() requires output_size == 1, use step_into()"
+            "predict() requires output_size == 1, use predict_into()"
         );
         let mut out = [0.0_f32];
         self.predict_into(input, &mut out);
@@ -357,7 +357,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic(expected = "step() requires output_size == 1")]
+    #[should_panic(expected = "predict() requires output_size == 1")]
     fn predict_multi_output_panics() {
         let mut ssm = LinearSsm::from_parts(
             &[0.5, 0.5],

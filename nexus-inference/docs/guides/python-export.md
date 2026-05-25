@@ -68,8 +68,8 @@ use nexus_inference::{Mlp, Activation};
 
 let data: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 let layer_sizes: Vec<usize> = /* parse from data */;
-let weights: Vec<f64> = /* parse from data */;
-let biases: Vec<f64> = /* parse from data */;
+let weights: Vec<f32> = /* parse from data */;
+let biases: Vec<f32> = /* parse from data */;
 
 let model = Mlp::from_parts(
     &layer_sizes, &weights, &biases, Activation::Relu,
@@ -199,10 +199,10 @@ The table ordering matters: first feature varies slowest (row-major).
 
 JSON is simple but verbose for large models. For production:
 
-- **Raw f64 bytes**: Write weights as little-endian f64, read with
+- **Raw f32 bytes**: Write weights as little-endian f32, read with
   `bytemuck::cast_slice` or manual `from_le_bytes`
 - **MessagePack**: Compact binary, `rmp-serde` crate
 - **Flatbuffers/Cap'n Proto**: Zero-copy deserialization
 
 The `from_parts()` API takes slices, so any format that gives you
-`&[f64]` works.
+`&[f32]` works.

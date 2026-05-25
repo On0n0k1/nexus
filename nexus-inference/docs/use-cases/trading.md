@@ -56,7 +56,7 @@ captured by a single tree ensemble:
 ```rust
 use nexus_inference::{Mlp, Activation};
 
-let mut model = Mlp::from_parts(
+let model = Mlp::from_parts(
     &[8, 16, 1], &weights, &biases, Activation::Relu,
 ).unwrap();
 
@@ -167,7 +167,6 @@ let score = m.predict(&features);
 let new_model = Arc::new(Gbdt::from_lightgbm(&new_bytes).unwrap());
 ```
 
-**MLP/LUT note:** MLP prediction takes `&mut self` (pre-allocated
-scratch buffers). For concurrent access, use per-thread model
-instances via `Clone` rather than `Arc<Mutex<Mlp>>`. Each
-clone gets its own scratch buffers — no contention.
+**MLP/LUT note:** MLP prediction takes `&self` (scratch buffers
+use interior mutability). Models can be shared via `Arc<Mlp>`
+directly — no mutex needed, no contention.

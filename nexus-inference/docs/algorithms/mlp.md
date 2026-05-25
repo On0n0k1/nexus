@@ -8,7 +8,7 @@ arbitrary continuous functions from data.
 |----------|-------|
 | Prediction cost | ~0.5 ns per FMA (scalar), dominated by matmul |
 | Memory | `Σ(layer[i] x layer[i+1])` weights + `Σ(layer[i+1])` biases |
-| Types | `Mlp`, `Mlp` |
+| Types | `Mlp` |
 | Construction | `from_parts(layer_sizes, weights, biases, activation)` |
 | Output | Single scalar or multi-output vector |
 
@@ -66,11 +66,11 @@ The output layer is always linear.
 | `Relu` | `max(0, x)` | None | Default, most common |
 | `LeakyRelu(alpha)` | `x >= 0 ? x : alpha*x` | None | Prevents dead neurons |
 | `Identity` | `x` | None | No transformation |
-| `Tanh` | `tanh(x)` | `std` or `libm` | Bounded output [-1, 1] |
-| `Sigmoid` | `1 / (1 + exp(-x))` | `std` or `libm` | Bounded output [0, 1] |
-| `Elu(alpha)` | `x >= 0 ? x : alpha*(exp(x)-1)` | `std` or `libm` | Smooth negative region |
-| `Gelu` | `0.5x(1 + tanh(√(2/π)(x + 0.044715x³)))` | `std` or `libm` | Transformer default |
-| `Swish` | `x * sigmoid(x)` | `std` or `libm` | aka SiLU in PyTorch |
+| `Tanh` | `tanh(x)` | | Bounded output [-1, 1] |
+| `Sigmoid` | `1 / (1 + exp(-x))` | | Bounded output [0, 1] |
+| `Elu(alpha)` | `x >= 0 ? x : alpha*(exp(x)-1)` | | Smooth negative region |
+| `Gelu` | `0.5x(1 + tanh(√(2/π)(x + 0.044715x³)))` | | Transformer default |
+| `Swish` | `x * sigmoid(x)` | | aka SiLU in PyTorch |
 
 **Design note:** The current API uses a single activation for the
 entire model. Per-layer activations (e.g., relu hidden + tanh final
@@ -96,8 +96,9 @@ the struct. These are allocated once at construction, sized to
 the maximum layer dimension. No allocation happens on the
 prediction path.
 
-This means `predict` methods take `&mut self`. For concurrent
-access, use per-thread model instances rather than `Arc<Mlp>`.
+Scratch buffers use interior mutability, so `predict` methods
+take `&self`. Models can be shared via `Arc<Mlp>` without
+contention.
 
 ## When to Use It
 
@@ -119,7 +120,7 @@ access, use per-thread model instances rather than `Arc<Mlp>`.
 use nexus_inference::{Mlp, Activation};
 
 // 4 inputs → 8 hidden (relu) → 1 output
-let mut model = Mlp::from_parts(
+let model = Mlp::from_parts(
     &[4, 8, 1],
     &weights,  // 4*8 + 8*1 = 40 weights, row-major
     &biases,   // 8 + 1 = 9 biases
@@ -129,7 +130,7 @@ let mut model = Mlp::from_parts(
 let score = model.predict(&[0.5, 1.2, -0.3, 0.8]);
 
 // Multi-output
-let mut model = Mlp::from_parts(&[4, 8, 3], &w, &b, Activation::Relu).unwrap();
+let model = Mlp::from_parts(&[4, 8, 3], &w, &b, Activation::Relu).unwrap();
 let mut output = [0.0_f32; 3];
 model.predict_into(&[0.5, 1.2, -0.3, 0.8], &mut output);
 ```

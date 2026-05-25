@@ -30,10 +30,10 @@ use nexus_inference::{Mlp, Activation};
 
 // Weights exported from PyTorch (see python-export.md)
 let layer_sizes = &[4, 8, 1];  // 4 inputs → 8 hidden → 1 output
-let weights: Vec<f64> = load_weights();  // 4*8 + 8*1 = 40 values
-let biases: Vec<f64> = load_biases();    // 8 + 1 = 9 values
+let weights: Vec<f32> = load_weights();  // 4*8 + 8*1 = 40 values
+let biases: Vec<f32> = load_biases();    // 8 + 1 = 9 values
 
-let mut model = Mlp::from_parts(
+let model = Mlp::from_parts(
     layer_sizes, &weights, &biases, Activation::Relu,
 ).unwrap();
 
@@ -46,7 +46,7 @@ let score = model.predict(&[0.5, 1.2, -0.3, 0.8]);
 use nexus_inference::Lut;
 
 // Pre-computed table: 2 features, 10 bins each
-let table: Vec<f64> = load_table();  // 100 values
+let table: Vec<f32> = load_table();  // 100 values
 
 let model = Lut::from_parts(
     2,              // n_features
@@ -65,12 +65,12 @@ let value = model.predict(&[0.35, 0.72]);
 use nexus_inference::{Mlp, Activation};
 
 // 4 inputs → 8 hidden → 3 outputs
-let mut model = Mlp::from_parts(
+let model = Mlp::from_parts(
     &[4, 8, 3], &weights, &biases, Activation::Relu,
 ).unwrap();
 
 // predict() panics for multi-output — use predict_into
-let mut output = [0.0_f64; 3];
+let mut output = [0.0_f32; 3];
 model.predict_into(&[0.5, 1.2, -0.3, 0.8], &mut output);
 // output[0], output[1], output[2] now contain the three predictions
 ```
