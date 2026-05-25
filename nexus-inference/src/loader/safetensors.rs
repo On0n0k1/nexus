@@ -1005,6 +1005,162 @@ impl crate::LinearSsmF32 {
     }
 }
 
+// ---- TCN loader ----
+
+fn count_tcn_layers(st: &SafeTensors<'_>, prefix: &str) -> Result<usize, LoadError> {
+    let mut n = 0;
+    loop {
+        let name = format!("{prefix}.conv_{n}.weight");
+        if st.tensor(&name).is_ok() {
+            n += 1;
+        } else {
+            break;
+        }
+    }
+    if n == 0 {
+        return Err(LoadError::TensorNotFound(format!("{prefix}.conv_0.weight")));
+    }
+
+    // Reject orphaned per-layer tensors (weight or bias) past the
+    // consecutive run — a stray conv_{k}.bias signals a malformed file.
+    let stem = format!("{prefix}.conv_");
+    for name in st.names() {
+        let idx_str = name.strip_prefix(stem.as_str()).and_then(|s| {
+            s.strip_suffix(".weight")
+                .or_else(|| s.strip_suffix(".bias"))
+        });
+        if let Some(idx_str) = idx_str
+            && let Ok(idx) = idx_str.parse::<usize>()
+            && idx >= n
+        {
+            return Err(LoadError::Validation(
+                "non-consecutive TCN layer indices (gap in conv_{k})",
+            ));
+        }
+    }
+
+    Ok(n)
+}
+
+impl crate::TinyTcnF32 {
+    /// Load from safetensors data.
+    ///
+    /// Tensor naming convention:
+    /// - `{prefix}.conv_0.weight` — F32 `[filters, input_ch, kernel_size]`
+    /// - `{prefix}.conv_0.bias` — F32 `[filters]`
+    /// - `{prefix}.conv_1.weight` — F32 `[filters, filters, kernel_size]`
+    /// - `{prefix}.conv_1.bias` — F32 `[filters]` ...
+    /// - `{prefix}.output.weight` — F32 `[output_size, filters]`
+    /// - `{prefix}.output.bias` — F32 `[output_size]`
+    ///
+    /// Layer count is auto-detected by scanning for consecutive
+    /// `conv_{k}` tensors. PyTorch stores Conv1d weights as
+    /// `(out_ch, in_ch, kernel)` where kernel position 0 is the oldest
+    /// input; this loader transposes and reverses the kernel dimension
+    /// to match our `(filters, kernel, in_ch)` layout where position 0
+    /// is the newest (current) input.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LoadError::TensorNotFound`] if required tensors are
+    /// missing, or [`LoadError::Validation`] if shapes are inconsistent.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let bytes = std::fs::read("tcn.safetensors")?;
+    /// let tcn = TinyTcnF32::from_safetensors(
+    ///     &bytes, "tcn", Activation::Relu, false,
+    /// )?;
+    /// ```
+    pub fn from_safetensors(
+        data: &[u8],
+        prefix: &str,
+        activation: crate::Activation,
+        residual: bool,
+    ) -> Result<Self, LoadError> {
+        let st = parse(data)?;
+        let num_layers = count_tcn_layers(&st, prefix)?;
+
+        let mut layers_w_conv = Vec::with_capacity(num_layers);
+        let mut layers_b_conv = Vec::with_capacity(num_layers);
+
+        let mut input_size = 0;
+        let mut filters = 0;
+        let mut kernel_size = 0;
+
+        for k in 0..num_layers {
+            let w_name = format!("{prefix}.conv_{k}.weight");
+            let b_name = format!("{prefix}.conv_{k}.bias");
+
+            let (wc_pt, wc_shape) = extract_f32_3d(&st, &w_name)?;
+            let b_conv = extract_f32_1d(&st, &b_name)?;
+
+            let f = wc_shape[0];
+            let ic = wc_shape[1];
+            let ks = wc_shape[2];
+
+            if k == 0 {
+                input_size = ic;
+                filters = f;
+                kernel_size = ks;
+            } else {
+                if f != filters {
+                    return Err(LoadError::Validation(
+                        "inconsistent filter count across TCN layers",
+                    ));
+                }
+                if ic != filters {
+                    return Err(LoadError::Validation(
+                        "TCN layer input channels must equal filters for layer > 0",
+                    ));
+                }
+                if ks != kernel_size {
+                    return Err(LoadError::Validation(
+                        "inconsistent kernel size across TCN layers",
+                    ));
+                }
+            }
+
+            // Transpose + reverse: PyTorch (F, C, K) → our (F, K, C) with kernel reversed
+            let mut w_conv = vec![0.0_f32; f * ks * ic];
+            for fi in 0..f {
+                for ki in 0..ks {
+                    let pt_k = ks - 1 - ki;
+                    for ci in 0..ic {
+                        w_conv[fi * ks * ic + ki * ic + ci] = wc_pt[fi * ic * ks + ci * ks + pt_k];
+                    }
+                }
+            }
+
+            layers_w_conv.push(w_conv);
+            layers_b_conv.push(b_conv);
+        }
+
+        let wo_name = format!("{prefix}.output.weight");
+        let bo_name = format!("{prefix}.output.bias");
+        let (w_out, wo_shape) = extract_f32_2d(&st, &wo_name)?;
+        let b_out = extract_f32_1d(&st, &bo_name)?;
+        let output_size = wo_shape[0];
+
+        let w_refs: Vec<&[f32]> = layers_w_conv.iter().map(Vec::as_slice).collect();
+        let b_refs: Vec<&[f32]> = layers_b_conv.iter().map(Vec::as_slice).collect();
+
+        Self::from_parts(
+            input_size,
+            filters,
+            kernel_size,
+            output_size,
+            residual,
+            &w_refs,
+            &b_refs,
+            &w_out,
+            &b_out,
+            activation,
+        )
+    }
+}
+
 fn pack_i8_to_u64(weights: &[i8], rows: usize, cols: usize) -> Vec<u64> {
     debug_assert_eq!(weights.len(), rows * cols);
     debug_assert_eq!(cols % 64, 0);
@@ -2419,5 +2575,35 @@ mod tests {
         let y_st = st.predict(&input);
         let y_fp = fp.predict(&input);
         assert!((y_st - y_fp).abs() < 1e-7, "st={y_st} fp={y_fp}");
+    }
+
+    // ---- TCN ----
+
+    #[test]
+    fn tcn_rejects_orphan_bias() {
+        // conv_0 complete + a stray conv_2.bias (no conv_2.weight, conv_1
+        // missing). The orphan bias past the consecutive run must be
+        // rejected, not silently ignored.
+        let f = 4_usize;
+        let ic = 2_usize;
+        let ks = 3_usize;
+        let o = 1_usize;
+
+        let w0 = f32_bytes(&vec![0.1_f32; f * ic * ks]);
+        let b0 = f32_bytes(&vec![0.0_f32; f]);
+        let wo = f32_bytes(&vec![0.1_f32; o * f]);
+        let bo = f32_bytes(&vec![0.0_f32; o]);
+        let orphan_bias = f32_bytes(&vec![0.0_f32; f]);
+
+        let data = serialize_tensors(vec![
+            ("t.conv_0.weight", make_view(Dtype::F32, &[f, ic, ks], &w0)),
+            ("t.conv_0.bias", make_view(Dtype::F32, &[f], &b0)),
+            ("t.conv_2.bias", make_view(Dtype::F32, &[f], &orphan_bias)),
+            ("t.output.weight", make_view(Dtype::F32, &[o, f], &wo)),
+            ("t.output.bias", make_view(Dtype::F32, &[o], &bo)),
+        ]);
+
+        let err = crate::TinyTcnF32::from_safetensors(&data, "t", crate::Activation::Relu, false);
+        assert!(matches!(err, Err(LoadError::Validation(_))), "got {err:?}");
     }
 }

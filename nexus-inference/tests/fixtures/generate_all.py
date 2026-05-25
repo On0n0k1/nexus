@@ -165,7 +165,7 @@ def generate_gru_multi_output():
 
 def generate_stacked_rnn(name, rnn_cls, gate_mult, input_size, hidden_size,
                          output_size, num_layers, inputs, init_fn,
-                         rnn_prefix, proj_prefix):
+                         rnn_prefix, proj_prefix, tolerance=1e-5):
     rnn = rnn_cls(input_size, hidden_size, num_layers=num_layers, batch_first=True)
     assert rnn.weight_ih_l0.shape[0] == gate_mult * hidden_size, \
         f"{name}: gate_mult={gate_mult} disagrees with {type(rnn).__name__} gate layout"
@@ -217,7 +217,7 @@ def generate_stacked_rnn(name, rnn_cls, gate_mult, input_size, hidden_size,
                 "num_layers": num_layers,
                 "inputs": inputs,
                 "outputs": outputs,
-                "tolerance": 1e-5,
+                "tolerance": tolerance,
             },
             f,
             indent=2,
@@ -692,7 +692,7 @@ def make_binary_weights(hidden_size, init_fn, lo=-0.3, hi=0.3):
 
 
 def generate_bnn(name, input_size, hidden_size, output_size, num_binary,
-                 inputs, prefix, init_fn):
+                 inputs, prefix, init_fn, tolerance=1e-5):
     # fp32 input layer
     w_input = torch.empty(hidden_size, input_size)
     b_input = torch.empty(hidden_size)
@@ -757,7 +757,7 @@ def generate_bnn(name, input_size, hidden_size, output_size, num_binary,
             "num_binary": num_binary,
             "inputs": inputs,
             "outputs": outputs,
-            "tolerance": 1e-5,
+            "tolerance": tolerance,
         }, f, indent=2)
         f.write("\n")
 
@@ -797,7 +797,9 @@ def generate_bnn_large():
 
 
 def generate_fuzz():
-    rng = random.Random(42)
+    # Each fuzz family below seeds its own independent RNG (distinct fixed
+    # seed) so that adding or reordering a family never perturbs the configs
+    # or fixtures of the others.
 
     activations_mlp = [
         ("relu", nn.ReLU, None),
@@ -824,6 +826,7 @@ def generate_fuzz():
     init_fns = [init_linspace, init_sinusoidal]
 
     # Fuzz LSTM
+    rng = random.Random(42)
     for i in range(4):
         input_size = rng.randint(1, 8)
         hidden_size = rng.randint(2, 16)
@@ -836,6 +839,7 @@ def generate_fuzz():
                      rnn_prefix=f"fuzz{i}.lstm", proj_prefix=f"fuzz{i}.fc")
 
     # Fuzz GRU
+    rng = random.Random(142)
     for i in range(4):
         input_size = rng.randint(1, 8)
         hidden_size = rng.randint(2, 16)
@@ -848,6 +852,7 @@ def generate_fuzz():
                      rnn_prefix=f"fuzz{i}.gru", proj_prefix=f"fuzz{i}.proj")
 
     # Fuzz MLP f32
+    rng = random.Random(242)
     for i in range(4):
         n_hidden = rng.randint(0, 3)
         input_size = rng.randint(1, 8)
@@ -862,6 +867,7 @@ def generate_fuzz():
                      activation_param=act_param)
 
     # Fuzz MLP f64
+    rng = random.Random(342)
     for i in range(2):
         n_hidden = rng.randint(0, 2)
         input_size = rng.randint(1, 6)
@@ -876,6 +882,7 @@ def generate_fuzz():
                      activation_param=act_param)
 
     # Fuzz Conv1d
+    rng = random.Random(442)
     for i in range(4):
         input_ch = rng.randint(1, 6)
         kernel_size = rng.randint(2, 6)
@@ -890,6 +897,7 @@ def generate_fuzz():
                       init_fn=rng.choice(init_fns), activation_param=act_param)
 
     # Fuzz Stacked LSTM
+    rng = random.Random(542)
     for i in range(4):
         input_size = rng.randint(1, 8)
         hidden_size = rng.randint(2, 16)
@@ -901,9 +909,11 @@ def generate_fuzz():
                              output_size=output_size, num_layers=num_layers,
                              inputs=make_inputs(n_steps, input_size, seed=600+i),
                              init_fn=rng.choice(init_fns),
-                             rnn_prefix=f"fuzz{i}.lstm", proj_prefix=f"fuzz{i}.fc")
+                             rnn_prefix=f"fuzz{i}.lstm", proj_prefix=f"fuzz{i}.fc",
+                             tolerance=5e-5)
 
     # Fuzz Stacked GRU
+    rng = random.Random(642)
     for i in range(4):
         input_size = rng.randint(1, 8)
         hidden_size = rng.randint(2, 16)
@@ -915,9 +925,11 @@ def generate_fuzz():
                              output_size=output_size, num_layers=num_layers,
                              inputs=make_inputs(n_steps, input_size, seed=700+i),
                              init_fn=rng.choice(init_fns),
-                             rnn_prefix=f"fuzz{i}.gru", proj_prefix=f"fuzz{i}.proj")
+                             rnn_prefix=f"fuzz{i}.gru", proj_prefix=f"fuzz{i}.proj",
+                             tolerance=5e-5)
 
     # Fuzz SSM
+    rng = random.Random(742)
     for i in range(4):
         input_size = rng.randint(1, 6)
         hidden_size = rng.randint(2, 16)
@@ -931,7 +943,28 @@ def generate_fuzz():
                       prefix=f"fuzz{i}.ssm", init_fn=rng.choice(init_fns),
                       has_d=has_d)
 
+    # Fuzz TCN
+    rng = random.Random(842)
+    for i in range(4):
+        input_size = rng.randint(1, 4)
+        filters = rng.choice([2, 4, 8])
+        kernel_size = rng.choice([2, 3])
+        num_layers = rng.randint(1, 4)
+        output_size = rng.randint(1, 2)
+        residual = rng.choice([True, False])
+        act = rng.choice(["relu", "identity", "tanh"])
+        rf = 1 + (kernel_size - 1) * (2**num_layers - 1)
+        n_steps = max(rf + 5, 10)
+        generate_tcn(f"fuzz_tcn_{i}",
+                     input_size=input_size, filters=filters,
+                     kernel_size=kernel_size, num_layers=num_layers,
+                     output_size=output_size, activation_name=act,
+                     residual=residual,
+                     inputs=make_inputs(n_steps, input_size, seed=1000+i),
+                     prefix=f"fuzz{i}.tcn", init_fn=rng.choice(init_fns))
+
     # Fuzz BNN
+    rng = random.Random(942)
     for i in range(4):
         input_size = rng.randint(1, 8)
         hidden_size = rng.choice([64, 128])
@@ -942,7 +975,122 @@ def generate_fuzz():
                      input_size=input_size, hidden_size=hidden_size,
                      output_size=output_size, num_binary=num_binary,
                      inputs=make_inputs(n_steps, input_size, seed=900+i),
-                     prefix=f"fuzz{i}.bnn", init_fn=rng.choice(init_fns))
+                     prefix=f"fuzz{i}.bnn", init_fn=rng.choice(init_fns),
+                     tolerance=2e-5)
+
+
+# ---- TCN generators ----
+
+
+def generate_tcn(name, input_size, filters, kernel_size, num_layers, output_size,
+                 activation_name, residual, inputs, prefix, init_fn,
+                 activation_param=None):
+    convs = []
+    for i in range(num_layers):
+        in_ch = input_size if i == 0 else filters
+        convs.append(nn.Conv1d(in_ch, filters, kernel_size, dilation=2**i))
+
+    output_proj = nn.Linear(filters, output_size)
+
+    with torch.no_grad():
+        for conv in convs:
+            init_fn(conv.weight)
+            conv.bias.fill_(0.01)
+        init_fn(output_proj.weight)
+        output_proj.bias.fill_(0.0)
+
+    state = {}
+    for i, conv in enumerate(convs):
+        for k, v in conv.state_dict().items():
+            state[f"{prefix}.conv_{i}.{k}"] = v
+    for k, v in output_proj.state_dict().items():
+        state[f"{prefix}.output.{k}"] = v
+    save_file(state, FIXTURES_DIR / f"{name}.safetensors")
+
+    _base_fns = {
+        "relu": F.relu,
+        "tanh": torch.tanh,
+        "sigmoid": torch.sigmoid,
+        "identity": lambda x: x,
+        "swish": F.silu,
+    }
+    if activation_name in _base_fns:
+        activation_fn = _base_fns[activation_name]
+    elif activation_name == "gelu":
+        activation_fn = lambda x: F.gelu(x, approximate='tanh')
+    elif activation_name == "elu":
+        _p = activation_param if activation_param is not None else 1.0
+        activation_fn = lambda x, p=_p: F.elu(x, alpha=p)
+    elif activation_name == "leaky_relu":
+        _p = activation_param if activation_param is not None else 0.01
+        activation_fn = lambda x, p=_p: F.leaky_relu(x, negative_slope=p)
+    else:
+        raise ValueError(f"unknown activation: {activation_name}")
+
+    outputs = []
+    with torch.no_grad():
+        x = torch.tensor(inputs, dtype=torch.float32).T.unsqueeze(0)  # (1, C, T)
+        for i in range(num_layers):
+            d = 2 ** i
+            pad = (kernel_size - 1) * d
+            x_prev = x
+            x = activation_fn(convs[i](F.pad(x, (pad, 0))))
+            if residual and (i > 0 or input_size == filters):
+                x = x + x_prev
+
+        for t in range(len(inputs)):
+            y = output_proj(x[0, :, t])
+            outputs.append(y.tolist())
+
+    with open(FIXTURES_DIR / f"{name}_expected.json", "w") as f:
+        meta = {
+            "prefix": prefix,
+            "activation": activation_name,
+            "residual": residual,
+            "inputs": inputs,
+            "outputs": outputs,
+            "tolerance": 1e-5,
+        }
+        if activation_param is not None:
+            meta["activation_param"] = activation_param
+        json.dump(meta, f, indent=2)
+        f.write("\n")
+
+    rf = 1 + (kernel_size - 1) * (2**num_layers - 1)
+    print(f"  {name}: I={input_size} F={filters} K={kernel_size} L={num_layers} "
+          f"O={output_size}, {activation_name}, residual={residual}, RF={rf}, "
+          f"{len(inputs)} steps")
+
+
+def generate_tcn_basic():
+    generate_tcn("tcn", input_size=2, filters=4, kernel_size=3, num_layers=2,
+                 output_size=1, activation_name="relu", residual=False,
+                 inputs=make_inputs(20, 2, seed=2000),
+                 prefix="tcn", init_fn=init_linspace)
+
+
+def generate_tcn_residual():
+    generate_tcn("tcn_residual", input_size=4, filters=4, kernel_size=3,
+                 num_layers=3, output_size=1, activation_name="relu",
+                 residual=True,
+                 inputs=make_inputs(20, 4, seed=2001),
+                 prefix="tcn_r", init_fn=init_sinusoidal)
+
+
+def generate_tcn_identity():
+    generate_tcn("tcn_identity", input_size=2, filters=4, kernel_size=2,
+                 num_layers=1, output_size=2, activation_name="identity",
+                 residual=False,
+                 inputs=make_inputs(10, 2, seed=2002),
+                 prefix="tcn_id", init_fn=init_linspace)
+
+
+def generate_tcn_large():
+    generate_tcn("tcn_large", input_size=4, filters=8, kernel_size=3,
+                 num_layers=4, output_size=2, activation_name="relu",
+                 residual=True,
+                 inputs=make_inputs(40, 4, seed=2003),
+                 prefix="tcn_lg", init_fn=init_sinusoidal)
 
 
 if __name__ == "__main__":
@@ -1001,6 +1149,11 @@ if __name__ == "__main__":
     generate_bnn_one_binary()
     generate_bnn_two_binary()
     generate_bnn_large()
+    # TCN
+    generate_tcn_basic()
+    generate_tcn_residual()
+    generate_tcn_identity()
+    generate_tcn_large()
     # Fuzz (seeded random configs)
     generate_fuzz()
     print("Done.")

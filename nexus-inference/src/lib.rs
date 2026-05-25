@@ -24,6 +24,7 @@
 //! - [`StackedGruF32`] — Multi-layer GRU (PyTorch `nn.GRU(num_layers=N)`)
 //! - [`LinearSsmF32`] — Linear state-space model (S4/S4D), no transcendentals
 //! - [`Causal1dConvF32`] — Causal 1D convolution over a sliding window
+//! - [`TinyTcnF32`] — Temporal convolutional network (dilated causal conv stack)
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
@@ -57,7 +58,7 @@ pub use activation::Activation;
 #[cfg(feature = "alloc")]
 pub use bnn::BnnF32;
 #[cfg(feature = "alloc")]
-pub use conv::Causal1dConvF32;
+pub use conv::{Causal1dConvF32, TinyTcnF32};
 pub use error::LoadError;
 #[cfg(feature = "alloc")]
 pub use gbdt::{GbdtF32, GbdtF64};

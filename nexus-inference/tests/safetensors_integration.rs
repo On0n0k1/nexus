@@ -607,3 +607,54 @@ fn bnn_large() {
 }
 
 fuzz_tests!(run_bnn_test, fuzz_bnn_0, fuzz_bnn_1, fuzz_bnn_2, fuzz_bnn_3,);
+
+// ---- TCN tests ----
+
+fn run_tcn_test(name: &str) {
+    let data = load_model(name);
+    let exp = load_expected(name);
+    let tol = exp["tolerance"].as_f64().unwrap();
+    let residual = exp["residual"].as_bool().unwrap();
+
+    let mut tcn = TinyTcnF32::from_safetensors(
+        &data,
+        exp["prefix"].as_str().unwrap(),
+        parse_activation(&exp),
+        residual,
+    )
+    .unwrap();
+
+    for (i, (inp, exp_out)) in inputs_f32(&exp)
+        .iter()
+        .zip(expected_outputs(&exp).iter())
+        .enumerate()
+    {
+        let mut out = vec![0.0_f32; exp_out.len()];
+        tcn.step_into(inp, &mut out);
+        for (j, (&actual, &expected)) in out.iter().zip(exp_out.iter()).enumerate() {
+            assert_close(name, i, j, actual as f64, expected, tol);
+        }
+    }
+}
+
+#[test]
+fn tcn() {
+    run_tcn_test("tcn");
+}
+
+#[test]
+fn tcn_residual() {
+    run_tcn_test("tcn_residual");
+}
+
+#[test]
+fn tcn_identity() {
+    run_tcn_test("tcn_identity");
+}
+
+#[test]
+fn tcn_large() {
+    run_tcn_test("tcn_large");
+}
+
+fuzz_tests!(run_tcn_test, fuzz_tcn_0, fuzz_tcn_1, fuzz_tcn_2, fuzz_tcn_3,);
