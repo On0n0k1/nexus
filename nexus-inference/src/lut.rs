@@ -22,9 +22,9 @@ macro_rules! impl_lut {
         /// # Examples
         ///
         /// ```
-        /// use nexus_inference::LutF64;
+        /// use nexus_inference::LutF32;
         ///
-        /// let model = LutF64::from_parts(
+        /// let model = LutF32::from_parts(
         ///     1, 4,
         ///     &[0.0], &[1.0],
         ///     &[10.0, 20.0, 30.0, 40.0],
@@ -164,8 +164,6 @@ fn checked_pow(base: usize, exp: usize) -> Option<usize> {
 }
 
 #[cfg(feature = "alloc")]
-impl_lut!(LutF64, f64);
-#[cfg(feature = "alloc")]
 impl_lut!(LutF32, f32);
 
 #[cfg(test)]
@@ -178,7 +176,7 @@ mod tests {
     fn single_feature() {
         // 1 feature, 4 bins over [0, 1)
         // bins: [0, 0.25), [0.25, 0.5), [0.5, 0.75), [0.75, 1.0)
-        let model = LutF64::from_parts(1, 4, &[0.0], &[1.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
+        let model = LutF32::from_parts(1, 4, &[0.0], &[1.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
         assert_eq!(model.predict(&[0.1]), 10.0);
         assert_eq!(model.predict(&[0.3]), 20.0);
         assert_eq!(model.predict(&[0.6]), 30.0);
@@ -192,8 +190,8 @@ mod tests {
         // Feature 0: [0, 3), bins at width 1.0
         // Feature 1: [0, 3), bins at width 1.0
         // table[f0*3 + f1]
-        let table: Vec<f64> = (0..9).map(|i| i as f64).collect();
-        let model = LutF64::from_parts(2, 3, &[0.0, 0.0], &[3.0, 3.0], &table).unwrap();
+        let table: Vec<f32> = (0..9).map(|i| i as f32).collect();
+        let model = LutF32::from_parts(2, 3, &[0.0, 0.0], &[3.0, 3.0], &table).unwrap();
         // f0=0.5 → bin 0, f1=1.5 → bin 1 → idx = 0*3 + 1 = 1
         assert_eq!(model.predict(&[0.5, 1.5]), 1.0);
         // f0=2.5 → bin 2, f1=0.5 → bin 0 → idx = 2*3 + 0 = 6
@@ -203,14 +201,14 @@ mod tests {
     #[test]
     #[cfg(feature = "alloc")]
     fn clamp_low() {
-        let model = LutF64::from_parts(1, 4, &[0.0], &[1.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
+        let model = LutF32::from_parts(1, 4, &[0.0], &[1.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
         assert_eq!(model.predict(&[-5.0]), 10.0);
     }
 
     #[test]
     #[cfg(feature = "alloc")]
     fn clamp_high() {
-        let model = LutF64::from_parts(1, 4, &[0.0], &[1.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
+        let model = LutF32::from_parts(1, 4, &[0.0], &[1.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
         assert_eq!(model.predict(&[99.0]), 40.0);
     }
 
@@ -219,7 +217,7 @@ mod tests {
     fn boundary_values() {
         // 1 feature, 4 bins over [0, 4), step=1.0
         // bins: [0,1), [1,2), [2,3), [3,4)
-        let model = LutF64::from_parts(1, 4, &[0.0], &[4.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
+        let model = LutF32::from_parts(1, 4, &[0.0], &[4.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
         // Exactly at bin boundary → floor to that bin
         assert_eq!(model.predict(&[0.0]), 10.0);
         assert_eq!(model.predict(&[1.0]), 20.0);
@@ -231,7 +229,7 @@ mod tests {
     #[cfg(feature = "alloc")]
     #[should_panic]
     fn wrong_feature_count_panics() {
-        let model = LutF64::from_parts(1, 4, &[0.0], &[1.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
+        let model = LutF32::from_parts(1, 4, &[0.0], &[1.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
         model.predict(&[1.0, 2.0]); // expects 1 feature
     }
 
@@ -239,24 +237,16 @@ mod tests {
     #[cfg(feature = "alloc")]
     fn from_parts_validates() {
         // Wrong table size
-        assert!(LutF64::from_parts(1, 4, &[0.0], &[1.0], &[1.0; 3]).is_err());
+        assert!(LutF32::from_parts(1, 4, &[0.0], &[1.0], &[1.0; 3]).is_err());
         // Zero bins
-        assert!(LutF64::from_parts(1, 0, &[0.0], &[1.0], &[]).is_err());
+        assert!(LutF32::from_parts(1, 0, &[0.0], &[1.0], &[]).is_err());
         // One bin (minimum is 2)
-        assert!(LutF64::from_parts(1, 1, &[0.0], &[1.0], &[1.0]).is_err());
+        assert!(LutF32::from_parts(1, 1, &[0.0], &[1.0], &[1.0]).is_err());
         // Zero features
-        assert!(LutF64::from_parts(0, 4, &[], &[], &[]).is_err());
+        assert!(LutF32::from_parts(0, 4, &[], &[], &[]).is_err());
         // max <= min
-        assert!(LutF64::from_parts(1, 4, &[5.0], &[5.0], &[1.0; 4]).is_err());
-        assert!(LutF64::from_parts(1, 4, &[5.0], &[3.0], &[1.0; 4]).is_err());
-    }
-
-    #[test]
-    #[cfg(feature = "alloc")]
-    fn f32_variant() {
-        let model =
-            LutF32::from_parts(1, 4, &[0.0_f32], &[1.0], &[10.0_f32, 20.0, 30.0, 40.0]).unwrap();
-        assert_eq!(model.predict(&[0.3_f32]), 20.0_f32);
+        assert!(LutF32::from_parts(1, 4, &[5.0], &[5.0], &[1.0; 4]).is_err());
+        assert!(LutF32::from_parts(1, 4, &[5.0], &[3.0], &[1.0; 4]).is_err());
     }
 
     #[test]
@@ -264,8 +254,8 @@ mod tests {
     fn three_features() {
         // 3 features × 5 bins → 125 entries
         // table[f0*25 + f1*5 + f2]
-        let table: Vec<f64> = (0..125).map(|i| i as f64).collect();
-        let model = LutF64::from_parts(3, 5, &[0.0, 0.0, 0.0], &[5.0, 5.0, 5.0], &table).unwrap();
+        let table: Vec<f32> = (0..125).map(|i| i as f32).collect();
+        let model = LutF32::from_parts(3, 5, &[0.0, 0.0, 0.0], &[5.0, 5.0, 5.0], &table).unwrap();
         // f0=0.5→bin0, f1=2.5→bin2, f2=4.5→bin4 → idx = 0*25 + 2*5 + 4 = 14
         assert_eq!(model.predict(&[0.5, 2.5, 4.5]), 14.0);
         // f0=3.5→bin3, f1=1.5→bin1, f2=0.5→bin0 → idx = 3*25 + 1*5 + 0 = 80
@@ -275,7 +265,7 @@ mod tests {
     #[test]
     #[cfg(feature = "alloc")]
     fn nan_maps_to_bin_zero() {
-        let model = LutF64::from_parts(1, 4, &[0.0], &[1.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
-        assert_eq!(model.predict(&[f64::NAN]), 10.0);
+        let model = LutF32::from_parts(1, 4, &[0.0], &[1.0], &[10.0, 20.0, 30.0, 40.0]).unwrap();
+        assert_eq!(model.predict(&[f32::NAN]), 10.0);
     }
 }

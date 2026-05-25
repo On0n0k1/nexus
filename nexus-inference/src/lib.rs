@@ -12,8 +12,8 @@
 //! # Stateless (single prediction)
 //!
 //! - [`Gbdt`] — Gradient-boosted decision tree ensemble
-//! - [`MlpF64`] / [`MlpF32`] — Feedforward neural network (multi-layer perceptron)
-//! - [`LutF64`] / [`LutF32`] — Lookup table predictor (discretized features)
+//! - [`MlpF32`] — Feedforward neural network (multi-layer perceptron)
+//! - [`LutF32`] — Lookup table predictor (discretized features)
 //! - [`BnnF32`] — Binary neural network (XNOR+popcount inference)
 //! - [`QuantizedMlpI8`] — Int8-quantized MLP (i8 matmul, f32 activations)
 //!
@@ -66,9 +66,9 @@ pub use error::LoadError;
 #[cfg(feature = "alloc")]
 pub use gbdt::Gbdt;
 #[cfg(feature = "alloc")]
-pub use lut::{LutF32, LutF64};
+pub use lut::LutF32;
 #[cfg(feature = "alloc")]
-pub use mlp::{MlpF32, MlpF64};
+pub use mlp::MlpF32;
 #[cfg(feature = "alloc")]
 pub use quantized_mlp::QuantizedMlpI8;
 #[cfg(any(feature = "std", feature = "libm"))]

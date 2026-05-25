@@ -141,49 +141,6 @@ fn extract_i8_2d(st: &SafeTensors<'_>, name: &str) -> Result<(Vec<i8>, [usize; 2
     Ok((data, dims))
 }
 
-fn extract_f64_1d(st: &SafeTensors<'_>, name: &str) -> Result<Vec<f64>, LoadError> {
-    let tv = st
-        .tensor(name)
-        .map_err(|_| LoadError::TensorNotFound(String::from(name)))?;
-    if tv.dtype() != Dtype::F64 {
-        return Err(LoadError::Validation("expected F64 tensor"));
-    }
-    if tv.shape().len() != 1 {
-        return Err(LoadError::Validation("expected 1D tensor"));
-    }
-    let bytes = tv.data();
-    if bytes.len() % 8 != 0 {
-        return Err(LoadError::Parse("F64 tensor data not aligned"));
-    }
-    Ok(bytes
-        .chunks_exact(8)
-        .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
-        .collect())
-}
-
-fn extract_f64_2d(st: &SafeTensors<'_>, name: &str) -> Result<(Vec<f64>, [usize; 2]), LoadError> {
-    let tv = st
-        .tensor(name)
-        .map_err(|_| LoadError::TensorNotFound(String::from(name)))?;
-    if tv.dtype() != Dtype::F64 {
-        return Err(LoadError::Validation("expected F64 tensor"));
-    }
-    let shape = tv.shape();
-    if shape.len() != 2 {
-        return Err(LoadError::Validation("expected 2D tensor"));
-    }
-    let dims = [shape[0], shape[1]];
-    let bytes = tv.data();
-    if bytes.len() % 8 != 0 {
-        return Err(LoadError::Parse("F64 tensor data not aligned"));
-    }
-    let data = bytes
-        .chunks_exact(8)
-        .map(|c| f64::from_le_bytes([c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7]]))
-        .collect();
-    Ok((data, dims))
-}
-
 // ---- sqrt helper for BatchNorm fusion ----
 
 #[cfg(feature = "std")]
@@ -893,7 +850,6 @@ macro_rules! impl_mlp_safetensors {
 }
 
 impl_mlp_safetensors!(MlpF32, f32, extract_f32_2d, extract_f32_1d);
-impl_mlp_safetensors!(MlpF64, f64, extract_f64_2d, extract_f64_1d);
 
 // ---- Conv1d loader ----
 
@@ -1508,10 +1464,6 @@ mod tests {
         data.iter().flat_map(|v| v.to_le_bytes()).collect()
     }
 
-    fn f64_bytes(data: &[f64]) -> Vec<u8> {
-        data.iter().flat_map(|v| v.to_le_bytes()).collect()
-    }
-
     fn make_view<'a>(
         dtype: Dtype,
         shape: &[usize],
@@ -1758,31 +1710,6 @@ mod tests {
             (ref_out - load_out).abs() < 1e-6,
             "ref={ref_out}, loaded={load_out}"
         );
-    }
-
-    #[test]
-    fn mlp_f64_from_safetensors() {
-        let w0: Vec<f64> = vec![1.0, 0.0, 0.0, 1.0];
-        let b0: Vec<f64> = vec![0.0; 2];
-        let w1: Vec<f64> = vec![1.0, 1.0];
-        let b1: Vec<f64> = vec![0.0];
-
-        let w0_b = f64_bytes(&w0);
-        let b0_b = f64_bytes(&b0);
-        let w1_b = f64_bytes(&w1);
-        let b1_b = f64_bytes(&b1);
-
-        let data = serialize_tensors(vec![
-            ("net.0.weight", make_view(Dtype::F64, &[2, 2], &w0_b)),
-            ("net.0.bias", make_view(Dtype::F64, &[2], &b0_b)),
-            ("net.1.weight", make_view(Dtype::F64, &[1, 2], &w1_b)),
-            ("net.1.bias", make_view(Dtype::F64, &[1], &b1_b)),
-        ]);
-
-        let mut mlp =
-            crate::MlpF64::from_safetensors(&data, "net", crate::Activation::Relu).unwrap();
-        let out = mlp.predict(&[3.0, 4.0]);
-        assert!((out - 7.0).abs() < 1e-12);
     }
 
     // ---- BatchNorm fusion ----

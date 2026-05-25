@@ -273,14 +273,15 @@ impl Gbdt {
             }
 
             // SAFETY: feature_idx & FEATURE_MASK < n_features (validated in convert_tree).
-            let feat = unsafe {
-                *features.get_unchecked((node.feature_idx & FEATURE_MASK) as usize)
-            };
+            let feat =
+                unsafe { *features.get_unchecked((node.feature_idx & FEATURE_MASK) as usize) };
             let go_left = if nan_aware {
                 let is_nan = feat.is_nan();
                 let default_left = node.feature_idx & DEFAULT_LEFT_BIT != 0;
                 #[allow(clippy::needless_bitwise_bool)]
-                { (feat <= node.value) | (is_nan & default_left) }
+                {
+                    (feat <= node.value) | (is_nan & default_left)
+                }
             } else {
                 feat <= node.value
             };
@@ -292,19 +293,14 @@ impl Gbdt {
     }
 
     #[allow(dead_code)]
-    pub(crate) fn from_parts(
-        trees: Vec<Vec<RawNode>>,
-        n_features: usize,
-        base_score: f32,
-    ) -> Self {
+    pub(crate) fn from_parts(trees: Vec<Vec<RawNode>>, n_features: usize, base_score: f32) -> Self {
         let total: usize = trees.iter().map(Vec::len).sum();
         let mut nodes = Vec::with_capacity(total);
         let mut tree_offsets = Vec::with_capacity(trees.len());
         for tree in &trees {
             for node in tree {
                 assert!(
-                    node.feature_idx == LEAF_SENTINEL
-                        || (node.feature_idx as usize) < n_features,
+                    node.feature_idx == LEAF_SENTINEL || (node.feature_idx as usize) < n_features,
                     "feature_idx {} out of range for n_features {}",
                     node.feature_idx,
                     n_features,

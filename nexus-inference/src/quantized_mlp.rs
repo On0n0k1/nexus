@@ -545,8 +545,8 @@ impl QuantizedMlpI8 {
 
                 // Dequantize: y = acc * combined_scale + bias_adjusted
                 // (bias_adjusted already includes 128*row_sum and input_zp*row_sum corrections)
-                let mut y = (acc as f32)
-                    .mul_add(combined_scale, self.layers[layer_idx].bias_adjusted[j]);
+                let mut y =
+                    (acc as f32).mul_add(combined_scale, self.layers[layer_idx].bias_adjusted[j]);
 
                 // Activation (not on last layer)
                 if !is_last {

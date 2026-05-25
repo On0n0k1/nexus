@@ -34,21 +34,6 @@ fn inputs_f32(v: &serde_json::Value) -> Vec<Vec<f32>> {
         .collect()
 }
 
-fn inputs_f64(v: &serde_json::Value) -> Vec<Vec<f64>> {
-    v["inputs"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|inp| {
-            inp.as_array()
-                .unwrap()
-                .iter()
-                .map(|x| x.as_f64().unwrap())
-                .collect()
-        })
-        .collect()
-}
-
 fn expected_outputs(v: &serde_json::Value) -> Vec<Vec<f64>> {
     v["outputs"]
         .as_array()
@@ -220,31 +205,6 @@ fn run_mlp_f32_test(name: &str) {
     }
 }
 
-fn run_mlp_f64_test(name: &str) {
-    let data = load_model(name);
-    let exp = load_expected(name);
-    let tol = exp["tolerance"].as_f64().unwrap();
-
-    let mut mlp = MlpF64::from_safetensors(
-        &data,
-        exp["prefix"].as_str().unwrap(),
-        parse_activation(&exp),
-    )
-    .unwrap();
-
-    for (i, (inp, exp_out)) in inputs_f64(&exp)
-        .iter()
-        .zip(expected_outputs(&exp).iter())
-        .enumerate()
-    {
-        let mut out = vec![0.0_f64; exp_out.len()];
-        mlp.predict_into(inp, &mut out);
-        for (j, (&actual, &expected)) in out.iter().zip(exp_out.iter()).enumerate() {
-            assert_close(name, i, j, actual, expected, tol);
-        }
-    }
-}
-
 fn run_conv1d_test(name: &str) {
     let data = load_model(name);
     let exp = load_expected(name);
@@ -375,23 +335,6 @@ fn mlp_f32_layernorm() {
 #[test]
 fn mlp_f32_layernorm_no_bias() {
     run_mlp_f32_test("mlp_f32_layernorm_no_bias");
-}
-
-// ---- MLP f64 tests ----
-
-#[test]
-fn mlp_f64() {
-    run_mlp_f64_test("mlp_f64");
-}
-
-#[test]
-fn mlp_f64_no_prefix() {
-    run_mlp_f64_test("mlp_f64_no_prefix");
-}
-
-#[test]
-fn mlp_f64_tanh() {
-    run_mlp_f64_test("mlp_f64_tanh");
 }
 
 // ---- Conv1d tests ----
@@ -540,7 +483,6 @@ fuzz_tests!(
     fuzz_mlp_f32_2,
     fuzz_mlp_f32_3,
 );
-fuzz_tests!(run_mlp_f64_test, fuzz_mlp_f64_0, fuzz_mlp_f64_1);
 fuzz_tests!(
     run_conv1d_test,
     fuzz_conv1d_0,

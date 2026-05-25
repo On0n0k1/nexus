@@ -1,7 +1,5 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use nexus_inference::{
-    Activation, BnnF32, Gbdt, LutF64, MlpF32, MlpF64, QuantizedMlpI8, TinyTcnF32,
-};
+use nexus_inference::{Activation, BnnF32, Gbdt, LutF32, MlpF32, QuantizedMlpI8, TinyTcnF32};
 
 const LIGHTGBM_HEADER: &str = "\
 tree
@@ -221,33 +219,6 @@ fn bench_gbdt_random(c: &mut Criterion) {
     });
 }
 
-fn bench_mlp(c: &mut Criterion) {
-    let features_8 = vec![0.5_f64; 8];
-    let features_16 = vec![0.5_f64; 16];
-    let features_64 = vec![0.5_f64; 64];
-
-    // 8 → 16 → 1
-    let (w, b) = build_mlp_weights(&[8, 16, 1]);
-    let mut model = MlpF64::from_parts(&[8, 16, 1], &w, &b, Activation::Relu).unwrap();
-    c.bench_function("MlpF64::predict 8→16→1 relu", |b| {
-        b.iter(|| model.predict(black_box(&features_8)));
-    });
-
-    // 16 → 32 → 8 → 1
-    let (w, b) = build_mlp_weights(&[16, 32, 8, 1]);
-    let mut model = MlpF64::from_parts(&[16, 32, 8, 1], &w, &b, Activation::Relu).unwrap();
-    c.bench_function("MlpF64::predict 16→32→8→1 relu", |b| {
-        b.iter(|| model.predict(black_box(&features_16)));
-    });
-
-    // 64 → 64 → 1
-    let (w, b) = build_mlp_weights(&[64, 64, 1]);
-    let mut model = MlpF64::from_parts(&[64, 64, 1], &w, &b, Activation::Relu).unwrap();
-    c.bench_function("MlpF64::predict 64→64→1 relu", |b| {
-        b.iter(|| model.predict(black_box(&features_64)));
-    });
-}
-
 fn bench_mlp_f32(c: &mut Criterion) {
     let features_8: Vec<f32> = vec![0.5; 8];
     let features_16: Vec<f32> = vec![0.5; 16];
@@ -301,17 +272,17 @@ fn bench_mlp_f32(c: &mut Criterion) {
 
 fn bench_lut(c: &mut Criterion) {
     // 2 features × 10 bins
-    let table_2x10: Vec<f64> = (0..100).map(|i| i as f64 * 0.01).collect();
-    let model = LutF64::from_parts(2, 10, &[0.0, 0.0], &[1.0, 1.0], &table_2x10).unwrap();
-    c.bench_function("LutF64::predict 2feat×10bins", |b| {
-        b.iter(|| model.predict(black_box(&[0.35, 0.72])));
+    let table_2x10: Vec<f32> = (0..100).map(|i| i as f32 * 0.01).collect();
+    let model = LutF32::from_parts(2, 10, &[0.0, 0.0], &[1.0, 1.0], &table_2x10).unwrap();
+    c.bench_function("LutF32::predict 2feat×10bins", |b| {
+        b.iter(|| model.predict(black_box(&[0.35_f32, 0.72])));
     });
 
     // 3 features × 20 bins
-    let table_3x20: Vec<f64> = (0..8000).map(|i| i as f64 * 0.001).collect();
-    let model = LutF64::from_parts(3, 20, &[0.0, 0.0, 0.0], &[1.0, 1.0, 1.0], &table_3x20).unwrap();
-    c.bench_function("LutF64::predict 3feat×20bins", |b| {
-        b.iter(|| model.predict(black_box(&[0.35, 0.72, 0.15])));
+    let table_3x20: Vec<f32> = (0..8000).map(|i| i as f32 * 0.001).collect();
+    let model = LutF32::from_parts(3, 20, &[0.0, 0.0, 0.0], &[1.0, 1.0, 1.0], &table_3x20).unwrap();
+    c.bench_function("LutF32::predict 3feat×20bins", |b| {
+        b.iter(|| model.predict(black_box(&[0.35_f32, 0.72, 0.15])));
     });
 }
 
@@ -583,7 +554,6 @@ criterion_group!(
     benches,
     bench_gbdt,
     bench_gbdt_random,
-    bench_mlp,
     bench_mlp_f32,
     bench_mlp_f32_layernorm,
     bench_lut,
