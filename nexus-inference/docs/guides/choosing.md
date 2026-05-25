@@ -12,11 +12,11 @@
   │   ├── Feedforward (nn.Linear layers)
   │   │   └── MLP (export weights to from_parts)
   │   ├── LSTM (nn.LSTM)
-  │   │   └── TinyLstmF32 (streaming step-by-step)
+  │   │   └── TinyLstm (streaming step-by-step)
   │   ├── GRU (nn.GRU)
-  │   │   └── TinyGruF32 (streaming step-by-step)
+  │   │   └── TinyGru (streaming step-by-step)
   │   └── 1D convolution (nn.Conv1d, causal)
-  │       └── Causal1dConvF32 (streaming step-by-step)
+  │       └── Causal1dConv (streaming step-by-step)
   │
   ├── A pre-computed function over a small grid
   │   └── LUT (tabulate in Python, load flat array)

@@ -10,7 +10,7 @@ future leakage.
 |----------|-------|
 | Step cost | 50ns (8 filters) to 168ns (32 filters) with AVX2+FMA |
 | Memory | `(F, K, C)` conv weights + output projection + circular buffer |
-| Type | `Causal1dConvF32` |
+| Type | `Causal1dConv` |
 | Construction | `from_parts(input_ch, kernel_size, filters, output_size, w_conv, b_conv, w_out, b_out, activation)` |
 | Output | Single scalar or multi-output vector |
 
@@ -72,7 +72,7 @@ filled (zero-padded). `is_primed()` returns `true` once the full window
 is populated.
 
 ```rust
-let mut conv = Causal1dConvF32::from_parts(
+let mut conv = Causal1dConv::from_parts(
     2, 3, 4, 1, /* weights... */ Activation::Relu,
 ).unwrap();
 
@@ -120,9 +120,9 @@ NaN correctly.
 ## Code Example
 
 ```rust
-use nexus_inference::{Causal1dConvF32, Activation};
+use nexus_inference::{Causal1dConv, Activation};
 
-let mut conv = Causal1dConvF32::from_parts(
+let mut conv = Causal1dConv::from_parts(
     4, 8, 16, 1,      // 4 input channels, kernel 8, 16 filters, 1 output
     &w_conv, &b_conv,
     &w_out, &b_out,

@@ -8,7 +8,7 @@ arbitrary continuous functions from data.
 |----------|-------|
 | Prediction cost | ~0.5 ns per FMA (scalar), dominated by matmul |
 | Memory | `Σ(layer[i] x layer[i+1])` weights + `Σ(layer[i+1])` biases |
-| Types | `MlpF64`, `MlpF32` |
+| Types | `Mlp`, `Mlp` |
 | Construction | `from_parts(layer_sizes, weights, biases, activation)` |
 | Output | Single scalar or multi-output vector |
 
@@ -97,7 +97,7 @@ the maximum layer dimension. No allocation happens on the
 prediction path.
 
 This means `predict` methods take `&mut self`. For concurrent
-access, use per-thread model instances rather than `Arc<MlpF64>`.
+access, use per-thread model instances rather than `Arc<Mlp>`.
 
 ## When to Use It
 
@@ -116,10 +116,10 @@ access, use per-thread model instances rather than `Arc<MlpF64>`.
 ## Code Example
 
 ```rust
-use nexus_inference::{MlpF64, Activation};
+use nexus_inference::{Mlp, Activation};
 
 // 4 inputs → 8 hidden (relu) → 1 output
-let mut model = MlpF64::from_parts(
+let mut model = Mlp::from_parts(
     &[4, 8, 1],
     &weights,  // 4*8 + 8*1 = 40 weights, row-major
     &biases,   // 8 + 1 = 9 biases
@@ -129,8 +129,8 @@ let mut model = MlpF64::from_parts(
 let score = model.predict(&[0.5, 1.2, -0.3, 0.8]);
 
 // Multi-output
-let mut model = MlpF64::from_parts(&[4, 8, 3], &w, &b, Activation::Relu).unwrap();
-let mut output = [0.0_f64; 3];
+let mut model = Mlp::from_parts(&[4, 8, 3], &w, &b, Activation::Relu).unwrap();
+let mut output = [0.0_f32; 3];
 model.predict_into(&[0.5, 1.2, -0.3, 0.8], &mut output);
 ```
 

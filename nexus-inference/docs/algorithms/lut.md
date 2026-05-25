@@ -8,7 +8,7 @@ regardless of the underlying function's complexity.
 |----------|-------|
 | Prediction cost | ~5-8 ns (1-3 features) |
 | Memory | `n_bins^n_features * 8` bytes (f64 table) |
-| Types | `LutF64`, `LutF32` |
+| Types | `Lut`, `Lut` |
 | Construction | `from_parts(n_features, n_bins, mins, maxs, table)` |
 | Output | Single scalar |
 
@@ -97,10 +97,10 @@ table but meaningless. Validate inputs in the feature pipeline.
 ## Code Example
 
 ```rust
-use nexus_inference::LutF64;
+use nexus_inference::Lut;
 
 // 2 features, 10 bins each, ranges [0, 1)
-let model = LutF64::from_parts(
+let model = Lut::from_parts(
     2,              // n_features
     10,             // n_bins per feature
     &[0.0, 0.0],   // mins

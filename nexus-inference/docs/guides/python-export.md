@@ -16,7 +16,7 @@ model.save_model("model.txt")
 
 ```rust
 let bytes = std::fs::read("model.txt").unwrap();
-let model = GbdtF64::from_lightgbm(&bytes).unwrap();
+let model = Gbdt::from_lightgbm(&bytes).unwrap();
 ```
 
 ### Limitations
@@ -64,14 +64,14 @@ with open("mlp_weights.json", "w") as f:
 ```
 
 ```rust
-use nexus_inference::{MlpF64, Activation};
+use nexus_inference::{Mlp, Activation};
 
 let data: serde_json::Value = serde_json::from_str(&json_str).unwrap();
 let layer_sizes: Vec<usize> = /* parse from data */;
 let weights: Vec<f64> = /* parse from data */;
 let biases: Vec<f64> = /* parse from data */;
 
-let model = MlpF64::from_parts(
+let model = Mlp::from_parts(
     &layer_sizes, &weights, &biases, Activation::Relu,
 ).unwrap();
 ```

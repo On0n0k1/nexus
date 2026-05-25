@@ -9,7 +9,7 @@ carried between steps. Trained externally in PyTorch, loaded via
 |----------|-------|
 | Step cost | 105ns (H=8) to 1.3us (H=64) with AVX2+FMA |
 | Memory | Fused `(4H, I+H)` gate matrix + output projection + state |
-| Type | `TinyLstmF32` |
+| Type | `TinyLstm` |
 | Construction | `from_parts(input, hidden, output, weight_ih, weight_hh, bias_ih, bias_hh, w_out, b_out)` |
 | Output | Single scalar or multi-output vector |
 
@@ -71,7 +71,7 @@ This matches the standard ML convention (caller responsibility).
 ## State Management
 
 ```rust
-let mut lstm = TinyLstmF32::from_parts(/* ... */).unwrap();
+let mut lstm = TinyLstm::from_parts(/* ... */).unwrap();
 
 // Process a sequence
 let s1 = lstm.step(&frame_1);   // hidden state initialized to zero

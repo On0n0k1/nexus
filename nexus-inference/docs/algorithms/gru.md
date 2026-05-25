@@ -9,7 +9,7 @@ externally in PyTorch, loaded via `from_parts`.
 |----------|-------|
 | Step cost | 165ns (H=16) to 1.1us (H=64) with AVX2+FMA |
 | Memory | Separate `(3H, I)` and `(3H, H)` matrices + output projection + state |
-| Type | `TinyGruF32` |
+| Type | `TinyGru` |
 | Construction | `from_parts(input, hidden, output, weight_ih, weight_hh, bias_ih, bias_hh, w_out, b_out)` |
 | Output | Single scalar or multi-output vector |
 
@@ -93,9 +93,9 @@ state. Call `reset_state()` to recover.
 ## Code Example
 
 ```rust
-use nexus_inference::TinyGruF32;
+use nexus_inference::TinyGru;
 
-let mut gru = TinyGruF32::from_parts(
+let mut gru = TinyGru::from_parts(
     4, 16, 1,          // 4 inputs, 16 hidden, 1 output
     &weight_ih, &weight_hh,
     &bias_ih, &bias_hh,

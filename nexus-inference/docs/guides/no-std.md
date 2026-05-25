@@ -16,7 +16,7 @@ nexus-inference supports `no_std` environments through feature flags.
 | `std` | Standard library, implies `alloc` |
 | `alloc` | All model types (GBDT, MLP, LUT) — requires `Box`, `Vec` |
 | `libm` | `Tanh`/`Sigmoid` activations without `std` (uses `libm` crate) |
-| `loader-lightgbm` | `GbdtF64::from_lightgbm()` text parser |
+| `loader-lightgbm` | `Gbdt::from_lightgbm()` text parser |
 
 ## Minimum: `alloc` only
 
