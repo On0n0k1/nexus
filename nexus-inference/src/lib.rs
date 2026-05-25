@@ -41,7 +41,7 @@ mod mlp;
 #[cfg(feature = "alloc")]
 mod quantized_mlp;
 
-#[cfg(any(feature = "std", feature = "libm"))]
+#[cfg(feature = "alloc")]
 mod rnn;
 
 #[cfg(feature = "alloc")]
@@ -71,7 +71,7 @@ pub use lut::Lut;
 pub use mlp::Mlp;
 #[cfg(feature = "alloc")]
 pub use quantized_mlp::QuantizedMlp;
-#[cfg(any(feature = "std", feature = "libm"))]
+#[cfg(feature = "alloc")]
 pub use rnn::{StackedGru, StackedLstm, TinyGru, TinyLstm};
 #[cfg(feature = "alloc")]
 pub use ssm::LinearSsm;

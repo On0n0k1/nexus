@@ -153,9 +153,8 @@ fn sqrt_f64(x: f64) -> f64 {
     libm::sqrt(x)
 }
 
-// ---- RNN loaders (require tanh/sigmoid from std or libm) ----
+// ---- RNN loaders ----
 
-#[cfg(any(feature = "std", feature = "libm"))]
 impl crate::TinyLstm {
     /// Load from safetensors data.
     ///
@@ -230,7 +229,6 @@ impl crate::TinyLstm {
     }
 }
 
-#[cfg(any(feature = "std", feature = "libm"))]
 impl crate::TinyGru {
     /// Load from safetensors data.
     ///
@@ -304,9 +302,8 @@ impl crate::TinyGru {
     }
 }
 
-// ---- Stacked RNN loaders (require tanh/sigmoid from std or libm) ----
+// ---- Stacked RNN loaders ----
 
-#[cfg(any(feature = "std", feature = "libm"))]
 impl crate::StackedLstm {
     /// Load from safetensors data.
     ///
@@ -423,7 +420,6 @@ impl crate::StackedLstm {
     }
 }
 
-#[cfg(any(feature = "std", feature = "libm"))]
 impl crate::StackedGru {
     /// Load from safetensors data.
     ///
@@ -826,13 +822,6 @@ macro_rules! impl_mlp_safetensors {
                             "LayerNorm must be present on all hidden layers or none",
                         ));
                     }
-                    #[cfg(not(any(feature = "std", feature = "libm")))]
-                    {
-                        return Err(LoadError::Validation(
-                            "LayerNorm requires 'std' or 'libm' feature",
-                        ));
-                    }
-                    #[cfg(any(feature = "std", feature = "libm"))]
                     return Self::from_parts_with_layer_norm(
                         &layer_sizes,
                         &all_weights,

@@ -11,14 +11,15 @@ use crate::activation::{Activation, activate_f32};
 #[cfg(feature = "alloc")]
 use crate::dot::{dot_f32, dot4_f32};
 
-#[cfg(all(feature = "alloc", feature = "std"))]
-fn sqrt_f64(x: f64) -> f64 {
-    x.sqrt()
-}
-
-#[cfg(all(feature = "alloc", not(feature = "std"), feature = "libm"))]
-fn sqrt_f64(x: f64) -> f64 {
-    libm::sqrt(x)
+/// Fast f32 inverse sqrt via bit manipulation + Newton-Raphson.
+/// Used by the scalar LayerNorm fallback on non-SIMD platforms.
+#[cfg(feature = "alloc")]
+#[inline(always)]
+fn rsqrt_f32(x: f32) -> f32 {
+    let mut y = f32::from_bits(0x5f37_5a86 - (x.to_bits() >> 1));
+    y *= (0.5 * x * y).mul_add(-y, 1.5);
+    y *= (0.5 * x * y).mul_add(-y, 1.5);
+    y
 }
 
 #[cfg(all(
@@ -41,53 +42,45 @@ fn mlp_tiled_simd_f32(
     activation: Activation,
     apply_activation: bool,
 ) -> usize {
+    use crate::activation::simd::{activate_4wide, activate_8wide};
     use crate::dot::{dot4_f32_m128, dot8_f32_m256};
     use core::arch::x86_64::*;
     let out_size_8 = out_size_4 & !7;
     let mut j = 0;
+
+    let effective = if apply_activation {
+        activation
+    } else {
+        Activation::Identity
+    };
+
     unsafe {
-        if apply_activation && matches!(activation, Activation::Relu) {
-            if in_size >= 32 {
-                let zero256 = _mm256_setzero_ps();
-                while j < out_size_8 {
-                    let rows = &weights[j * in_size..(j + 8) * in_size];
-                    let dots = dot8_f32_m256(rows, src);
-                    let bias_v = _mm256_loadu_ps(biases.as_ptr().add(j));
-                    _mm256_storeu_ps(
-                        dst.as_mut_ptr().add(j),
-                        _mm256_max_ps(_mm256_add_ps(dots, bias_v), zero256),
-                    );
-                    j += 8;
+        // 8-wide loop (requires in_size >= 32 to amortize dot8 overhead)
+        if in_size >= 32 {
+            while j < out_size_8 {
+                let rows = &weights[j * in_size..(j + 8) * in_size];
+                let dots = dot8_f32_m256(rows, src);
+                let bias_v = _mm256_loadu_ps(biases.as_ptr().add(j));
+                let with_bias = _mm256_add_ps(dots, bias_v);
+                match activate_8wide(with_bias, effective) {
+                    Some(activated) => _mm256_storeu_ps(dst.as_mut_ptr().add(j), activated),
+                    None => return j,
                 }
+                j += 8;
             }
-            let zero128 = _mm_setzero_ps();
-            while j < out_size_4 {
-                let rows = &weights[j * in_size..(j + 4) * in_size];
-                let dots = dot4_f32_m128(rows, src);
-                let bias_v = _mm_loadu_ps(biases.as_ptr().add(j));
-                _mm_storeu_ps(
-                    dst.as_mut_ptr().add(j),
-                    _mm_max_ps(_mm_add_ps(dots, bias_v), zero128),
-                );
-                j += 4;
+        }
+
+        // 4-wide tail
+        while j < out_size_4 {
+            let rows = &weights[j * in_size..(j + 4) * in_size];
+            let dots = dot4_f32_m128(rows, src);
+            let bias_v = _mm_loadu_ps(biases.as_ptr().add(j));
+            let with_bias = _mm_add_ps(dots, bias_v);
+            match activate_4wide(with_bias, effective) {
+                Some(activated) => _mm_storeu_ps(dst.as_mut_ptr().add(j), activated),
+                None => return j,
             }
-        } else if !apply_activation || matches!(activation, Activation::Identity) {
-            if in_size >= 32 {
-                while j < out_size_8 {
-                    let rows = &weights[j * in_size..(j + 8) * in_size];
-                    let dots = dot8_f32_m256(rows, src);
-                    let bias_v = _mm256_loadu_ps(biases.as_ptr().add(j));
-                    _mm256_storeu_ps(dst.as_mut_ptr().add(j), _mm256_add_ps(dots, bias_v));
-                    j += 8;
-                }
-            }
-            while j < out_size_4 {
-                let rows = &weights[j * in_size..(j + 4) * in_size];
-                let dots = dot4_f32_m128(rows, src);
-                let bias_v = _mm_loadu_ps(biases.as_ptr().add(j));
-                _mm_storeu_ps(dst.as_mut_ptr().add(j), _mm_add_ps(dots, bias_v));
-                j += 4;
-            }
+            j += 4;
         }
     }
     j
@@ -109,15 +102,11 @@ fn layer_norm_simd_f32(
     beta: &[f32],
     activation: Activation,
 ) -> bool {
+    use crate::activation::simd::activate_8wide;
     use core::arch::x86_64::*;
 
     let n = data.len();
     if n < 8 {
-        return false;
-    }
-
-    let is_relu = matches!(activation, Activation::Relu);
-    if !is_relu && !matches!(activation, Activation::Identity) {
         return false;
     }
 
@@ -165,33 +154,22 @@ fn layer_norm_simd_f32(
         // Pass 3: normalize + affine + activation (8-wide FMA)
         let inv_std_v = _mm256_set1_ps(inv_std);
         i = 0;
-        if is_relu {
-            let zero = _mm256_setzero_ps();
-            while i < n_8 {
-                let x = _mm256_loadu_ps(data.as_ptr().add(i));
-                let norm = _mm256_mul_ps(_mm256_sub_ps(x, mean_v), inv_std_v);
-                let g = _mm256_loadu_ps(gamma.as_ptr().add(i));
-                let b = _mm256_loadu_ps(beta.as_ptr().add(i));
-                _mm256_storeu_ps(
-                    data.as_mut_ptr().add(i),
-                    _mm256_max_ps(_mm256_fmadd_ps(g, norm, b), zero),
-                );
-                i += 8;
+        while i < n_8 {
+            let x = _mm256_loadu_ps(data.as_ptr().add(i));
+            let norm = _mm256_mul_ps(_mm256_sub_ps(x, mean_v), inv_std_v);
+            let g = _mm256_loadu_ps(gamma.as_ptr().add(i));
+            let b = _mm256_loadu_ps(beta.as_ptr().add(i));
+            let val = _mm256_fmadd_ps(g, norm, b);
+            match activate_8wide(val, activation) {
+                Some(activated) => _mm256_storeu_ps(data.as_mut_ptr().add(i), activated),
+                None => return false,
             }
-        } else {
-            while i < n_8 {
-                let x = _mm256_loadu_ps(data.as_ptr().add(i));
-                let norm = _mm256_mul_ps(_mm256_sub_ps(x, mean_v), inv_std_v);
-                let g = _mm256_loadu_ps(gamma.as_ptr().add(i));
-                let b = _mm256_loadu_ps(beta.as_ptr().add(i));
-                _mm256_storeu_ps(data.as_mut_ptr().add(i), _mm256_fmadd_ps(g, norm, b));
-                i += 8;
-            }
+            i += 8;
         }
         while i < n {
             let norm = (data[i] - mean) * inv_std;
             let val = gamma[i].mul_add(norm, beta[i]);
-            data[i] = if is_relu && val < 0.0 { 0.0 } else { val };
+            data[i] = activate_f32(val, activation);
             i += 1;
         }
     }
@@ -308,20 +286,6 @@ impl Mlp {
             }
         }
 
-        #[cfg(not(any(feature = "std", feature = "libm")))]
-        match activation {
-            Activation::Tanh
-            | Activation::Sigmoid
-            | Activation::Elu(_)
-            | Activation::Gelu
-            | Activation::Swish => {
-                return Err(LoadError::Validation(
-                    "Tanh/Sigmoid/Elu/Gelu/Swish require std or libm feature",
-                ));
-            }
-            _ => {}
-        }
-
         let layer_sizes_u16: Box<[u16]> = layer_sizes
             .iter()
             .map(|&s| s as u16)
@@ -352,7 +316,6 @@ impl Mlp {
     /// all hidden layer sizes (i.e. total biases minus output size).
     ///
     /// LayerNorm uses eps=1e-5 (PyTorch default).
-    #[cfg(any(feature = "std", feature = "libm"))]
     pub fn from_parts_with_layer_norm(
         layer_sizes: &[usize],
         weights: &[f32],
@@ -533,7 +496,6 @@ impl Mlp {
                 j += 1;
             }
 
-            #[cfg(any(feature = "std", feature = "libm"))]
             if apply_ln {
                 let ln_g = self.ln_gamma.as_ref().unwrap();
                 let ln_b = self.ln_beta.as_ref().unwrap();
@@ -567,23 +529,22 @@ impl Mlp {
                 let simd_done = false;
 
                 if !simd_done {
-                    let mut mean_acc = 0.0_f64;
+                    let mut mean_acc = 0.0_f32;
                     for v in dst.iter() {
-                        mean_acc += *v as f64;
+                        mean_acc += *v;
                     }
-                    let mean = mean_acc / out_size as f64;
-                    let mut var_acc = 0.0_f64;
+                    let mean = mean_acc / out_size as f32;
+                    let mut var_acc = 0.0_f32;
                     for v in dst.iter() {
-                        let d = *v as f64 - mean;
+                        let d = *v - mean;
                         var_acc = d.mul_add(d, var_acc);
                     }
-                    let inv_std = 1.0_f64 / sqrt_f64(var_acc / out_size as f64 + 1e-5);
+                    let inv_std = rsqrt_f32(var_acc / out_size as f32 + 1e-5);
 
                     for (k, v) in dst.iter_mut().enumerate() {
-                        let normalized = (*v as f64 - mean) * inv_std;
-                        let ln_val = (ln_g[b_offset + k] as f64)
-                            .mul_add(normalized, ln_b[b_offset + k] as f64);
-                        *v = activate_f32(ln_val as f32, self.activation);
+                        let normalized = (*v - mean) * inv_std;
+                        let ln_val = ln_g[b_offset + k].mul_add(normalized, ln_b[b_offset + k]);
+                        *v = activate_f32(ln_val, self.activation);
                     }
                 }
             }
@@ -676,27 +637,25 @@ mod tests {
 
     #[test]
     #[cfg(feature = "alloc")]
-    #[cfg(any(feature = "std", feature = "libm"))]
     fn tanh_activation() {
         // 1 input → 1 hidden (tanh) → 1 output
         // h0 = tanh(1.0*x + 0.0)
         // o0 = 1.0*h0 + 0.0
         let mut model =
             Mlp::from_parts(&[1, 1, 1], &[1.0, 1.0], &[0.0, 0.0], Activation::Tanh).unwrap();
-        let expected = 2.0_f32.tanh();
+        let expected = crate::activation::tanh_f32(2.0);
         assert!((model.predict(&[2.0]) - expected).abs() < 1e-5);
     }
 
     #[test]
     #[cfg(feature = "alloc")]
-    #[cfg(any(feature = "std", feature = "libm"))]
     fn sigmoid_activation() {
         // 1 input → 1 hidden (sigmoid) → 1 output
         // h0 = sigmoid(1.0*x + 0.0)
         // o0 = 1.0*h0 + 0.0
         let mut model =
             Mlp::from_parts(&[1, 1, 1], &[1.0, 1.0], &[0.0, 0.0], Activation::Sigmoid).unwrap();
-        let expected = 1.0 / (1.0 + (-2.0_f32).exp());
+        let expected = crate::activation::sigmoid_f32(2.0);
         assert!((model.predict(&[2.0]) - expected).abs() < 1e-5);
     }
 
@@ -875,7 +834,6 @@ mod tests {
 
     #[test]
     #[cfg(feature = "alloc")]
-    #[cfg(any(feature = "std", feature = "libm"))]
     fn elu_activation() {
         // 1 input → 1 hidden (elu alpha=1.0) → 1 output
         // h0 = elu(1.0*x + 0.0)
@@ -885,21 +843,21 @@ mod tests {
         // Positive: passthrough
         assert!((model.predict(&[2.0]) - 2.0).abs() < 1e-5);
         // Negative: alpha * (exp(x) - 1)
-        let expected = 1.0 * ((-1.0_f32).exp() - 1.0);
+        let expected = 1.0 * (crate::activation::exp_f32(-1.0) - 1.0);
         assert!((model.predict(&[-1.0]) - expected).abs() < 1e-5);
     }
 
     #[test]
     #[cfg(feature = "alloc")]
-    #[cfg(any(feature = "std", feature = "libm"))]
     fn gelu_activation() {
         // 1 input → 1 hidden (gelu) → 1 output
         let mut model =
             Mlp::from_parts(&[1, 1, 1], &[1.0, 1.0], &[0.0, 0.0], Activation::Gelu).unwrap();
-        // GELU(1.0) ≈ 0.8411920 (tanh approximation)
+        // GELU(1.0) via our tanh approximation
         let x = 1.0_f32;
-        let expected =
-            0.5 * x * (1.0 + (0.7978845608028654_f32 * (0.044715 * x * x).mul_add(x, x)).tanh());
+        let scale = core::f32::consts::FRAC_2_SQRT_PI * core::f32::consts::FRAC_1_SQRT_2;
+        let inner = (0.044_715 * x * x).mul_add(x, x) * scale;
+        let expected = 0.5 * x * (1.0 + crate::activation::tanh_f32(inner));
         assert!((model.predict(&[1.0]) - expected).abs() < 1e-5);
         // GELU(0) = 0
         assert!((model.predict(&[0.0]) - 0.0).abs() < 1e-5);
@@ -907,13 +865,12 @@ mod tests {
 
     #[test]
     #[cfg(feature = "alloc")]
-    #[cfg(any(feature = "std", feature = "libm"))]
     fn swish_activation() {
         // 1 input → 1 hidden (swish) → 1 output
         let mut model =
             Mlp::from_parts(&[1, 1, 1], &[1.0, 1.0], &[0.0, 0.0], Activation::Swish).unwrap();
-        // Swish(2.0) = 2.0 * sigmoid(2.0) = 2.0 / (1 + exp(-2))
-        let expected = 2.0 / (1.0 + (-2.0_f32).exp());
+        // Swish(2.0) = 2.0 * sigmoid(2.0)
+        let expected = 2.0 * crate::activation::sigmoid_f32(2.0);
         assert!((model.predict(&[2.0]) - expected).abs() < 1e-5);
         // Swish(0) = 0
         assert!((model.predict(&[0.0]) - 0.0).abs() < 1e-5);
@@ -921,7 +878,6 @@ mod tests {
 
     #[test]
     #[cfg(feature = "alloc")]
-    #[cfg(any(feature = "std", feature = "libm"))]
     fn layer_norm_identity_weights() {
         // 2 inputs → 4 hidden (LN + relu) → 1 output
         // LN with gamma=1, beta=0 should normalize hidden activations
@@ -979,7 +935,6 @@ mod tests {
 
     #[test]
     #[cfg(feature = "alloc")]
-    #[cfg(any(feature = "std", feature = "libm"))]
     fn layer_norm_with_scale_shift() {
         // 1 input → 2 hidden (LN gamma=2, beta=0.5 + identity) → 1 output
         let weights: Vec<f32> = vec![1.0, -1.0, 1.0, 1.0];
@@ -1022,7 +977,6 @@ mod tests {
 
     #[test]
     #[cfg(feature = "alloc")]
-    #[cfg(any(feature = "std", feature = "libm"))]
     fn layer_norm_validation() {
         // Wrong ln_gamma length
         let err = Mlp::from_parts_with_layer_norm(

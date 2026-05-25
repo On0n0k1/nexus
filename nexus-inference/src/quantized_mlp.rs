@@ -322,20 +322,6 @@ impl QuantizedMlp {
             ));
         }
 
-        #[cfg(not(any(feature = "std", feature = "libm")))]
-        match activation {
-            Activation::Tanh
-            | Activation::Sigmoid
-            | Activation::Elu(_)
-            | Activation::Gelu
-            | Activation::Swish => {
-                return Err(LoadError::Validation(
-                    "Tanh/Sigmoid/Elu/Gelu/Swish require std or libm feature",
-                ));
-            }
-            _ => {}
-        }
-
         let mut layers = Vec::with_capacity(num_layers);
         let mut prev_out_size: Option<usize> = None;
         let mut max_dim = 0_usize;

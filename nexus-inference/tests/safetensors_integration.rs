@@ -50,7 +50,8 @@ fn expected_outputs(v: &serde_json::Value) -> Vec<Vec<f64>> {
 fn parse_activation(v: &serde_json::Value) -> Activation {
     let param = v
         .get("activation_param")
-        .and_then(serde_json::Value::as_f64);
+        .and_then(serde_json::Value::as_f64)
+        .map(|p| p as f32);
     match v["activation"].as_str().unwrap() {
         "relu" => Activation::Relu,
         "tanh" => Activation::Tanh,

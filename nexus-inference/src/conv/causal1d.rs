@@ -23,6 +23,7 @@ pub(super) fn conv_tiled_simd(
     filters_4: usize,
     activation: Activation,
 ) -> usize {
+    use crate::activation::simd::{activate_4wide, activate_8wide};
     use crate::dot::{dot4_f32_m128, dot8_f32_m256};
     use core::arch::x86_64::*;
 
@@ -31,55 +32,32 @@ pub(super) fn conv_tiled_simd(
     // SAFETY: cfg guarantees SIMD availability.
     // f + N <= filters_4 within respective loops; bias/scratch accesses are in bounds.
     unsafe {
-        match activation {
-            Activation::Relu => {
-                if conv_len >= 32 {
-                    let zero256 = _mm256_setzero_ps();
-                    while f < filters_8 {
-                        let rows = &w_conv[f * conv_len..(f + 8) * conv_len];
-                        let dots = dot8_f32_m256(rows, lin);
-                        let bias_v = _mm256_loadu_ps(b_conv.as_ptr().add(f));
-                        _mm256_storeu_ps(
-                            filter_scratch.as_mut_ptr().add(f),
-                            _mm256_max_ps(_mm256_add_ps(dots, bias_v), zero256),
-                        );
-                        f += 8;
+        if conv_len >= 32 {
+            while f < filters_8 {
+                let rows = &w_conv[f * conv_len..(f + 8) * conv_len];
+                let dots = dot8_f32_m256(rows, lin);
+                let bias_v = _mm256_loadu_ps(b_conv.as_ptr().add(f));
+                let with_bias = _mm256_add_ps(dots, bias_v);
+                match activate_8wide(with_bias, activation) {
+                    Some(activated) => {
+                        _mm256_storeu_ps(filter_scratch.as_mut_ptr().add(f), activated)
                     }
+                    None => return f,
                 }
-                let zero128 = _mm_setzero_ps();
-                while f < filters_4 {
-                    let rows = &w_conv[f * conv_len..(f + 4) * conv_len];
-                    let dots = dot4_f32_m128(rows, lin);
-                    let bias_v = _mm_loadu_ps(b_conv.as_ptr().add(f));
-                    _mm_storeu_ps(
-                        filter_scratch.as_mut_ptr().add(f),
-                        _mm_max_ps(_mm_add_ps(dots, bias_v), zero128),
-                    );
-                    f += 4;
-                }
+                f += 8;
             }
-            Activation::Identity => {
-                if conv_len >= 32 {
-                    while f < filters_8 {
-                        let rows = &w_conv[f * conv_len..(f + 8) * conv_len];
-                        let dots = dot8_f32_m256(rows, lin);
-                        let bias_v = _mm256_loadu_ps(b_conv.as_ptr().add(f));
-                        _mm256_storeu_ps(
-                            filter_scratch.as_mut_ptr().add(f),
-                            _mm256_add_ps(dots, bias_v),
-                        );
-                        f += 8;
-                    }
-                }
-                while f < filters_4 {
-                    let rows = &w_conv[f * conv_len..(f + 4) * conv_len];
-                    let dots = dot4_f32_m128(rows, lin);
-                    let bias_v = _mm_loadu_ps(b_conv.as_ptr().add(f));
-                    _mm_storeu_ps(filter_scratch.as_mut_ptr().add(f), _mm_add_ps(dots, bias_v));
-                    f += 4;
-                }
+        }
+
+        while f < filters_4 {
+            let rows = &w_conv[f * conv_len..(f + 4) * conv_len];
+            let dots = dot4_f32_m128(rows, lin);
+            let bias_v = _mm_loadu_ps(b_conv.as_ptr().add(f));
+            let with_bias = _mm_add_ps(dots, bias_v);
+            match activate_4wide(with_bias, activation) {
+                Some(activated) => _mm_storeu_ps(filter_scratch.as_mut_ptr().add(f), activated),
+                None => return f,
             }
-            _ => {}
+            f += 4;
         }
     }
     f
@@ -188,20 +166,6 @@ impl Causal1dConv {
             if !w.is_finite() {
                 return Err(LoadError::Validation("non-finite weight"));
             }
-        }
-
-        #[cfg(not(any(feature = "std", feature = "libm")))]
-        match activation {
-            Activation::Tanh
-            | Activation::Sigmoid
-            | Activation::Elu(_)
-            | Activation::Gelu
-            | Activation::Swish => {
-                return Err(LoadError::Validation(
-                    "Tanh/Sigmoid/Elu/Gelu/Swish require std or libm feature",
-                ));
-            }
-            _ => {}
         }
 
         Ok(Self {
