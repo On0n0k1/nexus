@@ -230,6 +230,50 @@ fn matvec_i8_i32_simd(
     j
 }
 
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+#[inline]
+fn quantize_f32_to_i8(src: &[f32], dst: &mut [i8], inv_scale: f32, zero_point: i8) {
+    use core::arch::x86_64::*;
+
+    let n = src.len();
+    let n_8 = n & !7;
+    let zp = zero_point as i32;
+
+    // SAFETY: cfg guarantees AVX2+SSE4.1 availability.
+    // Pointer accesses bounded by src.len() and dst.len() (caller asserts equal).
+    unsafe {
+        let inv_scale_v = _mm256_set1_ps(inv_scale);
+        let zp_v = _mm256_set1_epi32(zp);
+
+        let mut i = 0;
+        while i < n_8 {
+            let f = _mm256_loadu_ps(src.as_ptr().add(i));
+            let scaled = _mm256_mul_ps(f, inv_scale_v);
+            // cvtps uses banker's rounding (round-to-nearest-even), matching
+            // PyTorch's torch.quantize_per_tensor (nearbyint).
+            let i32s = _mm256_cvtps_epi32(scaled);
+            let with_zp = _mm256_add_epi32(i32s, zp_v);
+
+            // Pack 8×i32 → 8×i8 via 128-bit path (no lane-crossing issues).
+            let lo = _mm256_castsi256_si128(with_zp);
+            let hi = _mm256_extracti128_si256(with_zp, 1);
+            let packed16 = _mm_packs_epi32(lo, hi);
+            let packed8 = _mm_packs_epi16(packed16, packed16);
+            _mm_storel_epi64(dst.as_mut_ptr().add(i) as *mut _, packed8);
+
+            i += 8;
+        }
+
+        // Scalar remainder for n % 8
+        while i < n {
+            let v = (src[i] * inv_scale).round() as i32 + zp;
+            dst[i] = v.clamp(-128, 127) as i8;
+            i += 1;
+        }
+    }
+}
+
+#[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
 #[inline]
 fn quantize_f32_to_i8(src: &[f32], dst: &mut [i8], inv_scale: f32, zero_point: i8) {
     let zp = zero_point as i32;
