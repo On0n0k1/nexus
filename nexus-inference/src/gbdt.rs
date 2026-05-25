@@ -264,11 +264,10 @@ macro_rules! impl_gbdt {
                     // Caller asserts features.len() == n_features.
                     let feat = unsafe { *features.get_unchecked(node.feature_idx as usize) };
                     let go_left = if nan_aware {
-                        match feat.partial_cmp(&(node.value as $ty)) {
-                            Some(core::cmp::Ordering::Greater) => false,
-                            None => node.flags & 1 != 0,
-                            _ => true,
-                        }
+                        #[allow(clippy::float_cmp)]
+                        let is_nan = feat != feat;
+                        let default_left = node.flags & 1 != 0;
+                        (feat <= node.value as $ty) | (is_nan & default_left)
                     } else {
                         feat <= node.value as $ty
                     };
