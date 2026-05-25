@@ -15,6 +15,7 @@
 //! - [`MlpF64`] / [`MlpF32`] — Feedforward neural network (multi-layer perceptron)
 //! - [`LutF64`] / [`LutF32`] — Lookup table predictor (discretized features)
 //! - [`BnnF32`] — Binary neural network (XNOR+popcount inference)
+//! - [`QuantizedMlpI8`] — Int8-quantized MLP (i8 matmul, f32 activations)
 //!
 //! # Stateful (streaming temporal)
 //!
@@ -37,6 +38,8 @@ mod error;
 mod gbdt;
 mod lut;
 mod mlp;
+#[cfg(feature = "alloc")]
+mod quantized_mlp;
 
 #[cfg(any(feature = "std", feature = "libm"))]
 mod rnn;
@@ -66,6 +69,8 @@ pub use gbdt::{GbdtF32, GbdtF64};
 pub use lut::{LutF32, LutF64};
 #[cfg(feature = "alloc")]
 pub use mlp::{MlpF32, MlpF64};
+#[cfg(feature = "alloc")]
+pub use quantized_mlp::QuantizedMlpI8;
 #[cfg(any(feature = "std", feature = "libm"))]
 pub use rnn::{StackedGruF32, StackedLstmF32, TinyGruF32, TinyLstmF32};
 #[cfg(feature = "alloc")]

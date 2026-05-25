@@ -69,6 +69,30 @@ The f32 advantage grows with layer width because the tiled SIMD path
 fuses bias + relu in registers and the 8-wide dot product halves
 iteration count.
 
+### MLP i8 (QuantizedMlpI8)
+
+Int8 quantized weights with per-layer affine quantization. The forward
+pass quantizes f32 inputs to i8, performs integer matmul with i32
+accumulation, dequantizes back to f32, and applies activation.
+
+AVX2 path uses `_mm256_maddubs_epi16` (32 elements per instruction,
+4x throughput vs f32 FMA) with a 4-row tiled kernel sharing input
+loads. SIMD quantization via `_mm256_cvtps_epi32` + saturating pack.
+Corrections (128*row_sum, input_zp*row_sum) precomputed into bias at
+construction — zero per-output correction overhead at inference.
+
+| Configuration | Latency | vs MlpF32 |
+|--------------|--------:|----------:|
+| 8→16→1 relu | 113 ns | 2.1x slower |
+| 16→32→8→1 relu | 316 ns | 3.0x slower |
+| 64→64→1 relu | 387 ns | 2.1x slower |
+| 32→32→32→32→1 relu | 511 ns | 2.2x slower |
+
+The i8 matmul processes 4x more elements per SIMD instruction than
+f32 FMA, but quantize/dequant overhead per layer adds fixed cost.
+For models where weight memory bandwidth is the bottleneck (large
+layers, L2 spill), the quantized path will outperform f32.
+
 ### LayerNorm
 
 BatchNorm layers are fused into the preceding linear layer's weights

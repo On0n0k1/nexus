@@ -658,3 +658,58 @@ fn tcn_large() {
 }
 
 fuzz_tests!(run_tcn_test, fuzz_tcn_0, fuzz_tcn_1, fuzz_tcn_2, fuzz_tcn_3,);
+
+// ---- Quantized MLP tests ----
+
+fn run_quantized_mlp_test(name: &str) {
+    let data = load_model(name);
+    let exp = load_expected(name);
+    let tol = exp["tolerance"].as_f64().unwrap();
+
+    let mut qmlp = QuantizedMlpI8::from_safetensors(
+        &data,
+        exp["prefix"].as_str().unwrap(),
+        parse_activation(&exp),
+    )
+    .unwrap();
+
+    for (i, (inp, exp_out)) in inputs_f32(&exp)
+        .iter()
+        .zip(expected_outputs(&exp).iter())
+        .enumerate()
+    {
+        let mut out = vec![0.0_f32; exp_out.len()];
+        qmlp.predict_into(inp, &mut out);
+        for (j, (&actual, &expected)) in out.iter().zip(exp_out.iter()).enumerate() {
+            assert_close(name, i, j, actual as f64, expected, tol);
+        }
+    }
+}
+
+#[test]
+fn quantized_mlp_basic() {
+    run_quantized_mlp_test("quantized_mlp_basic");
+}
+
+#[test]
+fn quantized_mlp_identity() {
+    run_quantized_mlp_test("quantized_mlp_identity");
+}
+
+#[test]
+fn quantized_mlp_deep() {
+    run_quantized_mlp_test("quantized_mlp_deep");
+}
+
+#[test]
+fn quantized_mlp_asymmetric() {
+    run_quantized_mlp_test("quantized_mlp_asymmetric");
+}
+
+fuzz_tests!(
+    run_quantized_mlp_test,
+    fuzz_quantized_mlp_0,
+    fuzz_quantized_mlp_1,
+    fuzz_quantized_mlp_2,
+    fuzz_quantized_mlp_3,
+);

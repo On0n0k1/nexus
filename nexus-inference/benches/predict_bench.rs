@@ -1,5 +1,7 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use nexus_inference::{Activation, BnnF32, GbdtF64, LutF64, MlpF32, MlpF64, TinyTcnF32};
+use nexus_inference::{
+    Activation, BnnF32, GbdtF64, LutF64, MlpF32, MlpF64, QuantizedMlpI8, TinyTcnF32,
+};
 
 const LIGHTGBM_HEADER: &str = "\
 tree
@@ -441,6 +443,70 @@ fn bench_tcn(c: &mut Criterion) {
     });
 }
 
+fn make_quantized_mlp(sizes: &[usize]) -> QuantizedMlpI8 {
+    let mut layers_w = Vec::new();
+    let mut layers_b = Vec::new();
+    let mut w_scales = Vec::new();
+    let mut w_zero_points = Vec::new();
+    let mut input_scales = Vec::new();
+    let mut input_zero_points = Vec::new();
+
+    for k in 0..sizes.len() - 1 {
+        let in_size = sizes[k];
+        let out_size = sizes[k + 1];
+        let w: Vec<i8> = (0..out_size * in_size)
+            .map(|i| ((i % 255) as i8).wrapping_sub(64))
+            .collect();
+        let b: Vec<f32> = vec![0.01; out_size];
+        layers_w.push(w);
+        layers_b.push(b);
+        w_scales.push(0.02_f32);
+        w_zero_points.push(0_i8);
+        input_scales.push(0.01_f32);
+        input_zero_points.push(0_i8);
+    }
+
+    let w_refs: Vec<&[i8]> = layers_w.iter().map(Vec::as_slice).collect();
+    let b_refs: Vec<&[f32]> = layers_b.iter().map(Vec::as_slice).collect();
+    QuantizedMlpI8::from_parts(
+        &w_refs,
+        &b_refs,
+        &w_scales,
+        &w_zero_points,
+        &input_scales,
+        &input_zero_points,
+        Activation::Relu,
+    )
+    .unwrap()
+}
+
+fn bench_quantized_mlp(c: &mut Criterion) {
+    let features_8: Vec<f32> = vec![0.5; 8];
+    let features_16: Vec<f32> = vec![0.5; 16];
+    let features_64: Vec<f32> = vec![0.5; 64];
+
+    let mut model = make_quantized_mlp(&[8, 16, 1]);
+    c.bench_function("QuantizedMlpI8::predict 8→16→1 relu", |b| {
+        b.iter(|| model.predict(black_box(&features_8)));
+    });
+
+    let mut model = make_quantized_mlp(&[16, 32, 8, 1]);
+    c.bench_function("QuantizedMlpI8::predict 16→32→8→1 relu", |b| {
+        b.iter(|| model.predict(black_box(&features_16)));
+    });
+
+    let mut model = make_quantized_mlp(&[64, 64, 1]);
+    c.bench_function("QuantizedMlpI8::predict 64→64→1 relu", |b| {
+        b.iter(|| model.predict(black_box(&features_64)));
+    });
+
+    let features_32: Vec<f32> = vec![0.5; 32];
+    let mut model = make_quantized_mlp(&[32, 32, 32, 32, 1]);
+    c.bench_function("QuantizedMlpI8::predict 32→32→32→32→1 relu", |b| {
+        b.iter(|| model.predict(black_box(&features_32)));
+    });
+}
+
 criterion_group!(
     benches,
     bench_gbdt,
@@ -449,6 +515,7 @@ criterion_group!(
     bench_mlp_f32_layernorm,
     bench_lut,
     bench_bnn,
-    bench_tcn
+    bench_tcn,
+    bench_quantized_mlp
 );
 criterion_main!(benches);

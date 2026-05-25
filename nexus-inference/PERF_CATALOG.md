@@ -148,6 +148,87 @@ needed, add `mlp_tiled_simd_f64` following the f32 pattern.
 
 ---
 
+## QuantizedMlpI8 (`src/quantized_mlp.rs`)
+
+Int8 quantized MLP with per-layer affine quantization (scale + zero_point).
+Supports both symmetric (zp=0) and asymmetric quantization, matching
+PyTorch `torch.ao.quantization` output format.
+
+### SIMD quantize (f32 → i8)
+
+- `_mm256_cvtps_epi32` for round-to-nearest (banker's rounding, matches
+  PyTorch `nearbyint`). Replaces scalar `f32::round()` which compiles to
+  expensive MXCSR manipulation.
+- `_mm256_add_epi32` for zero-point addition.
+- Extract 128-bit halves, `_mm_packs_epi32` (i32→i16 saturating) +
+  `_mm_packs_epi16` (i16→i8 saturating). Saturation provides the clamp
+  to [-128, 127] for free.
+- `_mm_storel_epi64` stores 8 bytes. No lane-crossing issues since
+  narrowing uses 128-bit ops after extraction.
+- 8 elements per iteration, scalar remainder for `n % 8`.
+
+### 4-row tiled i8 matmul
+
+- `matvec_i8_i32_simd`: `#[inline(never)]`, processes 4 output rows
+  simultaneously sharing input loads.
+- XOR trick: input i8→u8 via `_mm256_xor_si256(x, set1_epi8(-128))`.
+  Produces dot = sum((x+128)*w); the 128*row_sum correction is folded
+  into `bias_adjusted` at construction.
+- `_mm256_maddubs_epi16` (u8×i8→i16) + `_mm256_madd_epi16` (i16→i32)
+  per row per chunk. 32 element-pairs per instruction.
+- Inner loop: 1 input load + 1 XOR + 4 weight loads + 4 maddubs +
+  4 madd + 4 adds = 14 instructions for 4×32=128 element-pairs.
+- `hsum_i32` helper: 7-instruction horizontal reduction (extract, add,
+  unpack, shuffle, add, shuffle, add). Called 4× per tile.
+- Scalar tail per row for `in_size % 32`, using `(input[i]+128)*w[i]`
+  to match the SIMD XOR semantics.
+- Remainder: `out_size % 4` rows processed with single-row kernel.
+
+### Precomputed corrections (construction-time)
+
+- `bias_adjusted[j] = bias[j] - correction_factor * row_sum[j] * combined_scale`
+- `correction_factor`: 128 + input_zp (AVX2), input_zp (scalar).
+  cfg-conditional because AVX2 uses XOR trick (adds 128 to input) while
+  scalar computes raw i8×i8 products.
+- `combined_scale = w_scale * input_scale` — eliminates one mul per output.
+- `inv_input_scale = 1.0 / input_scale` — eliminates f32 division per layer.
+- Weight zero-point correction (`w_zp * input_sum`) hoisted out of
+  output loop — O(in_size) once per layer, not O(in_size × out_size).
+
+### Scalar fallback
+
+- `dot4_i8_i32`: 4-row unrolled, each row uses `dot_i8_i32` with 4
+  independent accumulators (s0-s3) for ILP.
+- No XOR trick — raw i8×i8 products, correction_factor uses only
+  `input_zp` (not 128+input_zp).
+
+### maddubs i16 saturation
+
+`_mm256_maddubs_epi16` saturates pairwise sums to i16 range. With the
+XOR trick, two adjacent large products can exceed ±32767. This matches
+FBGEMM/oneDNN/TVM behavior and is accepted: quantized inference is
+inherently approximate, and the saturation delta is negligible vs
+quantization error for well-calibrated models.
+
+### Measured results (2026-05-25)
+
+Initial implementation on commit `ce399e6` (AVX2 scalar remainder fix),
+optimized to current state. Turbo on, `taskset -c 0`, best of 3:
+
+| Config | Before | After | Delta |
+|--------|--------|-------|-------|
+| 8→16→1 relu | 213ns | 113ns | **-47%** |
+| 16→32→8→1 relu | 666ns | 316ns | **-53%** |
+| 64→64→1 relu | 2.35μs | 387ns | **-84%** |
+| 32→32→32→32→1 relu | 2.19μs | 511ns | **-77%** |
+
+Controlled A/B (turbo off, pinned) showed the optimization breakdown:
+- Precomputed bias + inv_scale: -10% to -24% (largest on multi-layer)
+- 4-row tiled SIMD matmul: -17% to -31% (largest on wide layers)
+- SIMD quantize: -14% to -24% (uniform improvement)
+
+---
+
 ## LSTM (`src/rnn/lstm.rs`, `src/rnn/avx2_gates.rs`, `src/rnn/avx512_gates.rs`)
 
 ### Architecture
@@ -571,6 +652,34 @@ tiling fires (both dimensions below threshold).
 No SIMD changes for f64 — confirms the improvements are from the
 optimization work, not system state changes.
 
+### QuantizedMlpI8 (2026-05-25)
+
+Baseline: commit `ce399e6` (AVX2 scalar remainder fix, single-row
+kernel, no precomputed corrections). Optimized: precomputed bias +
+4-row tiled matmul + SIMD quantize. Turbo on, `taskset -c 0`, best of 3:
+
+| Config | Before | After | Delta |
+|--------|--------|-------|-------|
+| 8→16→1 relu | 213ns | 113ns | **-47%** |
+| 16→32→8→1 relu | 666ns | 316ns | **-53%** |
+| 64→64→1 relu | 2.35μs | 387ns | **-84%** |
+| 32→32→32→32→1 relu | 2.19μs | 511ns | **-77%** |
+
+Comparison with MlpF32 (same configs):
+
+| Config | QuantizedMlpI8 | MlpF32 | Ratio |
+|--------|---------------|--------|-------|
+| 8→16→1 | 113ns | 53ns | 2.1× |
+| 16→32→8→1 | 316ns | 106ns | 3.0× |
+| 64→64→1 | 387ns | 187ns | 2.1× |
+| 32→32→32→32→1 | 511ns | 229ns | 2.2× |
+
+The quantized path carries fixed overhead (quantize + dequant per layer)
+that f32 avoids. The i8 matmul itself is faster (32 elements/maddubs vs
+8/FMA) but doesn't overcome the overhead for these layer sizes. At wider
+layers or when weights spill L2, the quantized path's 4× lower weight
+memory bandwidth will dominate.
+
 ### GBDT (control)
 
 | Config | Latency | Delta vs baseline |
@@ -628,6 +737,14 @@ Not profiled — these are architectural observations, not measured splits.
   popcount. Further improvement requires AVX-512 VPOPCNTDQ (native
   vector popcount) or algorithmic change.
 
+- **QuantizedMlpI8**: quantize/dequant overhead per layer is the
+  remaining bottleneck. The i8 matmul processes 4× more elements per
+  SIMD instruction than f32 FMA, but the surrounding quantize (f32→i8)
+  and dequant (i32→f32) steps add fixed cost. For current benchmark
+  layer sizes (8-64), this overhead keeps quantized ~2-3× slower than
+  MlpF32. At wider layers (256+) or when weights spill L2, the 4×
+  lower weight memory bandwidth should dominate.
+
 ---
 
 ## Summary: what moves the needle
@@ -645,6 +762,9 @@ Not profiled — these are architectural observations, not measured splits.
 | BNN fused output (masked sum from bits) | BNN | -14ns: eliminates unpack + output matmul |
 | BNN fused input (matvec+binarize+movemask) | BNN | -14ns: eliminates float_scratch round-trip |
 | `#[inline(never)]` on tiled helpers | MLP, Conv, BNN | prevents caller I-cache bloat |
+| 4-row tiled i8 maddubs (shared input) | QuantizedMlpI8 | 4× input bandwidth reduction, -77-84% on wide |
+| SIMD quantize (cvtps + saturating pack) | QuantizedMlpI8 | ~6× throughput vs scalar round() |
+| Precomputed bias corrections | QuantizedMlpI8 | eliminates O(out) per-prediction correction work |
 
 ---
 
@@ -663,9 +783,10 @@ Ordered by expected impact, not effort.
    activations are deployed, the same 8-wide Padé can be applied in
    the tiled helpers.
 
-3. **Int8 quantized matvec**: halves memory bandwidth for weight loads.
-   Relevant when models grow large enough that weights spill L2. Adds
-   loader complexity (scale/zero-point per row or per tensor).
+3. ~~**Int8 quantized matvec**~~: **Done** — `QuantizedMlpI8` implements
+   4-row tiled i8 matmul with SIMD quantize/dequant. See section above.
+   Next step: wider layers (256+) where weight bandwidth savings dominate
+   quantize/dequant overhead and the i8 path outperforms f32.
 
 4. **GRU fused ih+hh matvec**: the ih and hh matrices could be
    concatenated into `(3H, input+hidden)` and a single matvec used,
