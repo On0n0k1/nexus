@@ -963,6 +963,23 @@ def generate_fuzz():
                      inputs=make_inputs(n_steps, input_size, seed=1000+i),
                      prefix=f"fuzz{i}.tcn", init_fn=rng.choice(init_fns))
 
+    # Fuzz Quantized MLP
+    rng = random.Random(1042)
+    activations_qmlp = ["relu", "identity", "tanh", "sigmoid"]
+    for i in range(4):
+        n_hidden = rng.randint(0, 2)
+        input_size = rng.randint(1, 8)
+        sizes = [input_size]
+        for _ in range(n_hidden):
+            sizes.append(rng.randint(2, 10))
+        sizes.append(rng.randint(1, 4))
+        act_name = rng.choice(activations_qmlp)
+        symmetric = rng.choice([True, False])
+        generate_quantized_mlp(f"fuzz_quantized_mlp_{i}", sizes, act_name,
+                               inputs=make_inputs(rng.randint(3, 8), input_size, seed=1200+i),
+                               prefix=f"fuzz{i}.qmlp", init_fn=rng.choice(init_fns),
+                               tolerance=1e-3, symmetric=symmetric)
+
     # Fuzz BNN
     rng = random.Random(942)
     for i in range(4):
@@ -1093,6 +1110,230 @@ def generate_tcn_large():
                  prefix="tcn_lg", init_fn=init_sinusoidal)
 
 
+# ---- Quantized MLP generators ----
+
+
+def quantize_to_i8(x_f32, scale, zero_point):
+    """Quantize f32 → i8 matching Rust quantize_f32_to_i8."""
+    return [max(-128, min(127, round(v / scale) + zero_point)) for v in x_f32]
+
+
+def quantized_mlp_forward(layers, inputs, activation_name, activation_param=None):
+    """Simulate quantized MLP inference matching Rust predict_into exactly.
+
+    Each layer: quantize_input→i8 matmul→i32→zero-point corrections→dequant→activation.
+    """
+    import numpy as np
+
+    outputs = []
+    n_layers = len(layers)
+
+    for inp in inputs:
+        x = list(inp)
+        for layer_idx in range(n_layers):
+            layer = layers[layer_idx]
+            w_i8 = layer["w_i8"]         # list of i8 (out * in, row-major)
+            bias = layer["bias"]         # list of f32
+            w_scale = layer["w_scale"]
+            w_zp = layer["w_zp"]
+            in_scale = layer["in_scale"]
+            in_zp = layer["in_zp"]
+            in_size = layer["in_size"]
+            out_size = layer["out_size"]
+            is_last = (layer_idx == n_layers - 1)
+
+            inv_in_scale = 1.0 / in_scale
+            combined_scale = w_scale * in_scale
+
+            # Step 1: Quantize input
+            x_i8 = quantize_to_i8(x, in_scale, in_zp)
+
+            # Step 2: Integer matmul (matching Rust scalar path)
+            acc = [0] * out_size
+            for j in range(out_size):
+                s = 0
+                for i in range(in_size):
+                    s += w_i8[j * in_size + i] * x_i8[i]
+                acc[j] = s
+
+            # Step 3: Zero-point corrections + dequant + bias + activation
+            # Precompute row_sum for each output neuron
+            row_sums = []
+            for j in range(out_size):
+                rs = sum(w_i8[j * in_size + i] for i in range(in_size))
+                row_sums.append(rs)
+
+            result = [0.0] * out_size
+            for j in range(out_size):
+                a = acc[j]
+
+                # Correct for input zero point
+                if in_zp != 0:
+                    a -= in_zp * row_sums[j]
+
+                # Correct for weight zero point
+                if w_zp != 0:
+                    input_sum = sum(x_i8)
+                    a -= w_zp * input_sum
+                    a += in_size * w_zp * in_zp
+
+                # Dequantize + bias (use Python float mul_add equivalent)
+                y = float(a) * combined_scale + bias[j]
+
+                # Activation (not on last layer)
+                if not is_last:
+                    if activation_name == "relu":
+                        y = max(0.0, y)
+                    elif activation_name == "tanh":
+                        y = math.tanh(y)
+                    elif activation_name == "sigmoid":
+                        y = 1.0 / (1.0 + math.exp(-y))
+                    elif activation_name == "identity":
+                        pass
+                    elif activation_name == "swish":
+                        y = y / (1.0 + math.exp(-y))
+                    elif activation_name == "elu":
+                        alpha = activation_param if activation_param else 1.0
+                        if y < 0:
+                            y = alpha * (math.exp(y) - 1.0)
+                    elif activation_name == "leaky_relu":
+                        alpha = activation_param if activation_param else 0.01
+                        if y < 0:
+                            y = alpha * y
+                    elif activation_name == "gelu":
+                        y = 0.5 * y * (1.0 + math.tanh(
+                            math.sqrt(2.0 / math.pi) * (y + 0.044715 * y**3)))
+
+                result[j] = y
+
+            x = result
+
+        outputs.append(x)
+
+    return outputs
+
+
+def generate_quantized_mlp(name, layer_sizes, activation_name, inputs, prefix,
+                           init_fn, tolerance=1e-4, symmetric=True,
+                           activation_param=None):
+    """Generate a quantized MLP fixture.
+
+    1. Create float weights using init_fn
+    2. Quantize weights per-layer (affine: scale + zero_point)
+    3. Simulate quantized inference in Python (matching Rust exactly)
+    4. Save model parameters and expected outputs
+    """
+    layers = []
+    state = {}
+
+    for k in range(len(layer_sizes) - 1):
+        in_size = layer_sizes[k]
+        out_size = layer_sizes[k + 1]
+
+        # Generate float weights using init_fn
+        w_param = torch.empty(out_size, in_size)
+        init_fn(w_param)
+        w_float = w_param.flatten().tolist()
+
+        bias = [0.01 * (j + 1) for j in range(out_size)]
+
+        # Determine quantization parameters for weights
+        w_min = min(w_float)
+        w_max = max(w_float)
+        w_range = max(abs(w_min), abs(w_max))
+
+        if symmetric or w_range == 0:
+            w_scale = w_range / 127.0 if w_range > 0 else 1.0
+            w_zp = 0
+        else:
+            w_scale = (w_max - w_min) / 254.0 if w_max > w_min else 1.0
+            w_zp = int(round(-128 - w_min / w_scale))
+            w_zp = max(-128, min(127, w_zp))
+
+        # Quantize weights to i8
+        w_i8 = quantize_to_i8(w_float, w_scale, w_zp)
+
+        # Input quantization params (calibrated for expected input range)
+        in_scale = 1.0 / 127.0 if symmetric else 1.0 / 255.0
+        in_zp = 0 if symmetric else 0
+
+        layer_info = {
+            "w_i8": w_i8,
+            "bias": bias,
+            "w_scale": w_scale,
+            "w_zp": w_zp,
+            "in_scale": in_scale,
+            "in_zp": in_zp,
+            "in_size": in_size,
+            "out_size": out_size,
+        }
+        layers.append(layer_info)
+
+        # Save to safetensors state dict
+        w_key = f"{prefix}.layer_{k}.weight"
+        b_key = f"{prefix}.layer_{k}.bias"
+        ws_key = f"{prefix}.layer_{k}.weight_scale"
+        wzp_key = f"{prefix}.layer_{k}.weight_zero_point"
+        is_key = f"{prefix}.layer_{k}.input_scale"
+        izp_key = f"{prefix}.layer_{k}.input_zero_point"
+
+        state[w_key] = torch.tensor(w_i8, dtype=torch.int8).reshape(out_size, in_size)
+        state[b_key] = torch.tensor(bias, dtype=torch.float32)
+        state[ws_key] = torch.tensor([w_scale], dtype=torch.float32)
+        state[wzp_key] = torch.tensor([w_zp], dtype=torch.int8)
+        state[is_key] = torch.tensor([in_scale], dtype=torch.float32)
+        state[izp_key] = torch.tensor([in_zp], dtype=torch.int8)
+
+    save_file(state, FIXTURES_DIR / f"{name}.safetensors")
+
+    # Run quantized inference in Python (matching Rust exactly)
+    outputs = quantized_mlp_forward(layers, inputs, activation_name,
+                                    activation_param)
+
+    with open(FIXTURES_DIR / f"{name}_expected.json", "w") as f:
+        meta = {
+            "prefix": prefix,
+            "activation": activation_name,
+            "inputs": inputs,
+            "outputs": outputs,
+            "tolerance": tolerance,
+        }
+        if activation_param is not None:
+            meta["activation_param"] = activation_param
+        json.dump(meta, f, indent=2)
+        f.write("\n")
+
+    sizes_str = "->".join(str(s) for s in layer_sizes)
+    sym_str = "symmetric" if symmetric else "asymmetric"
+    print(f"  {name}: {sizes_str}, {activation_name}, {sym_str}, {len(inputs)} inputs")
+
+
+def generate_quantized_mlp_basic():
+    generate_quantized_mlp("quantized_mlp_basic", [4, 8, 1], "relu",
+                           inputs=make_inputs(5, 4, seed=1100),
+                           prefix="qmlp", init_fn=init_linspace)
+
+
+def generate_quantized_mlp_identity():
+    generate_quantized_mlp("quantized_mlp_identity", [3, 6, 2], "identity",
+                           inputs=make_inputs(5, 3, seed=1101),
+                           prefix="qmlp", init_fn=init_sinusoidal)
+
+
+def generate_quantized_mlp_deep():
+    generate_quantized_mlp("quantized_mlp_deep", [4, 8, 8, 4, 1], "relu",
+                           inputs=make_inputs(5, 4, seed=1102),
+                           prefix="qmlp", init_fn=init_linspace,
+                           tolerance=5e-4)
+
+
+def generate_quantized_mlp_asymmetric():
+    generate_quantized_mlp("quantized_mlp_asymmetric", [4, 8, 2], "relu",
+                           inputs=make_inputs(5, 4, seed=1103),
+                           prefix="qmlp", init_fn=init_linspace,
+                           symmetric=False)
+
+
 if __name__ == "__main__":
     print("Generating fixtures...")
     # LSTM
@@ -1154,6 +1395,11 @@ if __name__ == "__main__":
     generate_tcn_residual()
     generate_tcn_identity()
     generate_tcn_large()
+    # Quantized MLP
+    generate_quantized_mlp_basic()
+    generate_quantized_mlp_identity()
+    generate_quantized_mlp_deep()
+    generate_quantized_mlp_asymmetric()
     # Fuzz (seeded random configs)
     generate_fuzz()
     print("Done.")

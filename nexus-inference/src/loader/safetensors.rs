@@ -85,6 +85,46 @@ fn extract_f32_3d(st: &SafeTensors<'_>, name: &str) -> Result<(Vec<f32>, [usize;
     Ok((data, dims))
 }
 
+fn extract_f32_scalar(st: &SafeTensors<'_>, name: &str) -> Result<f32, LoadError> {
+    let tv = st
+        .tensor(name)
+        .map_err(|_| LoadError::TensorNotFound(String::from(name)))?;
+    if tv.dtype() != Dtype::F32 {
+        return Err(LoadError::Validation("expected F32 tensor"));
+    }
+    let n: usize = tv.shape().iter().product();
+    if n != 1 {
+        return Err(LoadError::Validation(
+            "expected scalar (single-element) tensor",
+        ));
+    }
+    let bytes = tv.data();
+    if bytes.len() != 4 {
+        return Err(LoadError::Parse("F32 scalar data not 4 bytes"));
+    }
+    Ok(f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+}
+
+fn extract_i8_scalar(st: &SafeTensors<'_>, name: &str) -> Result<i8, LoadError> {
+    let tv = st
+        .tensor(name)
+        .map_err(|_| LoadError::TensorNotFound(String::from(name)))?;
+    if tv.dtype() != Dtype::I8 {
+        return Err(LoadError::Validation("expected I8 tensor"));
+    }
+    let n: usize = tv.shape().iter().product();
+    if n != 1 {
+        return Err(LoadError::Validation(
+            "expected scalar (single-element) tensor",
+        ));
+    }
+    let bytes = tv.data();
+    if bytes.len() != 1 {
+        return Err(LoadError::Parse("I8 scalar data not 1 byte"));
+    }
+    Ok(bytes[0] as i8)
+}
+
 fn extract_i8_2d(st: &SafeTensors<'_>, name: &str) -> Result<(Vec<i8>, [usize; 2]), LoadError> {
     let tv = st
         .tensor(name)
@@ -1311,6 +1351,144 @@ impl crate::BnnF32 {
             &w_output,
             &b_output,
             output_size,
+        )
+    }
+}
+
+// ---- Quantized MLP loader ----
+
+fn count_quantized_mlp_layers(st: &SafeTensors<'_>, prefix: &str) -> Result<usize, LoadError> {
+    let mut n = 0;
+    loop {
+        let name = prefixed(prefix, &format!("layer_{n}.weight"));
+        match st.tensor(&name) {
+            Ok(tv) if tv.dtype() == Dtype::I8 && tv.shape().len() == 2 => n += 1,
+            _ => break,
+        }
+    }
+
+    let stem = prefixed(prefix, "layer_");
+    for name in st.names() {
+        let Some(suffix) = name.strip_prefix(stem.as_str()) else {
+            continue;
+        };
+        if let Some(idx_str) = suffix
+            .strip_suffix(".weight")
+            .or_else(|| suffix.strip_suffix(".bias"))
+            .or_else(|| suffix.strip_suffix(".weight_scale"))
+            .or_else(|| suffix.strip_suffix(".weight_zero_point"))
+            .or_else(|| suffix.strip_suffix(".input_scale"))
+            .or_else(|| suffix.strip_suffix(".input_zero_point"))
+            && let Ok(idx) = idx_str.parse::<usize>()
+            && idx >= n
+        {
+            return Err(LoadError::Validation(
+                "non-consecutive quantized MLP layer indices",
+            ));
+        }
+    }
+
+    Ok(n)
+}
+
+impl crate::QuantizedMlpI8 {
+    /// Load from safetensors data.
+    ///
+    /// Tensor naming convention (per layer `k`):
+    /// - `{prefix}.layer_{k}.weight` — I8 `[out, in]`
+    /// - `{prefix}.layer_{k}.bias` — F32 `[out]`
+    /// - `{prefix}.layer_{k}.weight_scale` — F32 scalar
+    /// - `{prefix}.layer_{k}.weight_zero_point` — I8 scalar
+    /// - `{prefix}.layer_{k}.input_scale` — F32 scalar
+    /// - `{prefix}.layer_{k}.input_zero_point` — I8 scalar
+    ///
+    /// Layer count is auto-detected by scanning for consecutive
+    /// `layer_{k}.weight` I8 tensors starting from `k=0`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LoadError::TensorNotFound`] if required tensors are
+    /// missing, or [`LoadError::Validation`] if shapes or quantization
+    /// parameters are invalid.
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// let bytes = std::fs::read("quantized_mlp.safetensors")?;
+    /// let qmlp = QuantizedMlpI8::from_safetensors(&bytes, "qmlp", Activation::Relu)?;
+    /// ```
+    pub fn from_safetensors(
+        data: &[u8],
+        prefix: &str,
+        activation: crate::Activation,
+    ) -> Result<Self, LoadError> {
+        let st = parse(data)?;
+        let n_layers = count_quantized_mlp_layers(&st, prefix)?;
+        if n_layers == 0 {
+            return Err(LoadError::TensorNotFound(prefixed(
+                prefix,
+                "layer_0.weight",
+            )));
+        }
+
+        let mut layers_w: Vec<Vec<i8>> = Vec::with_capacity(n_layers);
+        let mut layers_b: Vec<Vec<f32>> = Vec::with_capacity(n_layers);
+        let mut w_scales: Vec<f32> = Vec::with_capacity(n_layers);
+        let mut w_zero_points: Vec<i8> = Vec::with_capacity(n_layers);
+        let mut input_scales: Vec<f32> = Vec::with_capacity(n_layers);
+        let mut input_zero_points: Vec<i8> = Vec::with_capacity(n_layers);
+
+        let mut prev_out: Option<usize> = None;
+
+        for k in 0..n_layers {
+            let w_name = prefixed(prefix, &format!("layer_{k}.weight"));
+            let b_name = prefixed(prefix, &format!("layer_{k}.bias"));
+            let ws_name = prefixed(prefix, &format!("layer_{k}.weight_scale"));
+            let wzp_name = prefixed(prefix, &format!("layer_{k}.weight_zero_point"));
+            let is_name = prefixed(prefix, &format!("layer_{k}.input_scale"));
+            let izp_name = prefixed(prefix, &format!("layer_{k}.input_zero_point"));
+
+            let (w_data, w_shape) = extract_i8_2d(&st, &w_name)?;
+            let b_data = extract_f32_1d(&st, &b_name)?;
+            let ws = extract_f32_scalar(&st, &ws_name)?;
+            let wzp = extract_i8_scalar(&st, &wzp_name)?;
+            let is_val = extract_f32_scalar(&st, &is_name)?;
+            let izp = extract_i8_scalar(&st, &izp_name)?;
+
+            let out_size = w_shape[0];
+            let in_size = w_shape[1];
+
+            if b_data.len() != out_size {
+                return Err(LoadError::Validation("bias length must match output size"));
+            }
+            if let Some(prev) = prev_out
+                && in_size != prev
+            {
+                return Err(LoadError::Validation(
+                    "layer input size must match previous layer output size",
+                ));
+            }
+            prev_out = Some(out_size);
+
+            layers_w.push(w_data);
+            layers_b.push(b_data);
+            w_scales.push(ws);
+            w_zero_points.push(wzp);
+            input_scales.push(is_val);
+            input_zero_points.push(izp);
+        }
+
+        let w_refs: Vec<&[i8]> = layers_w.iter().map(Vec::as_slice).collect();
+        let b_refs: Vec<&[f32]> = layers_b.iter().map(Vec::as_slice).collect();
+
+        Self::from_parts(
+            &w_refs,
+            &b_refs,
+            &w_scales,
+            &w_zero_points,
+            &input_scales,
+            &input_zero_points,
+            activation,
         )
     }
 }
@@ -2604,6 +2782,78 @@ mod tests {
         ]);
 
         let err = crate::TinyTcnF32::from_safetensors(&data, "t", crate::Activation::Relu, false);
+        assert!(matches!(err, Err(LoadError::Validation(_))), "got {err:?}");
+    }
+
+    // ---- Quantized MLP ----
+
+    #[test]
+    fn quantized_mlp_loads_single_layer() {
+        let w: Vec<i8> = vec![10, 20, 30, 40, 50, 60];
+        let b: Vec<f32> = vec![0.1, 0.2];
+        let w_s: f32 = 0.5;
+        let w_zp: i8 = 0;
+        let i_s: f32 = 0.25;
+        let i_zp: i8 = 0;
+
+        let wb = i8_bytes(&w);
+        let bb = f32_bytes(&b);
+        let wsb = f32_bytes(&[w_s]);
+        let wzb = i8_bytes(&[w_zp]);
+        let isb = f32_bytes(&[i_s]);
+        let izb = i8_bytes(&[i_zp]);
+
+        let data = serialize_tensors(vec![
+            ("q.layer_0.weight", make_view(Dtype::I8, &[2, 3], &wb)),
+            ("q.layer_0.bias", make_view(Dtype::F32, &[2], &bb)),
+            ("q.layer_0.weight_scale", make_view(Dtype::F32, &[1], &wsb)),
+            (
+                "q.layer_0.weight_zero_point",
+                make_view(Dtype::I8, &[1], &wzb),
+            ),
+            ("q.layer_0.input_scale", make_view(Dtype::F32, &[1], &isb)),
+            (
+                "q.layer_0.input_zero_point",
+                make_view(Dtype::I8, &[1], &izb),
+            ),
+        ]);
+
+        let qmlp = crate::QuantizedMlpI8::from_safetensors(&data, "q", crate::Activation::Identity)
+            .unwrap();
+        assert_eq!(qmlp.input_size(), 3);
+        assert_eq!(qmlp.output_size(), 2);
+    }
+
+    #[test]
+    fn quantized_mlp_rejects_orphan_layer() {
+        let w: Vec<i8> = vec![10, 20, 30, 40, 50, 60];
+        let b: Vec<f32> = vec![0.1, 0.2];
+        let wb = i8_bytes(&w);
+        let bb = f32_bytes(&b);
+        let wsb = f32_bytes(&[0.5]);
+        let wzb = i8_bytes(&[0]);
+        let isb = f32_bytes(&[0.25]);
+        let izb = i8_bytes(&[0]);
+
+        let orphan_w = i8_bytes(&vec![1_i8; 4]);
+
+        let data = serialize_tensors(vec![
+            ("q.layer_0.weight", make_view(Dtype::I8, &[2, 3], &wb)),
+            ("q.layer_0.bias", make_view(Dtype::F32, &[2], &bb)),
+            ("q.layer_0.weight_scale", make_view(Dtype::F32, &[1], &wsb)),
+            (
+                "q.layer_0.weight_zero_point",
+                make_view(Dtype::I8, &[1], &wzb),
+            ),
+            ("q.layer_0.input_scale", make_view(Dtype::F32, &[1], &isb)),
+            (
+                "q.layer_0.input_zero_point",
+                make_view(Dtype::I8, &[1], &izb),
+            ),
+            ("q.layer_2.weight", make_view(Dtype::I8, &[2, 2], &orphan_w)),
+        ]);
+
+        let err = crate::QuantizedMlpI8::from_safetensors(&data, "q", crate::Activation::Relu);
         assert!(matches!(err, Err(LoadError::Validation(_))), "got {err:?}");
     }
 }
