@@ -1,7 +1,7 @@
 //! Measures the full latency distribution of GBDT predict.
 //! Run with: taskset -c 0 cargo run --example gbdt_tail --release --features loader-lightgbm
 
-use nexus_inference::GbdtF64;
+use nexus_inference::GbdtF32;
 use std::time::Instant;
 
 const LIGHTGBM_HEADER: &str = "\
@@ -93,12 +93,12 @@ fn xorshift64(state: &mut u64) -> u64 {
     x
 }
 
-fn random_features(n: usize, count: usize, seed: u64) -> Vec<Vec<f64>> {
+fn random_features(n: usize, count: usize, seed: u64) -> Vec<Vec<f32>> {
     let mut state = seed;
     (0..count)
         .map(|_| {
             (0..n)
-                .map(|_| (xorshift64(&mut state) as f64) / (u64::MAX as f64))
+                .map(|_| (xorshift64(&mut state) as f64 / u64::MAX as f64) as f32)
                 .collect()
         })
         .collect()
@@ -109,7 +109,7 @@ fn percentile(sorted: &[u64], p: f64) -> u64 {
     sorted[idx.min(sorted.len() - 1)]
 }
 
-fn run_distribution(name: &str, model: &GbdtF64, features: &[Vec<f64>], n_samples: usize) {
+fn run_distribution(name: &str, model: &GbdtF32, features: &[Vec<f32>], n_samples: usize) {
     let n_feat = features.len();
     let mut latencies = Vec::with_capacity(n_samples);
 
@@ -151,7 +151,7 @@ fn run_distribution(name: &str, model: &GbdtF64, features: &[Vec<f64>], n_sample
     println!();
 }
 
-fn run_distribution_nan(name: &str, model: &GbdtF64, features: &[Vec<f64>], n_samples: usize) {
+fn run_distribution_nan(name: &str, model: &GbdtF32, features: &[Vec<f32>], n_samples: usize) {
     let n_feat = features.len();
     let mut latencies = Vec::with_capacity(n_samples);
 
@@ -194,11 +194,11 @@ fn run_distribution_nan(name: &str, model: &GbdtF64, features: &[Vec<f64>], n_sa
 fn main() {
     let n_samples = 100_000;
 
-    let features_const = vec![vec![0.5_f64; 8]; 1];
+    let features_const = vec![vec![0.5_f32; 8]; 1];
     let features_random = random_features(8, 4096, 0xDEAD_BEEF_CAFE_F00D);
 
     let text = build_lightgbm_model(100, 6, 8);
-    let model = GbdtF64::from_lightgbm(text.as_bytes()).unwrap();
+    let model = GbdtF32::from_lightgbm(text.as_bytes()).unwrap();
 
     println!("=== GBDT 100x6, 8 features — Latency Distribution ===\n");
 
