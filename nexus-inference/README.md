@@ -118,6 +118,50 @@ one layer and produce identical output to `TinyLstm` /
 `TinyGru`. Use the `Tiny` variants directly when you know the
 model is single-layer — they have slightly less indirection.
 
+### Int8-Quantized MLP — `QuantizedMlp`
+
+The same feedforward architecture as `Mlp`, but hidden weights are
+stored as `i8` with per-layer affine quantization (scale + zero point).
+Each layer quantizes its f32 input to i8, runs an integer matmul with
+i32 accumulation, then dequantizes back to f32 for the activation.
+Matches PyTorch's `torch.ao.quantization` output — symmetric (zero
+point 0) or asymmetric. On AVX2 the integer matmul uses `maddubs` for
+several i8 multiply-accumulates per instruction.
+
+**Best for:** Wider MLPs where weight memory bandwidth or cache
+footprint is the bottleneck — int8 weights are 4x smaller than f32, so
+more of the model stays resident in cache. Deploy a PyTorch model that
+was trained or post-training-quantized to int8 with minimal accuracy
+loss.
+
+**Guidance:** Quantization is approximate — verify outputs against your
+f32 baseline; the deviation is small for well-calibrated models but not
+zero. Symmetric quantization is simplest and slightly faster; reach for
+asymmetric only when activations are skewed. For the small `[n_signals,
+16, 1]`-style models that dominate real-time signal combination, plain
+`Mlp` is simpler and the quantization overhead may not pay off — use
+`QuantizedMlp` when the model is large enough that i8 weights
+meaningfully help.
+
+### Binary Neural Network — `Bnn`
+
+Feedforward network with binary (±1) hidden weights. The binary matmul
+reduces to XNOR + popcount — a dot product becomes
+`2 * popcount(xnor) - H` over packed 64-bit words, replacing
+multiply-accumulate with bitwise operations. Input and output layers
+remain f32; only the hidden layers are binarized.
+
+**Best for:** The most extreme size/speed tradeoff — when maximum
+throughput matters and the task tolerates coarse weights. A hidden
+layer costs one popcount per 64 weights instead of 64 multiplies, so
+the win grows with hidden width.
+
+**Guidance:** Binary weights are a real accuracy reduction versus f32 or
+int8 — worth it only when the speed and size win is essential. Hidden
+size must be a multiple of 64 (the packing word size). Train with a
+binarization-aware method externally; naively binarizing arbitrary f32
+weights will not produce a usable model.
+
 ### Lookup Table — `Lut`
 
 Pre-computed prediction table indexed by discretized features. Each
@@ -215,23 +259,70 @@ a partially filled buffer (zero-padded). Activation is configurable
 not a gating mechanism. Small kernels (3-8) and moderate filter counts
 (8-32) are typical for real-time use.
 
+### Temporal Convolutional Network — `TinyTcn`
+
+A stack of dilated causal 1D convolutions. Each layer doubles its
+dilation (1, 2, 4, ...), so the receptive field grows exponentially
+with depth while each layer stays cheap. Like `Causal1dConv` it is
+causal (no future leakage) and streaming (a circular history buffer per
+layer), but the dilation stack reaches much farther back in time than a
+single convolution.
+
+**Best for:** Fixed-horizon temporal patterns that span more history
+than one `Causal1dConv` kernel can cover, where you want a hard, bounded
+receptive field rather than the open-ended memory of an RNN. The
+exponential dilation captures multi-scale structure — short and
+longer-range — in one model. Often a strong, cheap alternative to
+LSTM/GRU when the relevant horizon is known and bounded.
+
+**Guidance:** The receptive field is
+`(kernel_size - 1) * (2^num_layers - 1) + 1` — choose `num_layers` to
+cover the horizon you care about. `is_primed()` reports when enough
+history has accumulated. Keep filter counts modest (8-32) for real-time
+use.
+
+### Linear State-Space Model — `LinearSsm`
+
+A diagonal linear recurrence (S4/S4D-style):
+`h_t = A ⊙ h_{t-1} + B @ u_t`, `y_t = C @ h_t + D @ u_t`, with
+pre-discretized dynamics. The state update is one element-wise
+multiply-add plus two matmuls — no transcendental gate activations,
+unlike LSTM/GRU.
+
+**Best for:** Long-range temporal dependencies at lower per-step cost
+than gated RNNs. The diagonal linear recurrence is cheap (no
+sigmoid/tanh gates) and numerically stable, and state-space models
+capture long memory well. Use it when you need RNN-like sequence memory
+but want to avoid the gate compute and the training difficulty of
+LSTMs.
+
+**Guidance:** The dynamics are pre-discretized at training time and
+loaded as-is — train the SSM externally (diagonal `A`, plus `B`/`C`/`D`).
+With no gating the output is a linear function of state, so
+nonlinearity must come from how you consume the output or from
+stacking. Hidden size in the usual real-time range (8-64).
+
 ## Choosing a Model
 
 | Scenario | Model | Why |
 |----------|-------|-----|
 | Tabular features, named metrics | GBDT | Native feature interactions, no normalization needed |
 | Combining multiple signals | MLP | Learns nonlinear combinations of pre-computed features |
+| Cache-bound wider MLP | QuantizedMlp | int8 weights (4x smaller), integer matmul |
+| Max throughput, coarse weights OK | Bnn | XNOR + popcount hidden layers |
 | Ultra-low-latency, few features | LUT | O(1), pre-computed, no arithmetic |
 | Temporal patterns, long memory | LSTM | Cell state retains information over many steps |
 | Temporal patterns, fast & simple | GRU | Simpler than LSTM, often comparable quality |
 | Complex temporal, more capacity | Stacked LSTM/GRU | Multiple layers learn hierarchical features |
 | Short-range temporal, fixed window | Conv | Fixed receptive field, cheaper than recurrent |
+| Multi-scale temporal, bounded horizon | TCN | Dilated causal conv, exponential receptive field |
+| Long memory, no gate cost | LinearSsm | Diagonal linear recurrence, no transcendentals |
 | Two-stage pipeline | GBDT → MLP | Signals from trees, combined by network |
 | Streaming regime detection | LSTM or GRU | Hidden state accumulates evidence over time |
 
 ## Features
 
-- `safetensors` (default) — PyTorch safetensors loader for MLP, LSTM, GRU, Stacked LSTM/GRU, Conv
+- `safetensors` (default) — PyTorch safetensors loader for MLP, QuantizedMlp, BNN, LSTM, GRU, Stacked LSTM/GRU, Conv, TCN, SSM
 - `loader-lightgbm` (default) — LightGBM text format parser
 
 ## Usage
@@ -285,3 +376,22 @@ Target latency for typical configurations (single-threaded, AVX2+FMA):
 | GRU  | hidden=32, input=8, 2 layers | ~600 ns |
 | GRU  | hidden=32, input=8, 3 layers | ~900 ns |
 | Conv | 8 filters, kernel=4, 4 channels | ~50 ns |
+
+### Build flags for SIMD
+
+The AVX2/AVX-512 kernels are **compile-time gated**. A default
+`cargo build` targets baseline x86-64 (SSE2) and runs the scalar
+fallback — correct, but without the vectorized matmul, gate, and
+integer kernels. To get the SIMD paths, build with the target features
+enabled:
+
+```sh
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+# or explicitly:
+RUSTFLAGS="-C target-feature=+avx2,+fma" cargo build --release
+```
+
+This is deliberate: latency-sensitive deployments compile for their
+exact target CPU, and compile-time gating avoids any per-call
+feature-detection overhead on the hot path. The numbers above assume an
+AVX2+FMA build.

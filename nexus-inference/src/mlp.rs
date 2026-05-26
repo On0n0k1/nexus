@@ -1,7 +1,7 @@
 use crate::LoadError;
+use crate::Scratch;
 use crate::activation::{Activation, activate_f32};
 use crate::dot::{dot_f32, dot4_f32};
-use crate::Scratch;
 
 /// Fast f32 inverse sqrt via bit manipulation + Newton-Raphson.
 /// Used by the scalar LayerNorm fallback on non-SIMD platforms.
@@ -44,6 +44,14 @@ fn mlp_tiled_simd_f32(
         Activation::Identity
     };
 
+    // SAFETY: this fn is cfg-gated to x86_64 + (avx512f | avx2+fma), so every
+    // intrinsic below (_mm256_/_mm_ loads, stores, and the dot kernels) is
+    // available on the target. Pointer offsets stay in bounds: the 8-wide loop
+    // holds `j + 8 <= out_size_8 <= out_size_4` and the 4-wide tail holds
+    // `j + 4 <= out_size_4`, and the caller guarantees `biases.len()` and
+    // `dst.len()` are at least `out_size_4`. Loads/stores are unaligned
+    // (loadu/storeu), so there is no alignment precondition; row slices use
+    // checked indexing.
     unsafe {
         // 8-wide loop (requires in_size >= 32 to amortize dot8 overhead)
         if in_size >= 32 {
@@ -173,6 +181,10 @@ fn layer_norm_simd_f32(
         all(target_feature = "avx2", target_feature = "fma"),
     )
 ))]
+/// Horizontal sum of an 8-lane AVX2 vector.
+///
+/// # Safety
+/// Caller must run on a target with AVX2 enabled.
 #[inline(always)]
 unsafe fn hsum256_f32(v: core::arch::x86_64::__m256) -> f32 {
     use core::arch::x86_64::*;
@@ -566,19 +578,7 @@ impl Mlp {
     }
 }
 
-impl crate::Model for Mlp {
-    fn predict(&mut self, input: &[f32]) -> f32 {
-        Mlp::predict(self, input)
-    }
-    fn predict_into(&mut self, input: &[f32], output: &mut [f32]) {
-        Mlp::predict_into(self, input, output);
-    }
-    fn n_outputs(&self) -> usize {
-        Mlp::n_outputs(self)
-    }
-}
-
-impl crate::StatelessModel for Mlp {}
+crate::impl_model!(Mlp, stateless);
 
 #[cfg(test)]
 mod tests {

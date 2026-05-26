@@ -3,6 +3,10 @@ use core::arch::x86_64::*;
 
 use super::scalar;
 
+/// Horizontal sum of a 16-lane AVX-512 vector.
+///
+/// # Safety
+/// Caller must run on a target with AVX-512F enabled.
 #[inline]
 #[cfg(target_arch = "x86_64")]
 unsafe fn hsum_f32(v: __m512) -> f32 {

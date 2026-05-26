@@ -102,3 +102,32 @@ pub(crate) fn apply_gru_gates(
         }
     }
 }
+
+/// Fuse PyTorch's separate input/hidden gate weights into the single
+/// `(gate_count, input_size + hidden_size)` matrix the fused LSTM matvec
+/// expects, and sum the paired biases. `gate_count` is `4 * hidden_size`.
+///
+/// Shared by `TinyLstm` and each layer of `StackedLstm`.
+pub(crate) fn fuse_lstm_gate_weights(
+    weight_ih: &[f32],
+    weight_hh: &[f32],
+    bias_ih: &[f32],
+    bias_hh: &[f32],
+    input_size: usize,
+    hidden_size: usize,
+    gate_count: usize,
+) -> (Vec<f32>, Vec<f32>) {
+    let concat_size = input_size + hidden_size;
+    let mut w_gates = vec![0.0_f32; gate_count * concat_size];
+    for j in 0..gate_count {
+        w_gates[j * concat_size..j * concat_size + input_size]
+            .copy_from_slice(&weight_ih[j * input_size..(j + 1) * input_size]);
+        w_gates[j * concat_size + input_size..(j + 1) * concat_size]
+            .copy_from_slice(&weight_hh[j * hidden_size..(j + 1) * hidden_size]);
+    }
+    let mut b_gates = vec![0.0_f32; gate_count];
+    for j in 0..gate_count {
+        b_gates[j] = bias_ih[j] + bias_hh[j];
+    }
+    (w_gates, b_gates)
+}

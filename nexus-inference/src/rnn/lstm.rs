@@ -16,7 +16,7 @@ use super::{sigmoid_f32, tanh_f32};
 /// Four gates (input, forget, cell candidate, output) with hidden and
 /// cell state carried between steps. Trained externally (PyTorch),
 /// loaded via [`from_parts`](Self::from_parts), one timestep per
-/// [`step`](Self::step) call.
+/// [`predict`](Self::predict) call.
 ///
 /// Gate activations are hardcoded: sigmoid for input/forget/output
 /// gates, tanh for cell candidate and output nonlinearity. This
@@ -90,15 +90,14 @@ impl TinyLstm {
         w_out: &[f32],
         b_out: &[f32],
     ) -> Result<Self, LoadError> {
-        if input_size == 0 || hidden_size == 0 || output_size == 0 {
-            return Err(LoadError::Validation("sizes must be > 0"));
-        }
-        if input_size > u16::MAX as usize
-            || hidden_size > u16::MAX as usize
-            || output_size > u16::MAX as usize
-        {
-            return Err(LoadError::Validation("size exceeds u16::MAX"));
-        }
+        crate::validate::require_nonzero(
+            &[input_size, hidden_size, output_size],
+            "sizes must be > 0",
+        )?;
+        crate::validate::require_u16(
+            &[input_size, hidden_size, output_size],
+            "size exceeds u16::MAX",
+        )?;
 
         let gate_count = 4 * hidden_size;
         let concat_size = input_size + hidden_size;
@@ -122,31 +121,27 @@ impl TinyLstm {
             return Err(LoadError::Validation("b_out length mismatch"));
         }
 
-        for &w in weight_ih
-            .iter()
-            .chain(weight_hh)
-            .chain(bias_ih)
-            .chain(bias_hh)
-            .chain(w_out)
-            .chain(b_out)
-        {
-            if !w.is_finite() {
-                return Err(LoadError::Validation("non-finite weight"));
-            }
-        }
+        crate::validate::require_all_finite(
+            weight_ih
+                .iter()
+                .chain(weight_hh)
+                .chain(bias_ih)
+                .chain(bias_hh)
+                .chain(w_out)
+                .chain(b_out)
+                .copied(),
+            "non-finite weight",
+        )?;
 
-        let mut w_gates = vec![0.0_f32; gate_count * concat_size];
-        for j in 0..gate_count {
-            w_gates[j * concat_size..j * concat_size + input_size]
-                .copy_from_slice(&weight_ih[j * input_size..(j + 1) * input_size]);
-            w_gates[j * concat_size + input_size..(j + 1) * concat_size]
-                .copy_from_slice(&weight_hh[j * hidden_size..(j + 1) * hidden_size]);
-        }
-
-        let mut b_gates = vec![0.0_f32; gate_count];
-        for j in 0..gate_count {
-            b_gates[j] = bias_ih[j] + bias_hh[j];
-        }
+        let (w_gates, b_gates) = super::fuse_lstm_gate_weights(
+            weight_ih,
+            weight_hh,
+            bias_ih,
+            bias_hh,
+            input_size,
+            hidden_size,
+            gate_count,
+        );
 
         Ok(Self {
             w_gates: w_gates.into_boxed_slice(),
@@ -262,17 +257,7 @@ impl TinyLstm {
     }
 }
 
-impl crate::Model for TinyLstm {
-    fn predict(&mut self, input: &[f32]) -> f32 {
-        TinyLstm::predict(self, input)
-    }
-    fn predict_into(&mut self, input: &[f32], output: &mut [f32]) {
-        TinyLstm::predict_into(self, input, output);
-    }
-    fn n_outputs(&self) -> usize {
-        TinyLstm::n_outputs(self)
-    }
-}
+crate::impl_model!(TinyLstm);
 
 #[cfg(test)]
 mod tests {

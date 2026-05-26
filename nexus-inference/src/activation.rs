@@ -135,6 +135,9 @@ pub(crate) mod simd {
     use core::arch::x86_64::*;
 
     /// AVX2 vectorized Padé [7,6] tanh on 8 lanes.
+    ///
+    /// # Safety
+    /// Caller must run on a target with AVX2 and FMA enabled.
     #[inline(always)]
     pub(crate) unsafe fn tanh_8wide(x: __m256) -> __m256 {
         unsafe {
@@ -161,6 +164,9 @@ pub(crate) mod simd {
     }
 
     /// AVX2 vectorized sigmoid: 0.5 + 0.5 * tanh(x * 0.5)
+    ///
+    /// # Safety
+    /// Caller must run on a target with AVX2 and FMA enabled.
     #[inline(always)]
     pub(crate) unsafe fn sigmoid_8wide(x: __m256) -> __m256 {
         unsafe {
@@ -171,12 +177,18 @@ pub(crate) mod simd {
     }
 
     /// AVX2 vectorized swish: x * sigmoid(x)
+    ///
+    /// # Safety
+    /// Caller must run on a target with AVX2 and FMA enabled.
     #[inline(always)]
     pub(crate) unsafe fn swish_8wide(x: __m256) -> __m256 {
         unsafe { _mm256_mul_ps(x, sigmoid_8wide(x)) }
     }
 
     /// AVX2 vectorized GELU (tanh approximation).
+    ///
+    /// # Safety
+    /// Caller must run on a target with AVX2 and FMA enabled.
     #[inline(always)]
     pub(crate) unsafe fn gelu_8wide(x: __m256) -> __m256 {
         unsafe {
@@ -199,6 +211,9 @@ pub(crate) mod simd {
     /// Apply activation to 8 values in an __m256 register.
     /// Returns None for activations not handled in SIMD (ELU, LeakyRelu with
     /// non-trivial alpha). Caller falls through to scalar for those.
+    ///
+    /// # Safety
+    /// Caller must run on a target with AVX2 and FMA enabled.
     #[inline(always)]
     pub(crate) unsafe fn activate_8wide(
         v: __m256,
@@ -224,6 +239,9 @@ pub(crate) mod simd {
     }
 
     /// Apply activation to 4 values in an __m128 register.
+    ///
+    /// # Safety
+    /// Caller must run on a target with AVX2 and FMA enabled.
     #[inline(always)]
     pub(crate) unsafe fn activate_4wide(
         v: __m128,
@@ -253,6 +271,10 @@ pub(crate) mod simd {
 pub(crate) mod simd512 {
     use core::arch::x86_64::*;
 
+    /// AVX-512 vectorized Padé [7,6] tanh on 16 lanes.
+    ///
+    /// # Safety
+    /// Caller must run on a target with AVX-512F enabled.
     #[inline(always)]
     pub(crate) unsafe fn tanh_16wide(x: __m512) -> __m512 {
         unsafe {
@@ -278,6 +300,10 @@ pub(crate) mod simd512 {
         }
     }
 
+    /// AVX-512 vectorized sigmoid: 0.5 + 0.5 * tanh(x * 0.5)
+    ///
+    /// # Safety
+    /// Caller must run on a target with AVX-512F enabled.
     #[inline(always)]
     pub(crate) unsafe fn sigmoid_16wide(x: __m512) -> __m512 {
         unsafe {

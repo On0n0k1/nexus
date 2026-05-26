@@ -3,6 +3,10 @@ use core::arch::x86_64::*;
 
 use super::scalar;
 
+/// Horizontal sum of an 8-lane AVX2 vector.
+///
+/// # Safety
+/// Caller must run on a target with AVX2 enabled.
 #[inline]
 #[cfg(target_arch = "x86_64")]
 unsafe fn hsum_f32(v: __m256) -> f32 {

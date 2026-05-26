@@ -145,6 +145,9 @@ impl Gbdt {
         let base = self.nodes.as_ptr();
         let mut score = self.base_score;
         for &offset in &*self.tree_offsets {
+            // SAFETY: every `offset` in `tree_offsets` is a valid root index
+            // into `self.nodes` (the buffer `base` points into), established at
+            // construction; see walk_tree's SAFETY note. `add` stays in bounds.
             score += Self::walk_tree(unsafe { base.add(offset as usize) }, features, false);
         }
         score
@@ -164,6 +167,9 @@ impl Gbdt {
         let base = self.nodes.as_ptr();
         let mut score = self.base_score;
         for &offset in &*self.tree_offsets {
+            // SAFETY: every `offset` in `tree_offsets` is a valid root index
+            // into `self.nodes` (the buffer `base` points into), established at
+            // construction; see walk_tree's SAFETY note. `add` stays in bounds.
             score += Self::walk_tree(unsafe { base.add(offset as usize) }, features, true);
         }
         score
@@ -178,6 +184,9 @@ impl Gbdt {
         let base = self.nodes.as_ptr();
         let mut score = self.base_score;
         for &offset in &self.tree_offsets[..n] {
+            // SAFETY: every `offset` in `tree_offsets` is a valid root index
+            // into `self.nodes` (the buffer `base` points into), established at
+            // construction; see walk_tree's SAFETY note. `add` stays in bounds.
             score += Self::walk_tree(unsafe { base.add(offset as usize) }, features, false);
         }
         score
@@ -192,6 +201,9 @@ impl Gbdt {
         let base = self.nodes.as_ptr();
         let mut score = self.base_score;
         for &offset in &self.tree_offsets[..n] {
+            // SAFETY: every `offset` in `tree_offsets` is a valid root index
+            // into `self.nodes` (the buffer `base` points into), established at
+            // construction; see walk_tree's SAFETY note. `add` stays in bounds.
             score += Self::walk_tree(unsafe { base.add(offset as usize) }, features, true);
         }
         score
@@ -304,19 +316,7 @@ impl Gbdt {
     }
 }
 
-impl crate::Model for Gbdt {
-    fn predict(&mut self, input: &[f32]) -> f32 {
-        Gbdt::predict(self, input)
-    }
-    fn predict_into(&mut self, input: &[f32], output: &mut [f32]) {
-        Gbdt::predict_into(self, input, output);
-    }
-    fn n_outputs(&self) -> usize {
-        Gbdt::n_outputs(self)
-    }
-}
-
-impl crate::StatelessModel for Gbdt {}
+crate::impl_model!(Gbdt, stateless);
 
 #[cfg(test)]
 mod tests {

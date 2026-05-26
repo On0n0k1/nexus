@@ -29,6 +29,8 @@
 use std::cell::UnsafeCell;
 
 mod activation;
+mod bnn;
+mod conv;
 mod dot;
 mod error;
 mod gbdt;
@@ -36,9 +38,8 @@ mod lut;
 mod mlp;
 mod quantized_mlp;
 mod rnn;
-mod bnn;
 mod ssm;
-mod conv;
+mod validate;
 
 #[cfg(any(feature = "loader-lightgbm", feature = "safetensors"))]
 mod loader;
@@ -85,6 +86,30 @@ pub trait Model {
 /// Stateless models (GBDT, MLP, LUT, BNN, QuantizedMLP) also provide
 /// inherent `predict(&self)` methods for use without exclusive access.
 pub trait StatelessModel: Model {}
+
+/// Generate the `Model` trait impl for a model type by delegating to its
+/// inherent `predict` / `predict_into` / `n_outputs` methods. Pass a trailing
+/// `, stateless` to also mark the type [`StatelessModel`].
+macro_rules! impl_model {
+    ($ty:ty) => {
+        impl $crate::Model for $ty {
+            fn predict(&mut self, input: &[f32]) -> f32 {
+                <$ty>::predict(self, input)
+            }
+            fn predict_into(&mut self, input: &[f32], output: &mut [f32]) {
+                <$ty>::predict_into(self, input, output);
+            }
+            fn n_outputs(&self) -> usize {
+                <$ty>::n_outputs(self)
+            }
+        }
+    };
+    ($ty:ty, stateless) => {
+        $crate::impl_model!($ty);
+        impl $crate::StatelessModel for $ty {}
+    };
+}
+pub(crate) use impl_model;
 
 /// Interior-mutable scratch buffer for stateless models.
 ///

@@ -1,6 +1,6 @@
 use crate::LoadError;
-use crate::activation::{Activation, activate_f32};
 use crate::Scratch;
+use crate::activation::{Activation, activate_f32};
 
 #[derive(Debug, Clone)]
 struct QuantLayer {
@@ -108,6 +108,10 @@ fn matvec_i8_i32_simd(
 ) -> usize {
     use core::arch::x86_64::*;
 
+    /// Horizontal sum of an 8-lane i32 AVX2 vector.
+    ///
+    /// # Safety
+    /// Caller must run on a target with AVX2 enabled.
     #[inline(always)]
     unsafe fn hsum_i32(acc: core::arch::x86_64::__m256i) -> i32 {
         unsafe {
@@ -560,19 +564,7 @@ impl QuantizedMlp {
     }
 }
 
-impl crate::Model for QuantizedMlp {
-    fn predict(&mut self, input: &[f32]) -> f32 {
-        QuantizedMlp::predict(self, input)
-    }
-    fn predict_into(&mut self, input: &[f32], output: &mut [f32]) {
-        QuantizedMlp::predict_into(self, input, output);
-    }
-    fn n_outputs(&self) -> usize {
-        QuantizedMlp::n_outputs(self)
-    }
-}
-
-impl crate::StatelessModel for QuantizedMlp {}
+crate::impl_model!(QuantizedMlp, stateless);
 
 #[cfg(test)]
 mod tests {

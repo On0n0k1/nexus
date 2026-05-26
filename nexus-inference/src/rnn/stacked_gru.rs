@@ -91,16 +91,15 @@ impl GruLayer {
             return Err(LoadError::Validation("bias_hh length mismatch"));
         }
 
-        for &w in weight_ih
-            .iter()
-            .chain(weight_hh)
-            .chain(bias_ih)
-            .chain(bias_hh)
-        {
-            if !w.is_finite() {
-                return Err(LoadError::Validation("non-finite weight"));
-            }
-        }
+        crate::validate::require_all_finite(
+            weight_ih
+                .iter()
+                .chain(weight_hh)
+                .chain(bias_ih)
+                .chain(bias_hh)
+                .copied(),
+            "non-finite weight",
+        )?;
 
         Ok(Self {
             weight_ih: weight_ih.into(),
@@ -181,26 +180,24 @@ impl StackedGru {
                 "all per-layer weight slices must have the same length",
             ));
         }
-        if input_size == 0 || hidden_size == 0 || output_size == 0 {
-            return Err(LoadError::Validation("sizes must be > 0"));
-        }
-        if input_size > u16::MAX as usize
-            || hidden_size > u16::MAX as usize
-            || output_size > u16::MAX as usize
-        {
-            return Err(LoadError::Validation("size exceeds u16::MAX"));
-        }
+        crate::validate::require_nonzero(
+            &[input_size, hidden_size, output_size],
+            "sizes must be > 0",
+        )?;
+        crate::validate::require_u16(
+            &[input_size, hidden_size, output_size],
+            "size exceeds u16::MAX",
+        )?;
         if w_out.len() != output_size * hidden_size {
             return Err(LoadError::Validation("w_out length mismatch"));
         }
         if b_out.len() != output_size {
             return Err(LoadError::Validation("b_out length mismatch"));
         }
-        for &w in w_out.iter().chain(b_out) {
-            if !w.is_finite() {
-                return Err(LoadError::Validation("non-finite weight"));
-            }
-        }
+        crate::validate::require_all_finite(
+            w_out.iter().chain(b_out).copied(),
+            "non-finite weight",
+        )?;
 
         let mut layers = Vec::with_capacity(num_layers);
         for k in 0..num_layers {
@@ -320,17 +317,7 @@ impl StackedGru {
     }
 }
 
-impl crate::Model for StackedGru {
-    fn predict(&mut self, input: &[f32]) -> f32 {
-        StackedGru::predict(self, input)
-    }
-    fn predict_into(&mut self, input: &[f32], output: &mut [f32]) {
-        StackedGru::predict_into(self, input, output);
-    }
-    fn n_outputs(&self) -> usize {
-        StackedGru::n_outputs(self)
-    }
-}
+crate::impl_model!(StackedGru);
 
 #[cfg(test)]
 mod tests {

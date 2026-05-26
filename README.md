@@ -27,67 +27,41 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    Applications                         │
-│            (Trading systems, event loops)               │
-└──────────────────────┬──────────────────────────────────┘
-                       │
-    ┌──────────────────┼──────────────────┐
-    ▼                  ▼                  ▼
-┌────────────┐  ┌────────────────┐  ┌──────────────────┐
-│  nexus-rt  │  │ nexus-async-net│  │ nexus-stats      │
-│  (runtime) │  │ nexus-net      │  │ nexus-rate       │
-│            │  │ (networking)   │  │ nexus-inference  │
-│  World     │  │                │  │ (monitoring,     │
-│  Handlers  │  │  WebSocket     │  │  flow control,   │
-│  Pipelines │  │  REST HTTP/1.1 │  │  ML inference)   │
-│  Drivers   │  │  TLS, pools    │  │                  │
-└─────┬──────┘  └───────┬────────┘  └──────────────────┘
-      │                 │
-      └────────┬────────┘
-               ▼
-┌─────────────────────────────────────────────────────────┐
-│                     Primitives                          │
-│                                                         │
-│  nexus-queue    nexus-slab     nexus-id     nexus-bits  │
-│  nexus-channel  nexus-pool     nexus-ascii              │
-│  nexus-notify   nexus-timer    nexus-logbuf             │
-│  nexus-slot     nexus-collections  nexus-smartptr       │
-│  nexus-decimal                                          │
+│                        *Runtime*                        │
+│             rt · async-rt* · timer · + tokio            │
+├─────────────────────────────────────────────────────────┤
+│                       *Analytics*                       │
+│                   stats-* · inference                   │
+├─────────────────────────────────────────────────────────┤
+│                       *Networking*                      │
+│                     net · async-net                     │
+├─────────────────────────────────────────────────────────┤
+│                      *Concurrency*                      │
+│         queue · channel · slot · notify · logbuf        │
+├─────────────────────────────────────────────────────────┤
+│                 *Collections & Flow Control*            │
+│                    collections · rate                   │
+├─────────────────────────────────────────────────────────┤
+│                        *Storage*                        │
+│                  slab · pool · smartptr                 │
+├─────────────────────────────────────────────────────────┤
+│                         *Types*                         │
+│               bits · ascii · id · decimal               │
 └─────────────────────────────────────────────────────────┘
+
+* async-rt is experimental — use tokio for production async workloads
 ```
 
 ## Crates
 
-### Runtime
+### Types & Encoding
 
 | Crate | Description |
 |-------|-------------|
-| [**nexus-rt**](./nexus-rt) | Event-driven runtime. World/ECS resource model, handler dispatch, pipelines, DAGs, driver system, clock. No async/await — explicit poll loops with monomorphized zero-cost dispatch. |
-| [**nexus-async-rt**](./nexus-async-rt) | Single-threaded async executor for nexus-rt applications. Slab-allocated tasks, zero-allocation waker vtable, mio-backed IO driver, timer wheel, signal handling. Optional tokio compatibility layer for bridging cold-path operations. Use when you need `.await` on top of nexus-rt. |
-
-### Monitoring & Flow Control
-
-| Crate | Description |
-|-------|-------------|
-| [**nexus-stats**](./nexus-stats) | 70+ streaming statistics algorithms across 5 subcrates (core, smoothing, detection, regression, control). EMA, CUSUM, Welford, Kalman, KAMA, change detection, anomaly filtering, online regression, and more. O(1) per update, fixed memory, `no_std`. |
-| [**nexus-rate**](./nexus-rate) | Rate limiting. GCRA, token bucket, sliding window counter. Single-threaded and thread-safe variants. Weighted requests. ~2-4 cycle hot path. |
-
-### Networking
-
-| Crate | Description |
-|-------|-------------|
-| [**nexus-net**](./nexus-net) | Sans-IO WebSocket (RFC 6455) and HTTP/1.1 REST primitives. Zero-copy, SIMD-accelerated. 3x faster than tungstenite, 3x faster than reqwest. Typestate request builder, chunked transfer encoding, connection poisoning. 517/517 Autobahn + 16/16 httpbin conformance. |
-| [**nexus-async-net**](./nexus-async-net) | Async adapters for nexus-net. Tokio-compatible. WebSocket `WsStream<S>`, HTTP `AsyncHttpConnection<S>`, and `ClientPool`/`AtomicClientPool` with self-healing reconnect. `try_acquire` (fast path) and `acquire` (patient path with backoff). 3.5x faster than tokio-tungstenite. |
-
-### Communication & Notification
-
-| Crate | Description |
-|-------|-------------|
-| [**nexus-queue**](./nexus-queue) | Lock-free SPSC, MPSC, and SPMC ring buffers with per-slot lap counters. Index-based (NUMA-friendly) and slot-based (shared-L3 friendly) implementations. |
-| [**nexus-channel**](./nexus-channel) | Blocking SPSC channel built on nexus-queue. Three-phase backoff (spin → yield → park) minimizes syscalls under load. |
-| [**nexus-notify**](./nexus-notify) | Cross-thread event queue with conflation and FIFO delivery. Non-blocking `event_queue` and blocking `event_channel`. Dedup flags + MPSC ring buffer — O(limit) poll, ~5 cycles/token. |
-| [**nexus-slot**](./nexus-slot) | Single-value conflation slot. Writer always overwrites, reader gets latest value exactly once. For "latest wins" patterns like market data snapshots. |
-| [**nexus-logbuf**](./nexus-logbuf) | Bounded SPSC and MPSC byte ring buffers. Claim-based API for variable-length messages. The hot-path primitive for getting data off the event loop without syscalls. |
+| [**nexus-bits**](./nexus-bits) | Bit-packed integer newtypes via derive macros. Structs, tagged enums, `IntEnum` for discriminants. Zero-cost `#[repr(transparent)]` with compile-time validation. |
+| [**nexus-ascii**](./nexus-ascii) | Fixed-capacity ASCII strings. Stack-allocated, immutable, with precomputed 48-bit XXH3 hash. Identity-hashable via `nohash` feature for zero-cost lookups. |
+| [**nexus-id**](./nexus-id) | High-performance ID generators: Snowflake, UUID v4/v7, ULID. SIMD-accelerated hex encode/decode. Fibonacci mixing for identity hashers. |
+| [**nexus-decimal**](./nexus-decimal) | Fixed-point decimal arithmetic with compile-time precision. `Decimal<i64, 8>` for prices, `Decimal<i128, 12>` for DeFi. Const fn, `no_std`, zero allocation. Financial methods: midpoint, tick rounding, basis points. Chunked magic division avoids `__divti3`. |
 
 ### Storage & Allocation
 
@@ -95,7 +69,6 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 |-------|-------------|
 | [**nexus-slab**](./nexus-slab) | Manual memory management with SLUB-style slab allocation. `bounded::Slab` (fixed capacity) and `unbounded::Slab` (growable via chunks). `rc` feature adds `RcSlot` with borrow guards for shared ownership. 1 cycle alloc, sub-cycle free. |
 | [**nexus-pool**](./nexus-pool) | Object pools with RAII guards. Single-threaded `BoundedPool` and thread-safe `sync::Pool` (one acquirer, any returner). |
-| [**nexus-timer**](./nexus-timer) | Hierarchical timer wheel with O(1) insert and cancel. No-cascade design inspired by the Linux kernel. Slab-backed, zero allocation after init. |
 | [**nexus-smartptr**](./nexus-smartptr) | Inline and flexible smart pointers for type-erased storage. `FlatBox` (fixed inline), `FlexBox` (inline or heap). Avoids boxing for small handler types. |
 
 ### Collections
@@ -104,25 +77,62 @@ Each crate is small, focused, and honest about its constraints. No kitchen sinks
 |-------|-------------|
 | [**nexus-collections**](./nexus-collections) | Slab-backed intrusive collections. O(1) linked lists, O(log n) heaps, red-black trees, B-trees. External allocation via `nexus-slab` — user owns the slab, collection wires pointers. 2-3 cycle list operations, 15 cycle tree lookups. |
 
-### Numeric
+### Flow Control
 
 | Crate | Description |
 |-------|-------------|
-| [**nexus-decimal**](./nexus-decimal) | Fixed-point decimal arithmetic with compile-time precision. `Decimal<i64, 8>` for prices, `Decimal<i128, 12>` for DeFi. Const fn, `no_std`, zero allocation. Financial methods: midpoint, tick rounding, basis points. Chunked magic division avoids `__divti3`. |
+| [**nexus-rate**](./nexus-rate) | Rate limiting. GCRA, token bucket, sliding window counter. Single-threaded and thread-safe variants. Weighted requests. ~2-4 cycle hot path. |
+
+### Concurrency & Communication
+
+| Crate | Description |
+|-------|-------------|
+| [**nexus-queue**](./nexus-queue) | Lock-free SPSC, MPSC, and SPMC ring buffers with per-slot lap counters. Index-based (NUMA-friendly) and slot-based (shared-L3 friendly) implementations. |
+| [**nexus-channel**](./nexus-channel) | Blocking SPSC channel built on nexus-queue. Three-phase backoff (spin → yield → park) minimizes syscalls under load. |
+| [**nexus-slot**](./nexus-slot) | Single-value conflation slot. Writer always overwrites, reader gets latest value exactly once. For "latest wins" patterns like market data snapshots. |
+| [**nexus-notify**](./nexus-notify) | Cross-thread event queue with conflation and FIFO delivery. Non-blocking `event_queue` and blocking `event_channel`. Dedup flags + MPSC ring buffer — O(limit) poll, ~5 cycles/token. |
+| [**nexus-logbuf**](./nexus-logbuf) | Bounded SPSC and MPSC byte ring buffers. Claim-based API for variable-length messages. The hot-path primitive for getting data off the event loop without syscalls. |
+
+### Networking
+
+| Crate | Description |
+|-------|-------------|
+| [**nexus-net**](./nexus-net) | Sans-IO WebSocket (RFC 6455) and HTTP/1.1 REST primitives. Zero-copy, SIMD-accelerated. 3x faster than tungstenite, 3x faster than reqwest. Typestate request builder, chunked transfer encoding, connection poisoning. 517/517 Autobahn + 16/16 httpbin conformance. |
+| [**nexus-async-net**](./nexus-async-net) | Async adapters for nexus-net. Tokio-compatible. WebSocket `WsStream<S>`, HTTP `AsyncHttpConnection<S>`, and `ClientPool`/`AtomicClientPool` with self-healing reconnect. `try_acquire` (fast path) and `acquire` (patient path with backoff). 3.5x faster than tokio-tungstenite. |
+
+### Runtime
+
+| Crate | Description |
+|-------|-------------|
+| [**nexus-rt**](./nexus-rt) | Event-driven runtime. World/ECS resource model, handler dispatch, pipelines, DAGs, driver system, clock. No async/await — explicit poll loops with monomorphized zero-cost dispatch. |
+| [**nexus-async-rt**](./nexus-async-rt) | **Experimental.** Single-threaded async executor. Slab-allocated tasks, zero-allocation waker vtable, mio-backed IO driver, timer wheel, signal handling. Not under active development — use tokio for production async workloads. |
+| [**nexus-timer**](./nexus-timer) | Hierarchical timer wheel with O(1) insert and cancel. No-cascade design inspired by the Linux kernel. Slab-backed, zero allocation after init. |
+
+### Streaming Statistics
+
+Fixed-memory, zero-allocation streaming analytics. All types are O(1) per
+update, designed for hot-path integration. The `nexus-stats` umbrella crate
+re-exports everything; the subcrates allow fine-grained dependency control.
+
+| Crate | Description |
+|-------|-------------|
+| [**nexus-stats**](./nexus-stats) | Umbrella crate — re-exports all subcrates below under a unified namespace. |
+| [**nexus-stats-core**](./nexus-stats-core) | Foundation types and core algorithms. Welford moments, EMA/AsymEMA, covariance, drawdown, min/max, percentile (P²), normalization (ZScore, MinMax, Quantile), microstructure (Amihud, KyleLambda, RollSpread, Bipower, TwoScaleRv), monitoring (CoDel, Jitter, Liveness, EventRate, Hawkes intensity). |
+| [**nexus-stats-smoothing**](./nexus-stats-smoothing) | Advanced smoothing. KAMA, Holt double exponential, Spring (critically damped), Kalman1d, Hampel filter, HuberEMA, ConditionalEMA, WindowedMedian. |
+| [**nexus-stats-detection**](./nexus-stats-detection) | Change detection and signal analysis. CUSUM, MOSUM, BOCPD, Shiryaev-Roberts, ADWIN, Page-Hinkley, distribution shift/drift, adaptive threshold, trend alert, entropy, transfer entropy, predictive information bound, autocorrelation, cross-correlation. |
+| [**nexus-stats-regression**](./nexus-stats-regression) | Online regression, learning, and estimation. Linear/polynomial/power/log/exponential regression (OLS + EW), Huber-robust regression, RLS/LMS/NLMS adaptive filters, logistic regression, online K-means, Kalman 2d/3d, online gradient descent, AdaGrad, Adam. |
+| [**nexus-stats-control**](./nexus-stats-control) | Control and frequency primitives. Dead band, hysteresis, debounce, level crossing, peak detector, bool window, TopK, proportion tracking, decay accumulator. |
 
 ### Inference
 
+Real-time CPU inference for small, pre-trained models. Train in Python
+(PyTorch, LightGBM), load once via `from_parts` or SafeTensors, predict
+millions of times. Sub-microsecond latency, zero allocation after
+construction, SIMD-accelerated (SSE2/AVX2/AVX-512).
+
 | Crate | Description |
 |-------|-------------|
-| [**nexus-inference**](./nexus-inference) | Real-time CPU inference for small, pre-trained models. GBDT (LightGBM-compatible), MLP, LUT, LSTM, GRU, and causal 1D convolution. Sub-microsecond prediction, zero allocation after construction. Models trained in PyTorch/LightGBM, exported as flat weight arrays. AVX2+FMA SIMD acceleration. |
-
-### Identity & Encoding
-
-| Crate | Description |
-|-------|-------------|
-| [**nexus-id**](./nexus-id) | High-performance ID generators: Snowflake, UUID v4/v7, ULID. SIMD-accelerated hex encode/decode. Fibonacci mixing for identity hashers. |
-| [**nexus-ascii**](./nexus-ascii) | Fixed-capacity ASCII strings. Stack-allocated, immutable, with precomputed 48-bit XXH3 hash. Identity-hashable via `nohash` feature for zero-cost lookups. |
-| [**nexus-bits**](./nexus-bits) | Bit-packed integer newtypes via derive macros. Structs, tagged enums, `IntEnum` for discriminants. Zero-cost `#[repr(transparent)]` with compile-time validation. |
+| [**nexus-inference**](./nexus-inference) | 12 model types across stateless and stateful inference. **Stateless:** GBDT (branchless traversal, NaN-aware, LightGBM-compatible), MLP (SIMD-tiled matmul, LayerNorm, 8 activations), LUT (O(1) lookup table), BNN (binary neural network, XNOR+popcount), QuantizedMLP (i8 weights, i32 accumulation). **Stateful:** LSTM, GRU, stacked LSTM/GRU, linear state-space model (S4/S4D), causal 1D convolution, temporal convolutional network (TCN). Stateless models use interior mutability (`&self`) for zero-contention sharing; stateful models carry hidden state between calls. SafeTensors and LightGBM JSON loaders. |
 
 ## Design Principles
 

@@ -92,29 +92,25 @@ impl LstmLayer {
             return Err(LoadError::Validation("bias_hh length mismatch"));
         }
 
-        for &w in weight_ih
-            .iter()
-            .chain(weight_hh)
-            .chain(bias_ih)
-            .chain(bias_hh)
-        {
-            if !w.is_finite() {
-                return Err(LoadError::Validation("non-finite weight"));
-            }
-        }
+        crate::validate::require_all_finite(
+            weight_ih
+                .iter()
+                .chain(weight_hh)
+                .chain(bias_ih)
+                .chain(bias_hh)
+                .copied(),
+            "non-finite weight",
+        )?;
 
-        let mut w_gates = vec![0.0_f32; gate_count * concat_size];
-        for j in 0..gate_count {
-            w_gates[j * concat_size..j * concat_size + layer_input_size]
-                .copy_from_slice(&weight_ih[j * layer_input_size..(j + 1) * layer_input_size]);
-            w_gates[j * concat_size + layer_input_size..(j + 1) * concat_size]
-                .copy_from_slice(&weight_hh[j * hidden_size..(j + 1) * hidden_size]);
-        }
-
-        let mut b_gates = vec![0.0_f32; gate_count];
-        for j in 0..gate_count {
-            b_gates[j] = bias_ih[j] + bias_hh[j];
-        }
+        let (w_gates, b_gates) = super::fuse_lstm_gate_weights(
+            weight_ih,
+            weight_hh,
+            bias_ih,
+            bias_hh,
+            layer_input_size,
+            hidden_size,
+            gate_count,
+        );
 
         Ok(Self {
             w_gates: w_gates.into_boxed_slice(),
@@ -184,26 +180,24 @@ impl StackedLstm {
                 "all per-layer weight slices must have the same length",
             ));
         }
-        if input_size == 0 || hidden_size == 0 || output_size == 0 {
-            return Err(LoadError::Validation("sizes must be > 0"));
-        }
-        if input_size > u16::MAX as usize
-            || hidden_size > u16::MAX as usize
-            || output_size > u16::MAX as usize
-        {
-            return Err(LoadError::Validation("size exceeds u16::MAX"));
-        }
+        crate::validate::require_nonzero(
+            &[input_size, hidden_size, output_size],
+            "sizes must be > 0",
+        )?;
+        crate::validate::require_u16(
+            &[input_size, hidden_size, output_size],
+            "size exceeds u16::MAX",
+        )?;
         if w_out.len() != output_size * hidden_size {
             return Err(LoadError::Validation("w_out length mismatch"));
         }
         if b_out.len() != output_size {
             return Err(LoadError::Validation("b_out length mismatch"));
         }
-        for &w in w_out.iter().chain(b_out) {
-            if !w.is_finite() {
-                return Err(LoadError::Validation("non-finite weight"));
-            }
-        }
+        crate::validate::require_all_finite(
+            w_out.iter().chain(b_out).copied(),
+            "non-finite weight",
+        )?;
 
         let mut layers = Vec::with_capacity(num_layers);
         for k in 0..num_layers {
@@ -333,17 +327,7 @@ impl StackedLstm {
     }
 }
 
-impl crate::Model for StackedLstm {
-    fn predict(&mut self, input: &[f32]) -> f32 {
-        StackedLstm::predict(self, input)
-    }
-    fn predict_into(&mut self, input: &[f32], output: &mut [f32]) {
-        StackedLstm::predict_into(self, input, output);
-    }
-    fn n_outputs(&self) -> usize {
-        StackedLstm::n_outputs(self)
-    }
-}
+crate::impl_model!(StackedLstm);
 
 #[cfg(test)]
 mod tests {

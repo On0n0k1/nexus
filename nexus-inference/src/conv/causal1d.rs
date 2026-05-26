@@ -134,16 +134,14 @@ impl Causal1dConv {
         b_out: &[f32],
         activation: Activation,
     ) -> Result<Self, LoadError> {
-        if input_ch == 0 || kernel_size == 0 || filters == 0 || output_size == 0 {
-            return Err(LoadError::Validation("sizes must be > 0"));
-        }
-        if input_ch > u16::MAX as usize
-            || kernel_size > u16::MAX as usize
-            || filters > u16::MAX as usize
-            || output_size > u16::MAX as usize
-        {
-            return Err(LoadError::Validation("size exceeds u16::MAX"));
-        }
+        crate::validate::require_nonzero(
+            &[input_ch, kernel_size, filters, output_size],
+            "sizes must be > 0",
+        )?;
+        crate::validate::require_u16(
+            &[input_ch, kernel_size, filters, output_size],
+            "size exceeds u16::MAX",
+        )?;
 
         if w_conv.len() != filters * kernel_size * input_ch {
             return Err(LoadError::Validation("w_conv length mismatch"));
@@ -158,11 +156,15 @@ impl Causal1dConv {
             return Err(LoadError::Validation("b_out length mismatch"));
         }
 
-        for &w in w_conv.iter().chain(b_conv).chain(w_out).chain(b_out) {
-            if !w.is_finite() {
-                return Err(LoadError::Validation("non-finite weight"));
-            }
-        }
+        crate::validate::require_all_finite(
+            w_conv
+                .iter()
+                .chain(b_conv)
+                .chain(w_out)
+                .chain(b_out)
+                .copied(),
+            "non-finite weight",
+        )?;
 
         Ok(Self {
             w_conv: w_conv.into(),
@@ -322,17 +324,7 @@ impl Causal1dConv {
     }
 }
 
-impl crate::Model for Causal1dConv {
-    fn predict(&mut self, input: &[f32]) -> f32 {
-        Causal1dConv::predict(self, input)
-    }
-    fn predict_into(&mut self, input: &[f32], output: &mut [f32]) {
-        Causal1dConv::predict_into(self, input, output);
-    }
-    fn n_outputs(&self) -> usize {
-        Causal1dConv::n_outputs(self)
-    }
-}
+crate::impl_model!(Causal1dConv);
 
 #[cfg(test)]
 mod tests {

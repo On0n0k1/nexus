@@ -3,7 +3,7 @@ use crate::dot::{dot_f32, matvec_f32};
 
 /// Linear state-space model with diagonal state transition.
 ///
-/// Pre-discretized dynamics applied once per [`step`](Self::step) call:
+/// Pre-discretized dynamics applied once per [`predict`](Self::predict) call:
 ///
 /// ```text
 /// h_t = A ⊙ h_{t-1} + B @ u_t
@@ -86,12 +86,10 @@ impl LinearSsm {
         if input_size == 0 {
             return Err(LoadError::Validation("sizes must be > 0"));
         }
-        if input_size > u16::MAX as usize
-            || hidden_size > u16::MAX as usize
-            || output_size > u16::MAX as usize
-        {
-            return Err(LoadError::Validation("size exceeds u16::MAX"));
-        }
+        crate::validate::require_u16(
+            &[input_size, hidden_size, output_size],
+            "size exceeds u16::MAX",
+        )?;
         if c.len() != output_size * hidden_size {
             return Err(LoadError::Validation("c length must be O * H"));
         }
@@ -99,11 +97,10 @@ impl LinearSsm {
             return Err(LoadError::Validation("d length must be O * I"));
         }
 
-        for &w in a_diag.iter().chain(b).chain(c).chain(d) {
-            if !w.is_finite() {
-                return Err(LoadError::Validation("non-finite weight"));
-            }
-        }
+        crate::validate::require_all_finite(
+            a_diag.iter().chain(b).chain(c).chain(d).copied(),
+            "non-finite weight",
+        )?;
 
         Ok(Self {
             a_diag: a_diag.into(),
@@ -189,17 +186,7 @@ impl LinearSsm {
     }
 }
 
-impl crate::Model for LinearSsm {
-    fn predict(&mut self, input: &[f32]) -> f32 {
-        LinearSsm::predict(self, input)
-    }
-    fn predict_into(&mut self, input: &[f32], output: &mut [f32]) {
-        LinearSsm::predict_into(self, input, output);
-    }
-    fn n_outputs(&self) -> usize {
-        LinearSsm::n_outputs(self)
-    }
-}
+crate::impl_model!(LinearSsm);
 
 #[cfg(test)]
 mod tests {

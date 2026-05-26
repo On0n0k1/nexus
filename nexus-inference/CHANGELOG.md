@@ -7,8 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-05-25
+
 ### Added
 
+- **`QuantizedMlp`** — Int8-quantized MLP. Per-layer affine quantization
+  (i8 weights, i32 accumulation, f32 activations), symmetric or
+  asymmetric, matching PyTorch `torch.ao.quantization`. AVX2 `maddubs`
+  integer matmul.
+- **`Bnn`** — Binary neural network. ±1 hidden weights via XNOR +
+  popcount (`2 * popcount - H`) over packed 64-bit words; f32
+  input/output layers. Hidden size must be a multiple of 64.
+- **`LinearSsm`** — Linear state-space model (S4/S4D). Diagonal
+  recurrence `h_t = A ⊙ h_{t-1} + B @ u_t`, `y_t = C @ h_t + D @ u_t`,
+  no transcendental gates.
+- **`TinyTcn`** — Temporal convolutional network. Stack of dilated
+  causal 1D convolutions (dilation `2^k`), exponential receptive field,
+  streaming circular history per layer.
+- **safetensors loader** — `from_safetensors` for MLP, QuantizedMlp,
+  BNN, LSTM, GRU, Stacked LSTM/GRU, Conv, TCN, SSM. PyTorch tensor-name
+  conventions, per-layer counts auto-detected. Behind the default
+  `safetensors` feature; PyTorch parity tested via regenerated fixtures.
+- **AVX-512 dispatch** — AVX-512F/BW kernels for dot products and RNN
+  gates, selected at compile time alongside the AVX2 and scalar tiers.
 - **`bias=False` support** — MLP safetensors loader handles PyTorch
   `nn.Linear(bias=False)`. Missing bias tensors are treated as zero bias.
 - **BatchNorm fusion** — `nn.BatchNorm1d` layers between linear layers
@@ -54,10 +75,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   for multi-output.
 - **`Lut`** — Lookup table predictor. Uniform bin spacing,
   Horner indexing, clamped out-of-range features. O(1) prediction.
-- **`Activation`** enum — `Relu`, `LeakyRelu(f64)`, `Tanh`, `Sigmoid`,
-  `Identity`, `Elu(f64)`, `Gelu`, `Swish`.
+- **`Activation`** enum — `Relu`, `LeakyRelu(f32)`, `Tanh`, `Sigmoid`,
+  `Identity`, `Elu(f32)`, `Gelu`, `Swish`.
 - **GBDT API additions** — `predict_into()`, `predict_into_unchecked()`,
   `n_outputs()` for API consistency with MLP and LUT.
+
+### Changed
+
+- **f32-only models** — removed all f64 model and kernel variants
+  (`MlpF64`, `LutF64`, and the f64 dot kernels). Models infer in f32;
+  GBDT still trains in f64 externally and loads as f32. Breaking for any
+  f64-typed usage.
+- **Unified prediction API** — every model exposes `predict` /
+  `predict_into`; the old `step` / `step_into` names are removed.
+  Stateless models (GBDT, MLP, LUT, BNN, QuantizedMlp) take `&self`
+  (interior mutability via a pre-allocated scratch buffer); stateful
+  models take `&mut self`. New `Model` and `StatelessModel` traits for
+  dynamic dispatch over mixed model types.
+- **Accessor naming** — `n_inputs` / `n_outputs` / `n_hidden` /
+  `n_layers` / `n_features` / `n_filters` replace the earlier
+  `input_size` / `output_size` / `num_layers` accessors.
+- **Branchless GBDT traversal** — the decision-tree walk uses a single
+  cmov per level (`select_unpredictable`) over 8-byte nodes in a
+  false-branch-next layout, for deterministic latency (p90/p50 < 1.04x).
 
 ## [0.1.0] — 2026-05-21
 

@@ -534,6 +534,41 @@ impl crate::StackedGru {
 /// A gap in the sequence (e.g. `l0` and `l2` present but `l1` missing)
 /// means a malformed file or a wrong `rnn_prefix`. We reject it rather
 /// than silently load a truncated model from the consecutive prefix.
+/// Reject orphaned higher-index tensors past the consecutive run `0..n`.
+///
+/// Scans every tensor name for `{stem}{idx}`: when `suffixes` is non-empty the
+/// index must be followed by one of them (e.g. `.weight`/`.bias`), otherwise the
+/// index is the entire remainder after `stem`. If any such `idx >= n` exists the
+/// layer indices have a gap, so `msg` is returned as a `Validation` error.
+///
+/// Shared by every per-layer loader so the gap detection can't drift between
+/// model types.
+fn reject_orphan_index(
+    st: &SafeTensors<'_>,
+    stem: &str,
+    suffixes: &[&str],
+    n: usize,
+    msg: &'static str,
+) -> Result<(), LoadError> {
+    for name in st.names() {
+        let Some(rest) = name.strip_prefix(stem) else {
+            continue;
+        };
+        let idx_str = if suffixes.is_empty() {
+            Some(rest)
+        } else {
+            suffixes.iter().find_map(|s| rest.strip_suffix(s))
+        };
+        if let Some(idx_str) = idx_str
+            && let Ok(idx) = idx_str.parse::<usize>()
+            && idx >= n
+        {
+            return Err(LoadError::Validation(msg));
+        }
+    }
+    Ok(())
+}
+
 fn count_rnn_layers(
     st: &SafeTensors<'_>,
     rnn_prefix: &str,
@@ -563,17 +598,13 @@ fn count_rnn_layers(
     }
 
     // Reject orphaned higher-index layers past the consecutive run.
-    let stem = prefixed(rnn_prefix, "weight_ih_l");
-    for name in st.names() {
-        if let Some(suffix) = name.strip_prefix(stem.as_str())
-            && let Ok(idx) = suffix.parse::<usize>()
-            && idx >= num_layers
-        {
-            return Err(LoadError::Validation(
-                "non-consecutive RNN layer indices (gap in weight_ih_l{k})",
-            ));
-        }
-    }
+    reject_orphan_index(
+        st,
+        &prefixed(rnn_prefix, "weight_ih_l"),
+        &[],
+        num_layers,
+        "non-consecutive RNN layer indices (gap in weight_ih_l{k})",
+    )?;
 
     Ok(num_layers)
 }
@@ -752,8 +783,7 @@ macro_rules! impl_mlp_safetensors {
                             };
                         let eps = 1e-5_f64;
                         for row in 0..out_features {
-                            let scale =
-                                bn_gamma[row] as f64 / sqrt_f64(bn_var[row] as f64 + eps);
+                            let scale = bn_gamma[row] as f64 / sqrt_f64(bn_var[row] as f64 + eps);
                             for col in 0..in_features {
                                 let wi = row * in_features + col;
                                 w_data[wi] = (w_data[wi] as f64 * scale) as $ty;
@@ -990,21 +1020,13 @@ fn count_tcn_layers(st: &SafeTensors<'_>, prefix: &str) -> Result<usize, LoadErr
 
     // Reject orphaned per-layer tensors (weight or bias) past the
     // consecutive run — a stray conv_{k}.bias signals a malformed file.
-    let stem = format!("{prefix}.conv_");
-    for name in st.names() {
-        let idx_str = name.strip_prefix(stem.as_str()).and_then(|s| {
-            s.strip_suffix(".weight")
-                .or_else(|| s.strip_suffix(".bias"))
-        });
-        if let Some(idx_str) = idx_str
-            && let Ok(idx) = idx_str.parse::<usize>()
-            && idx >= n
-        {
-            return Err(LoadError::Validation(
-                "non-consecutive TCN layer indices (gap in conv_{k})",
-            ));
-        }
-    }
+    reject_orphan_index(
+        st,
+        &format!("{prefix}.conv_"),
+        &[".weight", ".bias"],
+        n,
+        "non-consecutive TCN layer indices (gap in conv_{k})",
+    )?;
 
     Ok(n)
 }
@@ -1160,17 +1182,13 @@ fn count_bnn_binary_layers(st: &SafeTensors<'_>, prefix: &str) -> Result<usize, 
     }
 
     // Reject orphaned higher-index layers past the consecutive run.
-    let stem = prefixed(prefix, "binary_weight_");
-    for name in st.names() {
-        if let Some(suffix) = name.strip_prefix(stem.as_str())
-            && let Ok(idx) = suffix.parse::<usize>()
-            && idx >= n
-        {
-            return Err(LoadError::Validation(
-                "non-consecutive BNN binary layer indices (gap in binary_weight_{k})",
-            ));
-        }
-    }
+    reject_orphan_index(
+        st,
+        &prefixed(prefix, "binary_weight_"),
+        &[],
+        n,
+        "non-consecutive BNN binary layer indices (gap in binary_weight_{k})",
+    )?;
 
     Ok(n)
 }
@@ -1298,26 +1316,20 @@ fn count_quantized_mlp_layers(st: &SafeTensors<'_>, prefix: &str) -> Result<usiz
         return Ok(0);
     }
 
-    let stem = prefixed(prefix, "layer_");
-    for name in st.names() {
-        let Some(suffix) = name.strip_prefix(stem.as_str()) else {
-            continue;
-        };
-        if let Some(idx_str) = suffix
-            .strip_suffix(".weight")
-            .or_else(|| suffix.strip_suffix(".bias"))
-            .or_else(|| suffix.strip_suffix(".weight_scale"))
-            .or_else(|| suffix.strip_suffix(".weight_zero_point"))
-            .or_else(|| suffix.strip_suffix(".input_scale"))
-            .or_else(|| suffix.strip_suffix(".input_zero_point"))
-            && let Ok(idx) = idx_str.parse::<usize>()
-            && idx >= n
-        {
-            return Err(LoadError::Validation(
-                "non-consecutive quantized MLP layer indices",
-            ));
-        }
-    }
+    reject_orphan_index(
+        st,
+        &prefixed(prefix, "layer_"),
+        &[
+            ".weight",
+            ".bias",
+            ".weight_scale",
+            ".weight_zero_point",
+            ".input_scale",
+            ".input_zero_point",
+        ],
+        n,
+        "non-consecutive quantized MLP layer indices",
+    )?;
 
     Ok(n)
 }

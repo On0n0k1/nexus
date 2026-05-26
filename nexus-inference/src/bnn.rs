@@ -1,4 +1,5 @@
 use crate::LoadError;
+use crate::Scratch;
 #[cfg(not(all(
     target_arch = "x86_64",
     any(
@@ -7,7 +8,6 @@ use crate::LoadError;
     )
 )))]
 use crate::dot::matvec_bias_f32;
-use crate::Scratch;
 
 fn bias_to_int_threshold(bias: f32, hidden_size: usize) -> u32 {
     let half = (hidden_size as f32 - bias) * 0.5;
@@ -561,19 +561,7 @@ impl Bnn {
     }
 }
 
-impl crate::Model for Bnn {
-    fn predict(&mut self, input: &[f32]) -> f32 {
-        Bnn::predict(self, input)
-    }
-    fn predict_into(&mut self, input: &[f32], output: &mut [f32]) {
-        Bnn::predict_into(self, input, output);
-    }
-    fn n_outputs(&self) -> usize {
-        Bnn::n_outputs(self)
-    }
-}
-
-impl crate::StatelessModel for Bnn {}
+crate::impl_model!(Bnn, stateless);
 
 #[cfg(test)]
 mod tests {
