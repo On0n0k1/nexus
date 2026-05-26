@@ -50,8 +50,9 @@ With weights and activations both in {−1, +1}, a dot product is just
 "how many positions agree minus how many disagree." Encode +1 as bit 1
 and −1 as bit 0, and agreement is `XNOR`; summing agreements is `popcount`.
 A 64-wide multiply-accumulate collapses to one XNOR and one popcount per
-64-bit word — no multiplier, no FPU. LLVM auto-vectorizes the loop with
-`vpshufb`+`vpsadbw` (SIMD popcount), ~16 neurons per iteration.
+64-bit word — no multiplier, no FPU. The binary core is a tight `count_ones`
+loop the compiler can vectorize; the fp32 input projection and output readout
+use the crate's hand-written AVX2 kernels.
 
 `hidden_size` must be a multiple of 64 (one bit per neuron, packed into
 `u64` words). Binary weights use **32x less memory** than fp32: for H=64,

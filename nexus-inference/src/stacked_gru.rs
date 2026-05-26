@@ -1,5 +1,5 @@
 use crate::LoadError;
-use crate::dot::{matvec_bias_f32, matvec_f32};
+use crate::kernel::dot::{matvec_bias_f32, matvec_f32};
 
 /// Multi-layer GRU for streaming temporal inference.
 ///
@@ -131,7 +131,7 @@ impl GruLayer {
             hidden_size,
         );
 
-        super::apply_gru_gates(
+        crate::kernel::gates::apply_gru_gates(
             &self.ih_scratch,
             &self.hh_scratch,
             &self.bias_ih,

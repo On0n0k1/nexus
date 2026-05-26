@@ -1,5 +1,5 @@
 use crate::LoadError;
-use crate::dot::{matvec_bias_f32, matvec_f32};
+use crate::kernel::dot::{matvec_bias_f32, matvec_f32};
 
 #[cfg(not(all(
     target_arch = "x86_64",
@@ -9,7 +9,7 @@ use crate::dot::{matvec_bias_f32, matvec_f32};
     )
 )))]
 #[allow(unused_imports)]
-use super::{sigmoid_f32, tanh_f32};
+use crate::kernel::activate::{sigmoid_f32, tanh_f32};
 
 /// Single-layer GRU for streaming temporal inference.
 ///
@@ -205,7 +205,7 @@ impl TinyGru {
             hi,
         );
 
-        super::apply_gru_gates(
+        crate::kernel::gates::apply_gru_gates(
             &self.ih_scratch,
             &self.hh_scratch,
             &self.bias_ih,
@@ -254,8 +254,8 @@ crate::impl_model!(TinyGru);
 
 #[cfg(test)]
 mod tests {
-    use super::super::{sigmoid_f32, tanh_f32};
     use super::*;
+    use crate::kernel::activate::{sigmoid_f32, tanh_f32};
 
     fn make_gru(
         input: usize,

@@ -1,5 +1,5 @@
 use crate::LoadError;
-use crate::dot::matvec_bias_f32;
+use crate::kernel::dot::matvec_bias_f32;
 
 #[cfg(not(all(
     target_arch = "x86_64",
@@ -9,7 +9,7 @@ use crate::dot::matvec_bias_f32;
     )
 )))]
 #[allow(unused_imports)]
-use super::{sigmoid_f32, tanh_f32};
+use crate::kernel::activate::{sigmoid_f32, tanh_f32};
 
 /// Single-layer LSTM for streaming temporal inference.
 ///
@@ -133,7 +133,7 @@ impl TinyLstm {
             "non-finite weight",
         )?;
 
-        let (w_gates, b_gates) = super::fuse_lstm_gate_weights(
+        let (w_gates, b_gates) = fuse_lstm_gate_weights(
             weight_ih,
             weight_hh,
             bias_ih,
@@ -213,7 +213,7 @@ impl TinyLstm {
             concat_size,
         );
 
-        super::apply_lstm_gates(&self.gates, &mut self.c, &mut self.h, h);
+        crate::kernel::gates::apply_lstm_gates(&self.gates, &mut self.c, &mut self.h, h);
 
         matvec_bias_f32(
             &self.w_out,
@@ -259,10 +259,39 @@ impl TinyLstm {
 
 crate::impl_model!(TinyLstm);
 
+/// Fuse PyTorch's separate input/hidden gate weights into the single
+/// `(gate_count, input_size + hidden_size)` matrix the fused LSTM matvec
+/// expects, and sum the paired biases. `gate_count` is `4 * hidden_size`.
+///
+/// Shared by `TinyLstm` and each layer of `StackedLstm`.
+pub(crate) fn fuse_lstm_gate_weights(
+    weight_ih: &[f32],
+    weight_hh: &[f32],
+    bias_ih: &[f32],
+    bias_hh: &[f32],
+    input_size: usize,
+    hidden_size: usize,
+    gate_count: usize,
+) -> (Vec<f32>, Vec<f32>) {
+    let concat_size = input_size + hidden_size;
+    let mut w_gates = vec![0.0_f32; gate_count * concat_size];
+    for j in 0..gate_count {
+        w_gates[j * concat_size..j * concat_size + input_size]
+            .copy_from_slice(&weight_ih[j * input_size..(j + 1) * input_size]);
+        w_gates[j * concat_size + input_size..(j + 1) * concat_size]
+            .copy_from_slice(&weight_hh[j * hidden_size..(j + 1) * hidden_size]);
+    }
+    let mut b_gates = vec![0.0_f32; gate_count];
+    for j in 0..gate_count {
+        b_gates[j] = bias_ih[j] + bias_hh[j];
+    }
+    (w_gates, b_gates)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::super::{sigmoid_f32, tanh_f32};
     use super::*;
+    use crate::kernel::activate::{sigmoid_f32, tanh_f32};
 
     fn make_lstm(
         input: usize,

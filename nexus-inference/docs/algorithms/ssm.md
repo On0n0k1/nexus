@@ -39,8 +39,10 @@ independent leaky integrators read out by `C`.
 ## Why linear + diagonal is the point
 
 - **No transcendentals.** Unlike LSTM/GRU (sigmoid/tanh gates), every
-  operation is multiply-add. The `A ⊙ h` loop auto-vectorizes to 8-wide
-  `vfmadd213ps`, unrolled 4x — no hand-written SIMD, deterministic latency.
+  operation is a multiply-add. The `A ⊙ h` recurrence is a scalar loop that
+  auto-vectorizes; the `B @ u` and `C @ h` products reuse the crate's shared
+  SIMD dot kernels. No gate approximations on the hot path — deterministic
+  latency.
 - **Long memory without leakage.** An LSTM's forget gate is a learned
   scalar in (0,1) applied every step; over long horizons it bleeds the
   signal away. A diagonal SSM with `a[i]` near 1 holds state for very long

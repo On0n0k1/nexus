@@ -46,15 +46,19 @@ use std::cell::UnsafeCell;
 
 mod activation;
 mod bnn;
-mod conv;
-mod dot;
+mod causal1d;
 mod error;
 mod gbdt;
+mod gru;
+mod kernel;
+mod lstm;
 mod lut;
 mod mlp;
 mod quantized_mlp;
-mod rnn;
 mod ssm;
+mod stacked_gru;
+mod stacked_lstm;
+mod tcn;
 mod validate;
 
 #[cfg(any(feature = "loader-lightgbm", feature = "safetensors"))]
@@ -62,14 +66,18 @@ mod loader;
 
 pub use activation::Activation;
 pub use bnn::Bnn;
-pub use conv::{Causal1dConv, TinyTcn};
+pub use causal1d::Causal1dConv;
 pub use error::LoadError;
 pub use gbdt::Gbdt;
+pub use gru::TinyGru;
+pub use lstm::TinyLstm;
 pub use lut::Lut;
 pub use mlp::Mlp;
 pub use quantized_mlp::QuantizedMlp;
-pub use rnn::{StackedGru, StackedLstm, TinyGru, TinyLstm};
 pub use ssm::LinearSsm;
+pub use stacked_gru::StackedGru;
+pub use stacked_lstm::StackedLstm;
+pub use tcn::TinyTcn;
 
 /// Inference model with mutable access.
 ///

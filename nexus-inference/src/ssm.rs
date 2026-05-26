@@ -1,5 +1,5 @@
 use crate::LoadError;
-use crate::dot::{dot_f32, matvec_f32};
+use crate::kernel::dot::{dot_f32, matvec_f32};
 
 /// Linear state-space model with diagonal state transition.
 ///

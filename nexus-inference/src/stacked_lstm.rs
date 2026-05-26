@@ -1,5 +1,5 @@
 use crate::LoadError;
-use crate::dot::matvec_bias_f32;
+use crate::kernel::dot::matvec_bias_f32;
 
 /// Multi-layer LSTM for streaming temporal inference.
 ///
@@ -102,7 +102,7 @@ impl LstmLayer {
             "non-finite weight",
         )?;
 
-        let (w_gates, b_gates) = super::fuse_lstm_gate_weights(
+        let (w_gates, b_gates) = crate::lstm::fuse_lstm_gate_weights(
             weight_ih,
             weight_hh,
             bias_ih,
@@ -138,7 +138,7 @@ impl LstmLayer {
             concat_size,
         );
 
-        super::apply_lstm_gates(&self.gates, &mut self.c, &mut self.h, hidden_size);
+        crate::kernel::gates::apply_lstm_gates(&self.gates, &mut self.c, &mut self.h, hidden_size);
     }
 }
 

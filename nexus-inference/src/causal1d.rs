@@ -1,63 +1,7 @@
 use crate::LoadError;
-use crate::activation::{Activation, activate_f32};
-use crate::dot::{dot_f32, dot4_f32, matvec_bias_f32};
-
-#[cfg(all(
-    target_arch = "x86_64",
-    any(
-        target_feature = "avx512f",
-        all(target_feature = "avx2", target_feature = "fma"),
-    )
-))]
-#[inline(never)]
-pub(super) fn conv_tiled_simd(
-    w_conv: &[f32],
-    b_conv: &[f32],
-    lin: &[f32],
-    filter_scratch: &mut [f32],
-    conv_len: usize,
-    filters_4: usize,
-    activation: Activation,
-) -> usize {
-    use crate::activation::simd::{activate_4wide, activate_8wide};
-    use crate::dot::{dot4_f32_m128, dot8_f32_m256};
-    use core::arch::x86_64::*;
-
-    let filters_8 = filters_4 & !7;
-    let mut f = 0;
-    // SAFETY: cfg guarantees SIMD availability.
-    // f + N <= filters_4 within respective loops; bias/scratch accesses are in bounds.
-    unsafe {
-        if conv_len >= 32 {
-            while f < filters_8 {
-                let rows = &w_conv[f * conv_len..(f + 8) * conv_len];
-                let dots = dot8_f32_m256(rows, lin);
-                let bias_v = _mm256_loadu_ps(b_conv.as_ptr().add(f));
-                let with_bias = _mm256_add_ps(dots, bias_v);
-                match activate_8wide(with_bias, activation) {
-                    Some(activated) => {
-                        _mm256_storeu_ps(filter_scratch.as_mut_ptr().add(f), activated)
-                    }
-                    None => return f,
-                }
-                f += 8;
-            }
-        }
-
-        while f < filters_4 {
-            let rows = &w_conv[f * conv_len..(f + 4) * conv_len];
-            let dots = dot4_f32_m128(rows, lin);
-            let bias_v = _mm_loadu_ps(b_conv.as_ptr().add(f));
-            let with_bias = _mm_add_ps(dots, bias_v);
-            match activate_4wide(with_bias, activation) {
-                Some(activated) => _mm_storeu_ps(filter_scratch.as_mut_ptr().add(f), activated),
-                None => return f,
-            }
-            f += 4;
-        }
-    }
-    f
-}
+use crate::activation::Activation;
+use crate::kernel::activate::activate_f32;
+use crate::kernel::dot::{dot_f32, dot4_f32, matvec_bias_f32};
 
 /// Streaming causal 1D convolution.
 ///
@@ -233,7 +177,7 @@ impl Causal1dConv {
                 all(target_feature = "avx2", target_feature = "fma"),
             )
         ))]
-        let mut f = conv_tiled_simd(
+        let mut f = crate::kernel::gemv::tiled_gemv(
             &self.w_conv,
             &self.b_conv,
             lin,

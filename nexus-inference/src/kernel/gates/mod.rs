@@ -1,10 +1,13 @@
-mod gru;
-mod lstm;
-mod stacked_gru;
-mod stacked_lstm;
+//! LSTM / GRU gate kernels.
+//!
+//! `apply_lstm_gates` / `apply_gru_gates` dispatch to the AVX-512, AVX2, or
+//! scalar implementation at compile time. The SIMD backends live in the
+//! sibling `avx2` / `avx512` modules.
+
+use crate::kernel::activate::{sigmoid_f32, tanh_f32};
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-mod avx512_gates;
+mod avx512;
 
 #[cfg(all(
     target_arch = "x86_64",
@@ -12,20 +15,13 @@ mod avx512_gates;
     target_feature = "fma",
     not(target_feature = "avx512f"),
 ))]
-mod avx2_gates;
-
-pub use gru::TinyGru;
-pub use lstm::TinyLstm;
-pub use stacked_gru::StackedGru;
-pub use stacked_lstm::StackedLstm;
-
-pub(crate) use crate::activation::{sigmoid_f32, tanh_f32};
+mod avx2;
 
 #[inline(always)]
 pub(crate) fn apply_lstm_gates(gates: &[f32], c: &mut [f32], h: &mut [f32], hidden_size: usize) {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
     {
-        avx512_gates::lstm_gates_avx512(gates, c, h, hidden_size);
+        avx512::lstm_gates_avx512(gates, c, h, hidden_size);
     }
 
     #[cfg(all(
@@ -35,7 +31,7 @@ pub(crate) fn apply_lstm_gates(gates: &[f32], c: &mut [f32], h: &mut [f32], hidd
         not(target_feature = "avx512f"),
     ))]
     {
-        avx2_gates::lstm_gates_avx2(gates, c, h, hidden_size);
+        avx2::lstm_gates_avx2(gates, c, h, hidden_size);
     }
 
     #[cfg(not(all(
@@ -69,7 +65,7 @@ pub(crate) fn apply_gru_gates(
 ) {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
     {
-        avx512_gates::gru_gates_avx512(ih_scratch, hh_scratch, bias_ih, bias_hh, h, hidden_size);
+        avx512::gru_gates_avx512(ih_scratch, hh_scratch, bias_ih, bias_hh, h, hidden_size);
     }
 
     #[cfg(all(
@@ -79,7 +75,7 @@ pub(crate) fn apply_gru_gates(
         not(target_feature = "avx512f"),
     ))]
     {
-        avx2_gates::gru_gates_avx2(ih_scratch, hh_scratch, bias_ih, bias_hh, h, hidden_size);
+        avx2::gru_gates_avx2(ih_scratch, hh_scratch, bias_ih, bias_hh, h, hidden_size);
     }
 
     #[cfg(not(all(
@@ -101,33 +97,4 @@ pub(crate) fn apply_gru_gates(
             h[k] = (1.0 - z).mul_add(n, z * h[k]);
         }
     }
-}
-
-/// Fuse PyTorch's separate input/hidden gate weights into the single
-/// `(gate_count, input_size + hidden_size)` matrix the fused LSTM matvec
-/// expects, and sum the paired biases. `gate_count` is `4 * hidden_size`.
-///
-/// Shared by `TinyLstm` and each layer of `StackedLstm`.
-pub(crate) fn fuse_lstm_gate_weights(
-    weight_ih: &[f32],
-    weight_hh: &[f32],
-    bias_ih: &[f32],
-    bias_hh: &[f32],
-    input_size: usize,
-    hidden_size: usize,
-    gate_count: usize,
-) -> (Vec<f32>, Vec<f32>) {
-    let concat_size = input_size + hidden_size;
-    let mut w_gates = vec![0.0_f32; gate_count * concat_size];
-    for j in 0..gate_count {
-        w_gates[j * concat_size..j * concat_size + input_size]
-            .copy_from_slice(&weight_ih[j * input_size..(j + 1) * input_size]);
-        w_gates[j * concat_size + input_size..(j + 1) * concat_size]
-            .copy_from_slice(&weight_hh[j * hidden_size..(j + 1) * hidden_size]);
-    }
-    let mut b_gates = vec![0.0_f32; gate_count];
-    for j in 0..gate_count {
-        b_gates[j] = bias_ih[j] + bias_hh[j];
-    }
-    (w_gates, b_gates)
 }

@@ -1,7 +1,7 @@
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 
-use crate::activation::simd::{sigmoid_8wide, tanh_8wide};
+use crate::kernel::activate::simd::{sigmoid_8wide, tanh_8wide};
 
 /// LSTM gate activation + cell/hidden update, 8 units at a time.
 ///

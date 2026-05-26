@@ -1,203 +1,8 @@
 use crate::LoadError;
 use crate::Scratch;
-use crate::activation::{Activation, activate_f32};
-use crate::dot::{dot_f32, dot4_f32};
-
-/// Fast f32 inverse sqrt via bit manipulation + Newton-Raphson.
-/// Used by the scalar LayerNorm fallback on non-SIMD platforms.
-#[inline(always)]
-fn rsqrt_f32(x: f32) -> f32 {
-    let mut y = f32::from_bits(0x5f37_5a86 - (x.to_bits() >> 1));
-    y *= (0.5 * x * y).mul_add(-y, 1.5);
-    y *= (0.5 * x * y).mul_add(-y, 1.5);
-    y
-}
-
-#[cfg(all(
-    target_arch = "x86_64",
-    any(
-        target_feature = "avx512f",
-        all(target_feature = "avx2", target_feature = "fma"),
-    )
-))]
-#[inline(never)]
-#[allow(clippy::too_many_arguments)]
-fn mlp_tiled_simd_f32(
-    weights: &[f32],
-    biases: &[f32],
-    src: &[f32],
-    dst: &mut [f32],
-    in_size: usize,
-    out_size_4: usize,
-    activation: Activation,
-    apply_activation: bool,
-) -> usize {
-    use crate::activation::simd::{activate_4wide, activate_8wide};
-    use crate::dot::{dot4_f32_m128, dot8_f32_m256};
-    use core::arch::x86_64::*;
-    let out_size_8 = out_size_4 & !7;
-    let mut j = 0;
-
-    let effective = if apply_activation {
-        activation
-    } else {
-        Activation::Identity
-    };
-
-    // SAFETY: this fn is cfg-gated to x86_64 + (avx512f | avx2+fma), so every
-    // intrinsic below (_mm256_/_mm_ loads, stores, and the dot kernels) is
-    // available on the target. Pointer offsets stay in bounds: the 8-wide loop
-    // holds `j + 8 <= out_size_8 <= out_size_4` and the 4-wide tail holds
-    // `j + 4 <= out_size_4`, and the caller guarantees `biases.len()` and
-    // `dst.len()` are at least `out_size_4`. Loads/stores are unaligned
-    // (loadu/storeu), so there is no alignment precondition; row slices use
-    // checked indexing.
-    unsafe {
-        // 8-wide loop (requires in_size >= 32 to amortize dot8 overhead)
-        if in_size >= 32 {
-            while j < out_size_8 {
-                let rows = &weights[j * in_size..(j + 8) * in_size];
-                let dots = dot8_f32_m256(rows, src);
-                let bias_v = _mm256_loadu_ps(biases.as_ptr().add(j));
-                let with_bias = _mm256_add_ps(dots, bias_v);
-                match activate_8wide(with_bias, effective) {
-                    Some(activated) => _mm256_storeu_ps(dst.as_mut_ptr().add(j), activated),
-                    None => return j,
-                }
-                j += 8;
-            }
-        }
-
-        // 4-wide tail
-        while j < out_size_4 {
-            let rows = &weights[j * in_size..(j + 4) * in_size];
-            let dots = dot4_f32_m128(rows, src);
-            let bias_v = _mm_loadu_ps(biases.as_ptr().add(j));
-            let with_bias = _mm_add_ps(dots, bias_v);
-            match activate_4wide(with_bias, effective) {
-                Some(activated) => _mm_storeu_ps(dst.as_mut_ptr().add(j), activated),
-                None => return j,
-            }
-            j += 4;
-        }
-    }
-    j
-}
-
-#[cfg(all(
-    target_arch = "x86_64",
-    any(
-        target_feature = "avx512f",
-        all(target_feature = "avx2", target_feature = "fma"),
-    )
-))]
-#[inline(never)]
-#[allow(clippy::many_single_char_names)]
-fn layer_norm_simd_f32(
-    data: &mut [f32],
-    gamma: &[f32],
-    beta: &[f32],
-    activation: Activation,
-) -> bool {
-    use crate::activation::simd::activate_8wide;
-    use core::arch::x86_64::*;
-
-    let n = data.len();
-    if n < 8 {
-        return false;
-    }
-
-    // SAFETY: cfg guarantees AVX2+FMA. All pointer arithmetic stays within
-    // slice bounds: i < n_8 <= n, loads/stores of 8 f32 (32 bytes) at
-    // offset i are valid because i + 8 <= n_8 + 8 <= n (n_8 = n & !7).
-    unsafe {
-        let n_8 = n & !7;
-
-        // Pass 1: mean (f32 accumulation, 8-wide)
-        let mut sum_v = _mm256_setzero_ps();
-        let mut i = 0;
-        while i < n_8 {
-            sum_v = _mm256_add_ps(sum_v, _mm256_loadu_ps(data.as_ptr().add(i)));
-            i += 8;
-        }
-        let mut sum = hsum256_f32(sum_v);
-        while i < n {
-            sum += data[i];
-            i += 1;
-        }
-        let mean = sum / n as f32;
-
-        // Pass 2: variance (f32 accumulation, 8-wide FMA)
-        let mean_v = _mm256_set1_ps(mean);
-        let mut var_v = _mm256_setzero_ps();
-        i = 0;
-        while i < n_8 {
-            let x = _mm256_loadu_ps(data.as_ptr().add(i));
-            let d = _mm256_sub_ps(x, mean_v);
-            var_v = _mm256_fmadd_ps(d, d, var_v);
-            i += 8;
-        }
-        let mut var = hsum256_f32(var_v);
-        while i < n {
-            let d = data[i] - mean;
-            var = d.mul_add(d, var);
-            i += 1;
-        }
-        let inv_std = {
-            let v = _mm_sqrt_ss(_mm_set_ss(var / n as f32 + 1e-5));
-            1.0_f32 / _mm_cvtss_f32(v)
-        };
-
-        // Pass 3: normalize + affine + activation (8-wide FMA)
-        let inv_std_v = _mm256_set1_ps(inv_std);
-        i = 0;
-        while i < n_8 {
-            let x = _mm256_loadu_ps(data.as_ptr().add(i));
-            let norm = _mm256_mul_ps(_mm256_sub_ps(x, mean_v), inv_std_v);
-            let g = _mm256_loadu_ps(gamma.as_ptr().add(i));
-            let b = _mm256_loadu_ps(beta.as_ptr().add(i));
-            let val = _mm256_fmadd_ps(g, norm, b);
-            match activate_8wide(val, activation) {
-                Some(activated) => _mm256_storeu_ps(data.as_mut_ptr().add(i), activated),
-                None => return false,
-            }
-            i += 8;
-        }
-        while i < n {
-            let norm = (data[i] - mean) * inv_std;
-            let val = gamma[i].mul_add(norm, beta[i]);
-            data[i] = activate_f32(val, activation);
-            i += 1;
-        }
-    }
-
-    true
-}
-
-#[cfg(all(
-    target_arch = "x86_64",
-    any(
-        target_feature = "avx512f",
-        all(target_feature = "avx2", target_feature = "fma"),
-    )
-))]
-/// Horizontal sum of an 8-lane AVX2 vector.
-///
-/// # Safety
-/// Caller must run on a target with AVX2 enabled.
-#[inline(always)]
-unsafe fn hsum256_f32(v: core::arch::x86_64::__m256) -> f32 {
-    use core::arch::x86_64::*;
-    unsafe {
-        let hi = _mm256_extractf128_ps(v, 1);
-        let lo = _mm256_castps256_ps128(v);
-        let sum128 = _mm_add_ps(lo, hi);
-        let shuf = _mm_movehdup_ps(sum128);
-        let sums = _mm_add_ps(sum128, shuf);
-        let shuf2 = _mm_movehl_ps(sums, sums);
-        _mm_cvtss_f32(_mm_add_ss(sums, shuf2))
-    }
-}
+use crate::activation::Activation;
+use crate::kernel::activate::activate_f32;
+use crate::kernel::dot::{dot_f32, dot4_f32};
 
 /// Feedforward neural network (multi-layer perceptron).
 ///
@@ -404,44 +209,45 @@ impl Mlp {
                 )
             ))]
             let mut j = {
-                let apply_activation = !is_last && !apply_ln;
+                let act = if !is_last && !apply_ln {
+                    self.activation
+                } else {
+                    Activation::Identity
+                };
                 if is_last {
                     let src = if src_is_a {
                         &scratch_a[..in_size]
                     } else {
                         &scratch_b[..in_size]
                     };
-                    mlp_tiled_simd_f32(
+                    crate::kernel::gemv::tiled_gemv(
                         &self.weights[w_offset..],
                         &self.biases[b_offset..],
                         src,
                         output,
                         in_size,
                         out_size_4,
-                        self.activation,
-                        false,
+                        act,
                     )
                 } else if src_is_a {
-                    mlp_tiled_simd_f32(
+                    crate::kernel::gemv::tiled_gemv(
                         &self.weights[w_offset..],
                         &self.biases[b_offset..],
                         &scratch_a[..in_size],
                         scratch_b,
                         in_size,
                         out_size_4,
-                        self.activation,
-                        apply_activation,
+                        act,
                     )
                 } else {
-                    mlp_tiled_simd_f32(
+                    crate::kernel::gemv::tiled_gemv(
                         &self.weights[w_offset..],
                         &self.biases[b_offset..],
                         &scratch_b[..in_size],
                         scratch_a,
                         in_size,
                         out_size_4,
-                        self.activation,
-                        apply_activation,
+                        act,
                     )
                 }
             };
@@ -515,7 +321,7 @@ impl Mlp {
                         all(target_feature = "avx2", target_feature = "fma"),
                     )
                 ))]
-                let simd_done = layer_norm_simd_f32(
+                let simd_done = crate::kernel::mlp::layer_norm_simd_f32(
                     dst,
                     &ln_g[b_offset..b_offset + out_size],
                     &ln_b[b_offset..b_offset + out_size],
@@ -541,7 +347,7 @@ impl Mlp {
                         let d = *v - mean;
                         var_acc = d.mul_add(d, var_acc);
                     }
-                    let inv_std = rsqrt_f32(var_acc / out_size as f32 + 1e-5);
+                    let inv_std = crate::kernel::mlp::rsqrt_f32(var_acc / out_size as f32 + 1e-5);
 
                     for (k, v) in dst.iter_mut().enumerate() {
                         let normalized = (*v - mean) * inv_std;
@@ -639,7 +445,7 @@ mod tests {
         // o0 = 1.0*h0 + 0.0
         let model =
             Mlp::from_parts(&[1, 1, 1], &[1.0, 1.0], &[0.0, 0.0], Activation::Tanh).unwrap();
-        let expected = crate::activation::tanh_f32(2.0);
+        let expected = crate::kernel::activate::tanh_f32(2.0);
         assert!((model.predict(&[2.0]) - expected).abs() < 1e-5);
     }
 
@@ -650,7 +456,7 @@ mod tests {
         // o0 = 1.0*h0 + 0.0
         let model =
             Mlp::from_parts(&[1, 1, 1], &[1.0, 1.0], &[0.0, 0.0], Activation::Sigmoid).unwrap();
-        let expected = crate::activation::sigmoid_f32(2.0);
+        let expected = crate::kernel::activate::sigmoid_f32(2.0);
         assert!((model.predict(&[2.0]) - expected).abs() < 1e-5);
     }
 
@@ -826,7 +632,7 @@ mod tests {
         // Positive: passthrough
         assert!((model.predict(&[2.0]) - 2.0).abs() < 1e-5);
         // Negative: alpha * (exp(x) - 1)
-        let expected = 1.0 * (crate::activation::exp_f32(-1.0) - 1.0);
+        let expected = 1.0 * (crate::kernel::activate::exp_f32(-1.0) - 1.0);
         assert!((model.predict(&[-1.0]) - expected).abs() < 1e-5);
     }
 
@@ -839,7 +645,7 @@ mod tests {
         let x = 1.0_f32;
         let scale = core::f32::consts::FRAC_2_SQRT_PI * core::f32::consts::FRAC_1_SQRT_2;
         let inner = (0.044_715 * x * x).mul_add(x, x) * scale;
-        let expected = 0.5 * x * (1.0 + crate::activation::tanh_f32(inner));
+        let expected = 0.5 * x * (1.0 + crate::kernel::activate::tanh_f32(inner));
         assert!((model.predict(&[1.0]) - expected).abs() < 1e-5);
         // GELU(0) = 0
         assert!((model.predict(&[0.0]) - 0.0).abs() < 1e-5);
@@ -851,7 +657,7 @@ mod tests {
         let model =
             Mlp::from_parts(&[1, 1, 1], &[1.0, 1.0], &[0.0, 0.0], Activation::Swish).unwrap();
         // Swish(2.0) = 2.0 * sigmoid(2.0)
-        let expected = 2.0 * crate::activation::sigmoid_f32(2.0);
+        let expected = 2.0 * crate::kernel::activate::sigmoid_f32(2.0);
         assert!((model.predict(&[2.0]) - expected).abs() < 1e-5);
         // Swish(0) = 0
         assert!((model.predict(&[0.0]) - 0.0).abs() < 1e-5);

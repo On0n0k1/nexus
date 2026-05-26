@@ -61,16 +61,16 @@ layer by layer. Same for biases.
 A single activation function is applied to all hidden layers.
 The output layer is always linear.
 
-| Activation | Formula | Feature required | Use case |
-|-----------|---------|-----------------|----------|
-| `Relu` | `max(0, x)` | None | Default, most common |
-| `LeakyRelu(alpha)` | `x >= 0 ? x : alpha*x` | None | Prevents dead neurons |
-| `Identity` | `x` | None | No transformation |
-| `Tanh` | `tanh(x)` | | Bounded output [-1, 1] |
-| `Sigmoid` | `1 / (1 + exp(-x))` | | Bounded output [0, 1] |
-| `Elu(alpha)` | `x >= 0 ? x : alpha*(exp(x)-1)` | | Smooth negative region |
-| `Gelu` | `0.5x(1 + tanh(√(2/π)(x + 0.044715x³)))` | | Transformer default |
-| `Swish` | `x * sigmoid(x)` | | aka SiLU in PyTorch |
+| Activation | Formula | Use case |
+|-----------|---------|----------|
+| `Relu` | `max(0, x)` | Default, most common |
+| `LeakyRelu(alpha)` | `x >= 0 ? x : alpha*x` | Prevents dead neurons |
+| `Identity` | `x` | No transformation |
+| `Tanh` | `tanh(x)` | Bounded output [-1, 1] |
+| `Sigmoid` | `1 / (1 + exp(-x))` | Bounded output [0, 1] |
+| `Elu(alpha)` | `x >= 0 ? x : alpha*(exp(x)-1)` | Smooth negative region |
+| `Gelu` | `0.5x(1 + tanh(√(2/π)(x + 0.044715x³)))` | Transformer default |
+| `Swish` | `x * sigmoid(x)` | aka SiLU in PyTorch |
 
 **Design note:** The current API uses a single activation for the
 entire model. Per-layer activations (e.g., relu hidden + tanh final

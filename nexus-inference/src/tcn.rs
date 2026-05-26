@@ -1,6 +1,7 @@
 use crate::LoadError;
-use crate::activation::{Activation, activate_f32};
-use crate::dot::{dot_f32, dot4_f32, matvec_bias_f32};
+use crate::activation::Activation;
+use crate::kernel::activate::activate_f32;
+use crate::kernel::dot::{dot_f32, dot4_f32, matvec_bias_f32};
 
 #[derive(Debug, Clone)]
 struct TcnConvLayer {
@@ -373,7 +374,7 @@ fn conv_from_buffer(
             all(target_feature = "avx2", target_feature = "fma"),
         )
     ))]
-    let mut f = super::causal1d::conv_tiled_simd(
+    let mut f = crate::kernel::gemv::tiled_gemv(
         &layer.w_conv,
         &layer.b_conv,
         lin,
