@@ -10,6 +10,8 @@ contained.
 
 ## [Unreleased]
 
+## [5.1.0] — 2026-05-26
+
 ### Added
 
 - **`BipowerVariationF64/F32`** — jump-robust volatility (no_std).
