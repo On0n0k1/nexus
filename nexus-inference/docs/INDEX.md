@@ -61,23 +61,20 @@ src/
 ├── bnn.rs              — Bnn (XNOR+popcount binary layers)
 ├── lut.rs              — Lut
 ├── ssm.rs              — LinearSsm (diagonal linear state-space)
-├── dot/                — SIMD dot products
-│   ├── mod.rs          — dispatch, matvec_bias_f32, matvec_f32
-│   ├── scalar.rs       — portable fallback
-│   ├── avx2.rs         — AVX2 kernels
-│   └── avx512.rs       — AVX-512 kernels
-├── rnn/
-│   ├── mod.rs          — Padé [7,6] sigmoid/tanh approximants
-│   ├── lstm.rs         — TinyLstm
-│   ├── gru.rs          — TinyGru
-│   ├── stacked_lstm.rs — StackedLstm
-│   ├── stacked_gru.rs  — StackedGru
-│   ├── avx2_gates.rs   — AVX2 vectorized gate activations
-│   └── avx512_gates.rs — AVX-512 vectorized gate activations
-├── conv/
-│   ├── mod.rs          — module declaration
-│   ├── causal1d.rs     — Causal1dConv
-│   └── tcn.rs          — TinyTcn (dilated causal conv stack)
+├── causal1d.rs         — Causal1dConv
+├── tcn.rs              — TinyTcn (dilated causal conv stack)
+├── lstm.rs             — TinyLstm (+ shared LSTM gate-weight fusion)
+├── gru.rs              — TinyGru
+├── stacked_lstm.rs     — StackedLstm
+├── stacked_gru.rs      — StackedGru
+├── kernel/             — numerical compute kernels (slices in/out, no model state)
+│   ├── dot/            — SIMD f32 dot / matvec (scalar, avx2, avx512)
+│   ├── activate.rs     — scalar + SIMD activations (Padé [7,6] sigmoid/tanh)
+│   ├── gates/          — LSTM/GRU gate kernels (scalar, avx2, avx512)
+│   ├── gemv.rs         — tiled GEMV + bias + activation (shared by MLP and conv)
+│   ├── mlp.rs          — LayerNorm + fast rsqrt
+│   ├── quantized.rs    — i8 GEMV (maddubs) + f32→i8 quantize
+│   └── binary.rs       — binary input / hidden (XNOR+popcount) / output kernels
 └── loader/
     ├── mod.rs          — loader dispatch
     ├── lightgbm.rs     — LightGBM text format parser
@@ -88,5 +85,5 @@ src/
 
 | Flag | Default | Enables |
 |------|---------|---------|
-| `loader-lightgbm` | No | `Gbdt::from_lightgbm()` text-format parser |
-| `safetensors` | No | safetensors weight loading for NN models (see [Exporting from Python](guides/python-export.md)) |
+| `loader-lightgbm` | Yes | `Gbdt::from_lightgbm()` text-format parser |
+| `safetensors` | Yes | safetensors weight loading for NN models (see [Exporting from Python](guides/python-export.md)) |

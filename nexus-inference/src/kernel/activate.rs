@@ -48,7 +48,9 @@ pub(crate) fn exp_f32(x: f32) -> f32 {
     }
 
     // Range reduction: x = n*ln2 + r, |r| <= ln2/2
-    let n = (x * LOG2E).round();
+    // Cap n so the reconstructed biased exponent (n + 127) stays <= 254;
+    // 255 encodes inf/NaN. Only bites for x within ~1% of the overflow cutoff.
+    let n = (x * LOG2E).round().min(127.0);
     let r = n.mul_add(-LN2, x);
 
     // Degree-5 Horner polynomial for exp(r) on [-ln2/2, ln2/2]
