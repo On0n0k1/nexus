@@ -10,6 +10,8 @@ contained.
 
 ## [Unreleased]
 
+## [1.2.3] — 2026-05-26
+
 ## [1.2.1] and earlier
 
 Earlier history is not documented in this CHANGELOG. See git history
