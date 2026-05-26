@@ -42,7 +42,7 @@ pub(crate) fn dot4_i8_i32(rows: &[i8], input: &[i8]) -> [i32; 4] {
 // error for well-calibrated models (PyTorch torch.ao.quantization output).
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
 #[inline(never)]
-pub(crate) fn matvec_i8_i32_simd(
+pub(crate) fn matvec_i8_i32(
     weights: &[i8],
     input: &[i8],
     output: &mut [i32],

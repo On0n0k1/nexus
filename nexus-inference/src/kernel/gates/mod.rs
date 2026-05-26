@@ -21,7 +21,7 @@ mod avx2;
 pub(crate) fn apply_lstm_gates(gates: &[f32], c: &mut [f32], h: &mut [f32], hidden_size: usize) {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
     {
-        avx512::lstm_gates_avx512(gates, c, h, hidden_size);
+        avx512::lstm_gates(gates, c, h, hidden_size);
     }
 
     #[cfg(all(
@@ -31,7 +31,7 @@ pub(crate) fn apply_lstm_gates(gates: &[f32], c: &mut [f32], h: &mut [f32], hidd
         not(target_feature = "avx512f"),
     ))]
     {
-        avx2::lstm_gates_avx2(gates, c, h, hidden_size);
+        avx2::lstm_gates(gates, c, h, hidden_size);
     }
 
     #[cfg(not(all(
@@ -65,7 +65,7 @@ pub(crate) fn apply_gru_gates(
 ) {
     #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
     {
-        avx512::gru_gates_avx512(ih_scratch, hh_scratch, bias_ih, bias_hh, h, hidden_size);
+        avx512::gru_gates(ih_scratch, hh_scratch, bias_ih, bias_hh, h, hidden_size);
     }
 
     #[cfg(all(
@@ -75,7 +75,7 @@ pub(crate) fn apply_gru_gates(
         not(target_feature = "avx512f"),
     ))]
     {
-        avx2::gru_gates_avx2(ih_scratch, hh_scratch, bias_ih, bias_hh, h, hidden_size);
+        avx2::gru_gates(ih_scratch, hh_scratch, bias_ih, bias_hh, h, hidden_size);
     }
 
     #[cfg(not(all(

@@ -32,7 +32,7 @@ pub(crate) fn binarize(values: &[f32], bits: &mut [u64]) {
     )
 ))]
 #[inline(never)]
-pub(crate) fn matvec_bias_binarize_f32(
+pub(crate) fn matvec_bias_binarize(
     weight: &[f32],
     input: &[f32],
     bias: &[f32],

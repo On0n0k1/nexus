@@ -321,7 +321,7 @@ impl Mlp {
                         all(target_feature = "avx2", target_feature = "fma"),
                     )
                 ))]
-                let simd_done = crate::kernel::mlp::layer_norm_simd_f32(
+                let simd_done = crate::kernel::mlp::layer_norm(
                     dst,
                     &ln_g[b_offset..b_offset + out_size],
                     &ln_b[b_offset..b_offset + out_size],
@@ -347,7 +347,7 @@ impl Mlp {
                         let d = *v - mean;
                         var_acc = d.mul_add(d, var_acc);
                     }
-                    let inv_std = crate::kernel::mlp::rsqrt_f32(var_acc / out_size as f32 + 1e-5);
+                    let inv_std = crate::kernel::mlp::rsqrt(var_acc / out_size as f32 + 1e-5);
 
                     for (k, v) in dst.iter_mut().enumerate() {
                         let normalized = (*v - mean) * inv_std;

@@ -14,7 +14,7 @@ use crate::Activation;
 /// Fast f32 inverse sqrt via bit manipulation + Newton-Raphson.
 /// Used by the scalar LayerNorm fallback on non-SIMD platforms.
 #[inline(always)]
-pub(crate) fn rsqrt_f32(x: f32) -> f32 {
+pub(crate) fn rsqrt(x: f32) -> f32 {
     let mut y = f32::from_bits(0x5f37_5a86 - (x.to_bits() >> 1));
     y *= (0.5 * x * y).mul_add(-y, 1.5);
     y *= (0.5 * x * y).mul_add(-y, 1.5);
@@ -30,7 +30,7 @@ pub(crate) fn rsqrt_f32(x: f32) -> f32 {
 ))]
 #[inline(never)]
 #[allow(clippy::many_single_char_names)]
-pub(crate) fn layer_norm_simd_f32(
+pub(crate) fn layer_norm(
     data: &mut [f32],
     gamma: &[f32],
     beta: &[f32],
@@ -58,7 +58,7 @@ pub(crate) fn layer_norm_simd_f32(
             sum_v = _mm256_add_ps(sum_v, _mm256_loadu_ps(data.as_ptr().add(i)));
             i += 8;
         }
-        let mut sum = hsum256_f32(sum_v);
+        let mut sum = hsum256(sum_v);
         while i < n {
             sum += data[i];
             i += 1;
@@ -75,7 +75,7 @@ pub(crate) fn layer_norm_simd_f32(
             var_v = _mm256_fmadd_ps(d, d, var_v);
             i += 8;
         }
-        let mut var = hsum256_f32(var_v);
+        let mut var = hsum256(var_v);
         while i < n {
             let d = data[i] - mean;
             var = d.mul_add(d, var);
@@ -124,7 +124,7 @@ pub(crate) fn layer_norm_simd_f32(
 /// # Safety
 /// Caller must run on a target with AVX2 enabled.
 #[inline(always)]
-pub(crate) unsafe fn hsum256_f32(v: core::arch::x86_64::__m256) -> f32 {
+pub(crate) unsafe fn hsum256(v: core::arch::x86_64::__m256) -> f32 {
     use core::arch::x86_64::*;
     unsafe {
         let hi = _mm256_extractf128_ps(v, 1);

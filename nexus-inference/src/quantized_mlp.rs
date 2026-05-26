@@ -259,7 +259,7 @@ impl QuantizedMlp {
             // Step 2: Integer matmul → i32 accumulation
             #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
             {
-                crate::kernel::quantized::matvec_i8_i32_simd(
+                crate::kernel::quantized::matvec_i8_i32(
                     &self.layers[layer_idx].w_i8,
                     &scratch_i8[..in_size],
                     &mut scratch_i32[..out_size],

@@ -9,7 +9,7 @@ use crate::kernel::activate::simd512::{sigmoid_16wide, tanh_16wide};
 /// Updates c and h in-place.
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::many_single_char_names)]
-pub(super) fn lstm_gates_avx512(gates: &[f32], c: &mut [f32], h: &mut [f32], hidden: usize) {
+pub(super) fn lstm_gates(gates: &[f32], c: &mut [f32], h: &mut [f32], hidden: usize) {
     let mut k = 0;
     let h16 = hidden & !15;
 
@@ -56,7 +56,7 @@ pub(super) fn lstm_gates_avx512(gates: &[f32], c: &mut [f32], h: &mut [f32], hid
 /// Updates h in-place.
 #[cfg(target_arch = "x86_64")]
 #[allow(clippy::many_single_char_names)]
-pub(super) fn gru_gates_avx512(
+pub(super) fn gru_gates(
     ih: &[f32],
     hh: &[f32],
     bias_ih: &[f32],

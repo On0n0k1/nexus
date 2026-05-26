@@ -277,7 +277,7 @@ impl Bnn {
             )
         ))]
         {
-            crate::kernel::binary::matvec_bias_binarize_f32(
+            crate::kernel::binary::matvec_bias_binarize(
                 &self.w_input,
                 input,
                 &self.b_input,
