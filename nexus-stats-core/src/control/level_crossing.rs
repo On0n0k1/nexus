@@ -1,147 +1,133 @@
-macro_rules! impl_level_crossing_float {
-    ($name:ident, $ty:ty) => {
-        /// Level crossing detector — signals when a value crosses a threshold.
-        ///
-        /// Returns `true` on the sample where the signal crosses the threshold
-        /// in either direction. Tracks total crossing count.
-        ///
-        /// # Use Cases
-        /// - Zero-crossing detection
-        /// - Alert when metric crosses a boundary
-        /// - Counting oscillation frequency
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            threshold: $ty,
-            was_above: bool,
-            crossings: u64,
-            initialized: bool,
-        }
-
-        impl $name {
-            /// Creates a new level crossing detector at the given threshold.
-            #[inline]
-            #[must_use]
-            pub fn new(threshold: $ty) -> Self {
-                Self {
-                    threshold,
-                    was_above: false,
-                    crossings: 0,
-                    initialized: false,
-                }
-            }
-
-            /// Feeds a sample. Returns `Ok(true)` if a crossing occurred.
-            ///
-            /// # Errors
-            ///
-            /// Returns `DataError::NotANumber` if the sample is NaN, or
-            /// `DataError::Infinite` if the sample is infinite.
-            #[inline]
-            pub fn update(&mut self, sample: $ty) -> Result<bool, crate::DataError> {
-                check_finite!(sample);
-                let is_above = sample >= self.threshold;
-
-                if !self.initialized {
-                    self.was_above = is_above;
-                    self.initialized = true;
-                    return Ok(false);
-                }
-
-                if is_above != self.was_above {
-                    self.was_above = is_above;
-                    self.crossings += 1;
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            }
-
-            /// Total number of crossings detected.
-            #[inline]
-            #[must_use]
-            pub fn crossing_count(&self) -> u64 {
-                self.crossings
-            }
-
-            /// Resets the detector.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.was_above = false;
-                self.crossings = 0;
-                self.initialized = false;
-            }
-        }
-    };
+/// Level crossing detector — signals when a value crosses a threshold.
+///
+/// Returns `true` on the sample where the signal crosses the threshold
+/// in either direction. Tracks total crossing count.
+///
+/// # Use Cases
+/// - Zero-crossing detection
+/// - Alert when metric crosses a boundary
+/// - Counting oscillation frequency
+#[derive(Debug, Clone)]
+pub struct LevelCrossingF64 {
+    threshold: f64,
+    was_above: bool,
+    crossings: u64,
+    initialized: bool,
 }
 
-macro_rules! impl_level_crossing_int {
-    ($name:ident, $ty:ty) => {
-        /// Level crossing detector — signals when a value crosses a threshold.
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            threshold: $ty,
-            was_above: bool,
-            crossings: u64,
-            initialized: bool,
+impl LevelCrossingF64 {
+    /// Creates a new level crossing detector at the given threshold.
+    #[inline]
+    #[must_use]
+    pub fn new(threshold: f64) -> Self {
+        Self {
+            threshold,
+            was_above: false,
+            crossings: 0,
+            initialized: false,
+        }
+    }
+
+    /// Feeds a sample. Returns `Ok(true)` if a crossing occurred.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the sample is NaN, or
+    /// `DataError::Infinite` if the sample is infinite.
+    #[inline]
+    pub fn update(&mut self, sample: f64) -> Result<bool, crate::DataError> {
+        check_finite!(sample);
+        let is_above = sample >= self.threshold;
+
+        if !self.initialized {
+            self.was_above = is_above;
+            self.initialized = true;
+            return Ok(false);
         }
 
-        impl $name {
-            /// Creates a new level crossing detector at the given threshold.
-            #[inline]
-            #[must_use]
-            pub fn new(threshold: $ty) -> Self {
-                Self {
-                    threshold,
-                    was_above: false,
-                    crossings: 0,
-                    initialized: false,
-                }
-            }
-
-            /// Feeds a sample. Returns `true` if a crossing occurred.
-            #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> bool {
-                let is_above = sample >= self.threshold;
-
-                if !self.initialized {
-                    self.was_above = is_above;
-                    self.initialized = true;
-                    return false;
-                }
-
-                if is_above != self.was_above {
-                    self.was_above = is_above;
-                    self.crossings += 1;
-                    true
-                } else {
-                    false
-                }
-            }
-
-            /// Total number of crossings detected.
-            #[inline]
-            #[must_use]
-            pub fn crossing_count(&self) -> u64 {
-                self.crossings
-            }
-
-            /// Resets the detector.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.was_above = false;
-                self.crossings = 0;
-                self.initialized = false;
-            }
+        if is_above == self.was_above {
+            Ok(false)
+        } else {
+            self.was_above = is_above;
+            self.crossings += 1;
+            Ok(true)
         }
-    };
+    }
+
+    /// Total number of crossings detected.
+    #[inline]
+    #[must_use]
+    pub fn crossing_count(&self) -> u64 {
+        self.crossings
+    }
+
+    /// Resets the detector.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.was_above = false;
+        self.crossings = 0;
+        self.initialized = false;
+    }
 }
 
-impl_level_crossing_float!(LevelCrossingF64, f64);
-impl_level_crossing_float!(LevelCrossingF32, f32);
-impl_level_crossing_int!(LevelCrossingI64, i64);
-impl_level_crossing_int!(LevelCrossingI32, i32);
-impl_level_crossing_int!(LevelCrossingI128, i128);
+/// Level crossing detector — signals when a value crosses a threshold.
+#[derive(Debug, Clone)]
+pub struct LevelCrossingI64 {
+    threshold: i64,
+    was_above: bool,
+    crossings: u64,
+    initialized: bool,
+}
+
+impl LevelCrossingI64 {
+    /// Creates a new level crossing detector at the given threshold.
+    #[inline]
+    #[must_use]
+    pub fn new(threshold: i64) -> Self {
+        Self {
+            threshold,
+            was_above: false,
+            crossings: 0,
+            initialized: false,
+        }
+    }
+
+    /// Feeds a sample. Returns `true` if a crossing occurred.
+    #[inline]
+    #[must_use]
+    pub fn update(&mut self, sample: i64) -> bool {
+        let is_above = sample >= self.threshold;
+
+        if !self.initialized {
+            self.was_above = is_above;
+            self.initialized = true;
+            return false;
+        }
+
+        if is_above == self.was_above {
+            false
+        } else {
+            self.was_above = is_above;
+            self.crossings += 1;
+            true
+        }
+    }
+
+    /// Total number of crossings detected.
+    #[inline]
+    #[must_use]
+    pub fn crossing_count(&self) -> u64 {
+        self.crossings
+    }
+
+    /// Resets the detector.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.was_above = false;
+        self.crossings = 0;
+        self.initialized = false;
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -201,13 +187,6 @@ mod tests {
         let _ = lc.update(60.0).unwrap();
         lc.reset();
         assert_eq!(lc.crossing_count(), 0);
-    }
-
-    #[test]
-    fn i128_basic() {
-        let mut lc = LevelCrossingI128::new(100);
-        assert!(!lc.update(50));
-        assert!(lc.update(150));
     }
 
     #[test]

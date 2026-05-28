@@ -1,6 +1,6 @@
 use nexus_stats_core::Direction;
-use nexus_stats_core::smoothing::{EmaF32, EmaF64};
-use nexus_stats_core::statistics::{WelfordF32, WelfordF64};
+use nexus_stats_core::smoothing::EmaF64;
+use nexus_stats_core::statistics::WelfordF64;
 
 macro_rules! impl_adaptive_threshold {
     ($name:ident, $builder:ident, $ty:ty, $ema:ty, $ema_builder:ident, $welford:ty) => {
@@ -282,14 +282,6 @@ impl_adaptive_threshold!(
     EmaF64Builder,
     WelfordF64
 );
-impl_adaptive_threshold!(
-    AdaptiveThresholdF32,
-    AdaptiveThresholdF32Builder,
-    f32,
-    EmaF32,
-    EmaF32Builder,
-    WelfordF32
-);
 
 #[cfg(test)]
 mod tests {
@@ -408,20 +400,6 @@ mod tests {
         at.reset();
         assert_eq!(at.count(), 0);
         assert!(!at.is_primed());
-    }
-
-    #[test]
-    fn f32_basic() {
-        let mut at = AdaptiveThresholdF32::builder()
-            .alpha(0.1)
-            .min_samples(5)
-            .build()
-            .unwrap();
-
-        for _ in 0..10 {
-            let _ = at.update(100.0);
-        }
-        assert!(at.is_primed());
     }
 
     #[test]

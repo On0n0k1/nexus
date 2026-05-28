@@ -1,270 +1,241 @@
-macro_rules! impl_first_diff_float {
-    ($name:ident, $ty:ty, $zero:expr) => {
-        /// First difference — `x[n] - x[n-1]`.
-        ///
-        /// Returns the change between consecutive samples.
-        /// `None` on the first sample (no previous value to diff against).
-        ///
-        /// # Use Cases
-        /// - Computing returns from prices
-        /// - Velocity from position
-        /// - Rate of change of any signal
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            prev: $ty,
-            initialized: bool,
-        }
-
-        impl $name {
-            /// Creates a new first-difference filter.
-            #[inline]
-            #[must_use]
-            pub const fn new() -> Self {
-                Self {
-                    prev: $zero,
-                    initialized: false,
-                }
-            }
-
-            /// Feeds a sample. Returns `Ok(Some(x[n] - x[n-1]))` or `Ok(None)` on first sample.
-            ///
-            /// # Errors
-            ///
-            /// Returns `DataError::NotANumber` if the sample is NaN, or
-            /// `DataError::Infinite` if the sample is infinite.
-            #[inline]
-            pub fn update(&mut self, sample: $ty) -> Result<Option<$ty>, crate::DataError> {
-                check_finite!(sample);
-                if !self.initialized {
-                    self.prev = sample;
-                    self.initialized = true;
-                    return Ok(Option::None);
-                }
-                let diff = sample - self.prev;
-                self.prev = sample;
-                Ok(Option::Some(diff))
-            }
-
-            /// Resets to uninitialized state.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.prev = $zero;
-                self.initialized = false;
-            }
-        }
-
-        impl Default for $name {
-            #[inline]
-            fn default() -> Self {
-                Self::new()
-            }
-        }
-    };
+/// First difference — `x[n] - x[n-1]`.
+///
+/// Returns the change between consecutive samples.
+/// `None` on the first sample (no previous value to diff against).
+///
+/// # Use Cases
+/// - Computing returns from prices
+/// - Velocity from position
+/// - Rate of change of any signal
+#[derive(Debug, Clone)]
+pub struct FirstDiffF64 {
+    prev: f64,
+    initialized: bool,
 }
 
-macro_rules! impl_first_diff_int {
-    ($name:ident, $ty:ty, $zero:expr) => {
-        /// First difference — `x[n] - x[n-1]`.
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            prev: $ty,
-            initialized: bool,
+impl FirstDiffF64 {
+    /// Creates a new first-difference filter.
+    #[inline]
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            prev: 0.0,
+            initialized: false,
         }
+    }
 
-        impl $name {
-            /// Creates a new first-difference filter.
-            #[inline]
-            #[must_use]
-            pub const fn new() -> Self {
-                Self {
-                    prev: $zero,
-                    initialized: false,
-                }
-            }
-
-            /// Feeds a sample. Returns `Some(x[n] - x[n-1])` or `None` on first sample.
-            #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<$ty> {
-                if !self.initialized {
-                    self.prev = sample;
-                    self.initialized = true;
-                    return Option::None;
-                }
-                let diff = sample - self.prev;
-                self.prev = sample;
-                Option::Some(diff)
-            }
-
-            /// Resets to uninitialized state.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.prev = $zero;
-                self.initialized = false;
-            }
+    /// Feeds a sample. Returns `Ok(Some(x[n] - x[n-1]))` or `Ok(None)` on first sample.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the sample is NaN, or
+    /// `DataError::Infinite` if the sample is infinite.
+    #[inline]
+    pub fn update(&mut self, sample: f64) -> Result<Option<f64>, crate::DataError> {
+        check_finite!(sample);
+        if !self.initialized {
+            self.prev = sample;
+            self.initialized = true;
+            return Ok(Option::None);
         }
+        let diff = sample - self.prev;
+        self.prev = sample;
+        Ok(Option::Some(diff))
+    }
 
-        impl Default for $name {
-            #[inline]
-            fn default() -> Self {
-                Self::new()
-            }
-        }
-    };
+    /// Resets to uninitialized state.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.prev = 0.0;
+        self.initialized = false;
+    }
 }
 
-macro_rules! impl_second_diff_float {
-    ($name:ident, $ty:ty, $zero:expr) => {
-        /// Second difference — `x[n] - 2*x[n-1] + x[n-2]`.
-        ///
-        /// Returns the acceleration (change in change) of a signal.
-        /// `None` until the third sample.
-        ///
-        /// # Use Cases
-        /// - Acceleration from position
-        /// - Curvature detection
-        /// - "Is the rate of change itself changing?"
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            prev2: $ty,
-            prev1: $ty,
-            count: u64,
-        }
-
-        impl $name {
-            /// Creates a new second-difference filter.
-            #[inline]
-            #[must_use]
-            pub const fn new() -> Self {
-                Self {
-                    prev2: $zero,
-                    prev1: $zero,
-                    count: 0,
-                }
-            }
-
-            /// Feeds a sample. Returns `Ok(Some(x[n] - 2*x[n-1] + x[n-2]))` or `Ok(None)`
-            /// until 3 samples have been fed.
-            ///
-            /// # Errors
-            ///
-            /// Returns `DataError::NotANumber` if the sample is NaN, or
-            /// `DataError::Infinite` if the sample is infinite.
-            #[inline]
-            pub fn update(&mut self, sample: $ty) -> Result<Option<$ty>, crate::DataError> {
-                check_finite!(sample);
-                self.count += 1;
-
-                if self.count == 1 {
-                    self.prev1 = sample;
-                    return Ok(Option::None);
-                }
-                if self.count == 2 {
-                    self.prev2 = self.prev1;
-                    self.prev1 = sample;
-                    return Ok(Option::None);
-                }
-
-                let two = (2 as $ty);
-                let diff2 = sample - two * self.prev1 + self.prev2;
-                self.prev2 = self.prev1;
-                self.prev1 = sample;
-                Ok(Option::Some(diff2))
-            }
-
-            /// Resets to uninitialized state.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.prev2 = $zero;
-                self.prev1 = $zero;
-                self.count = 0;
-            }
-        }
-
-        impl Default for $name {
-            #[inline]
-            fn default() -> Self {
-                Self::new()
-            }
-        }
-    };
+impl Default for FirstDiffF64 {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-macro_rules! impl_second_diff_int {
-    ($name:ident, $ty:ty, $zero:expr) => {
-        /// Second difference — `x[n] - 2*x[n-1] + x[n-2]`.
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            prev2: $ty,
-            prev1: $ty,
-            count: u64,
-        }
-
-        impl $name {
-            /// Creates a new second-difference filter.
-            #[inline]
-            #[must_use]
-            pub const fn new() -> Self {
-                Self {
-                    prev2: $zero,
-                    prev1: $zero,
-                    count: 0,
-                }
-            }
-
-            /// Feeds a sample. Returns `Some(x[n] - 2*x[n-1] + x[n-2])` or `None`
-            /// until 3 samples have been fed.
-            #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<$ty> {
-                self.count += 1;
-
-                if self.count == 1 {
-                    self.prev1 = sample;
-                    return Option::None;
-                }
-                if self.count == 2 {
-                    self.prev2 = self.prev1;
-                    self.prev1 = sample;
-                    return Option::None;
-                }
-
-                let two = (2 as $ty);
-                let diff2 = sample - two * self.prev1 + self.prev2;
-                self.prev2 = self.prev1;
-                self.prev1 = sample;
-                Option::Some(diff2)
-            }
-
-            /// Resets to uninitialized state.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.prev2 = $zero;
-                self.prev1 = $zero;
-                self.count = 0;
-            }
-        }
-
-        impl Default for $name {
-            #[inline]
-            fn default() -> Self {
-                Self::new()
-            }
-        }
-    };
+/// First difference — `x[n] - x[n-1]`.
+#[derive(Debug, Clone)]
+pub struct FirstDiffI64 {
+    prev: i64,
+    initialized: bool,
 }
 
-impl_first_diff_float!(FirstDiffF64, f64, 0.0);
-impl_first_diff_float!(FirstDiffF32, f32, 0.0);
-impl_first_diff_int!(FirstDiffI64, i64, 0);
-impl_first_diff_int!(FirstDiffI32, i32, 0);
-impl_first_diff_int!(FirstDiffI128, i128, 0);
+impl FirstDiffI64 {
+    /// Creates a new first-difference filter.
+    #[inline]
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            prev: 0,
+            initialized: false,
+        }
+    }
 
-impl_second_diff_float!(SecondDiffF64, f64, 0.0);
-impl_second_diff_float!(SecondDiffF32, f32, 0.0);
-impl_second_diff_int!(SecondDiffI64, i64, 0);
-impl_second_diff_int!(SecondDiffI32, i32, 0);
-impl_second_diff_int!(SecondDiffI128, i128, 0);
+    /// Feeds a sample. Returns `Some(x[n] - x[n-1])` or `None` on first sample.
+    #[inline]
+    #[must_use]
+    pub fn update(&mut self, sample: i64) -> Option<i64> {
+        if !self.initialized {
+            self.prev = sample;
+            self.initialized = true;
+            return Option::None;
+        }
+        let diff = sample - self.prev;
+        self.prev = sample;
+        Option::Some(diff)
+    }
+
+    /// Resets to uninitialized state.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.prev = 0;
+        self.initialized = false;
+    }
+}
+
+impl Default for FirstDiffI64 {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Second difference — `x[n] - 2*x[n-1] + x[n-2]`.
+///
+/// Returns the acceleration (change in change) of a signal.
+/// `None` until the third sample.
+///
+/// # Use Cases
+/// - Acceleration from position
+/// - Curvature detection
+/// - "Is the rate of change itself changing?"
+#[derive(Debug, Clone)]
+pub struct SecondDiffF64 {
+    prev2: f64,
+    prev1: f64,
+    count: u64,
+}
+
+impl SecondDiffF64 {
+    /// Creates a new second-difference filter.
+    #[inline]
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            prev2: 0.0,
+            prev1: 0.0,
+            count: 0,
+        }
+    }
+
+    /// Feeds a sample. Returns `Ok(Some(x[n] - 2*x[n-1] + x[n-2]))` or `Ok(None)`
+    /// until 3 samples have been fed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the sample is NaN, or
+    /// `DataError::Infinite` if the sample is infinite.
+    #[inline]
+    #[allow(clippy::suboptimal_flops)]
+    pub fn update(&mut self, sample: f64) -> Result<Option<f64>, crate::DataError> {
+        check_finite!(sample);
+        self.count += 1;
+
+        if self.count == 1 {
+            self.prev1 = sample;
+            return Ok(Option::None);
+        }
+        if self.count == 2 {
+            self.prev2 = self.prev1;
+            self.prev1 = sample;
+            return Ok(Option::None);
+        }
+
+        let diff2 = sample - 2.0 * self.prev1 + self.prev2;
+        self.prev2 = self.prev1;
+        self.prev1 = sample;
+        Ok(Option::Some(diff2))
+    }
+
+    /// Resets to uninitialized state.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.prev2 = 0.0;
+        self.prev1 = 0.0;
+        self.count = 0;
+    }
+}
+
+impl Default for SecondDiffF64 {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Second difference — `x[n] - 2*x[n-1] + x[n-2]`.
+#[derive(Debug, Clone)]
+pub struct SecondDiffI64 {
+    prev2: i64,
+    prev1: i64,
+    count: u64,
+}
+
+impl SecondDiffI64 {
+    /// Creates a new second-difference filter.
+    #[inline]
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            prev2: 0,
+            prev1: 0,
+            count: 0,
+        }
+    }
+
+    /// Feeds a sample. Returns `Some(x[n] - 2*x[n-1] + x[n-2])` or `None`
+    /// until 3 samples have been fed.
+    #[inline]
+    #[must_use]
+    pub fn update(&mut self, sample: i64) -> Option<i64> {
+        self.count += 1;
+
+        if self.count == 1 {
+            self.prev1 = sample;
+            return Option::None;
+        }
+        if self.count == 2 {
+            self.prev2 = self.prev1;
+            self.prev1 = sample;
+            return Option::None;
+        }
+
+        let diff2 = sample - 2 * self.prev1 + self.prev2;
+        self.prev2 = self.prev1;
+        self.prev1 = sample;
+        Option::Some(diff2)
+    }
+
+    /// Resets to uninitialized state.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.prev2 = 0;
+        self.prev1 = 0;
+        self.count = 0;
+    }
+}
+
+impl Default for SecondDiffI64 {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -346,21 +317,6 @@ mod tests {
         let _ = sd.update(2.0).unwrap();
         sd.reset();
         assert!(sd.update(5.0).unwrap().is_none());
-    }
-
-    #[test]
-    fn first_diff_i128() {
-        let mut fd = FirstDiffI128::new();
-        let _ = fd.update(100);
-        assert_eq!(fd.update(130), Some(30));
-    }
-
-    #[test]
-    fn second_diff_i128() {
-        let mut sd = SecondDiffI128::new();
-        let _ = sd.update(10);
-        let _ = sd.update(20);
-        assert_eq!(sd.update(30), Some(0)); // linear
     }
 
     #[test]

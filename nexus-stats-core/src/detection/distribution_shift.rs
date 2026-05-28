@@ -101,15 +101,15 @@ impl DistributionShiftF64 {
     #[inline]
     #[must_use]
     pub fn is_shifted(&self, threshold: f64) -> bool {
-        if let Some(ks) = self.kurtosis_shift() {
-            if ks.abs() > threshold {
-                return true;
-            }
+        if let Some(ks) = self.kurtosis_shift()
+            && ks.abs() > threshold
+        {
+            return true;
         }
-        if let Some(ss) = self.skewness_shift() {
-            if ss.abs() > threshold {
-                return true;
-            }
+        if let Some(ss) = self.skewness_shift()
+            && ss.abs() > threshold
+        {
+            return true;
         }
         false
     }

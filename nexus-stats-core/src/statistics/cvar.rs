@@ -1,189 +1,175 @@
-use super::{PercentileF32, PercentileF64};
+use super::PercentileF64;
 
-macro_rules! impl_cvar {
-    ($name:ident, $builder:ident, $ty:ty, $percentile_name:ident) => {
-        /// Conditional Value at Risk (Expected Shortfall).
-        ///
-        /// Streaming CVaR at confidence level alpha. CVaR_α is the expected
-        /// value of outcomes in the worst α fraction:
-        ///
-        /// CVaR_α = E[X | X <= VaR_α]
-        ///
-        /// Composes a P² percentile estimator internally for VaR estimation.
-        /// Tail samples (those at or below the estimated VaR) are accumulated
-        /// for the conditional mean.
-        ///
-        /// # Examples
-        ///
-        /// ```
-        #[doc = concat!("use nexus_stats_core::statistics::", stringify!($name), ";")]
-        ///
-        #[doc = concat!("let mut cvar = ", stringify!($name), "::builder().alpha(0.05).build().unwrap();")]
-        /// // Cycling input so tail samples accumulate after P² converges
-        /// for i in 0..5000u64 {
-        #[doc = concat!("    cvar.update((i % 1000 + 1) as ", stringify!($ty), ").unwrap();")]
-        /// }
-        /// let cv = cvar.cvar().unwrap();
-        /// let var = cvar.var().unwrap();
-        /// assert!(cv < 500.0 && cv > 0.0);
-        /// ```
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            percentile: $percentile_name,
-            tail_sum: $ty,
-            tail_count: u64,
-            count: u64,
-            alpha: $ty,
-        }
-
-        /// Builder for [`
-        #[doc = stringify!($name)]
-        /// `].
-        #[derive(Debug, Clone)]
-        pub struct $builder {
-            alpha: Option<$ty>,
-        }
-
-        impl $name {
-            /// Creates a builder.
-            #[inline]
-            #[must_use]
-            pub fn builder() -> $builder {
-                $builder {
-                    alpha: Option::None,
-                }
-            }
-
-            /// Feeds a sample.
-            ///
-            /// Samples below the current VaR estimate contribute to the
-            /// CVaR (conditional tail mean). The VaR estimate is updated
-            /// via the internal P² percentile tracker.
-            ///
-            /// # Errors
-            ///
-            /// Returns `DataError::NotANumber` if the sample is NaN, or
-            /// `DataError::Infinite` if the sample is infinite.
-            #[inline]
-            pub fn update(&mut self, sample: $ty) -> Result<(), crate::DataError> {
-                check_finite!(sample);
-                self.percentile.update(sample)?;
-                self.count += 1;
-
-                if self.percentile.is_primed() {
-                    if let Option::Some(var) = self.percentile.percentile() {
-                        if sample <= var {
-                            self.tail_sum += sample;
-                            self.tail_count += 1;
-                        }
-                    }
-                }
-
-                Ok(())
-            }
-
-            /// CVaR (Expected Shortfall): mean of tail observations.
-            ///
-            /// Returns `None` if not primed or no tail observations.
-            #[inline]
-            #[must_use]
-            pub fn cvar(&self) -> Option<$ty> {
-                if !self.is_primed() || self.tail_count == 0 {
-                    return Option::None;
-                }
-                Option::Some(self.tail_sum / self.tail_count as $ty)
-            }
-
-            /// VaR (Value at Risk): the alpha-quantile.
-            ///
-            /// Delegates to the internal P² percentile estimator.
-            #[inline]
-            #[must_use]
-            pub fn var(&self) -> Option<$ty> {
-                self.percentile.percentile()
-            }
-
-            /// Confidence level.
-            #[inline]
-            #[must_use]
-            pub fn alpha(&self) -> $ty {
-                self.alpha
-            }
-
-            /// Number of samples classified into the tail.
-            #[inline]
-            #[must_use]
-            pub fn tail_count(&self) -> u64 {
-                self.tail_count
-            }
-
-            /// Total samples processed.
-            #[inline]
-            #[must_use]
-            pub fn count(&self) -> u64 {
-                self.count
-            }
-
-            /// Whether the VaR estimate is primed and at least one tail
-            /// observation has been recorded.
-            #[inline]
-            #[must_use]
-            pub fn is_primed(&self) -> bool {
-                self.percentile.is_primed() && self.tail_count >= 1
-            }
-
-            /// Resets all state. Alpha is preserved.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.percentile.reset();
-                self.tail_sum = 0.0 as $ty;
-                self.tail_count = 0;
-                self.count = 0;
-            }
-        }
-
-        impl $builder {
-            /// Confidence level in (0, 1) exclusive.
-            ///
-            /// For 5% CVaR (worst 5%): `alpha(0.05)`.
-            #[inline]
-            #[must_use]
-            pub fn alpha(mut self, alpha: $ty) -> Self {
-                self.alpha = Option::Some(alpha);
-                self
-            }
-
-            /// Builds the CVaR tracker.
-            ///
-            /// # Errors
-            ///
-            /// Returns `ConfigError` if alpha is missing or not in (0, 1).
-            pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let alpha = self
-                    .alpha
-                    .ok_or(crate::ConfigError::Missing("alpha"))?;
-                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
-                    return Err(crate::ConfigError::Invalid(
-                        "alpha must be in (0, 1) exclusive",
-                    ));
-                }
-
-                let percentile = $percentile_name::new(alpha)?;
-
-                Ok($name {
-                    percentile,
-                    tail_sum: 0.0 as $ty,
-                    tail_count: 0,
-                    count: 0,
-                    alpha,
-                })
-            }
-        }
-    };
+/// Conditional Value at Risk (Expected Shortfall).
+///
+/// Streaming CVaR at confidence level alpha. CVaR_α is the expected
+/// value of outcomes in the worst α fraction:
+///
+/// CVaR_α = E[X | X <= VaR_α]
+///
+/// Composes a P² percentile estimator internally for VaR estimation.
+/// Tail samples (those at or below the estimated VaR) are accumulated
+/// for the conditional mean.
+///
+/// # Examples
+///
+/// ```
+/// use nexus_stats_core::statistics::CvarF64;
+///
+/// let mut cvar = CvarF64::builder().alpha(0.05).build().unwrap();
+/// // Cycling input so tail samples accumulate after P² converges
+/// for i in 0..5000u64 {
+///     cvar.update((i % 1000 + 1) as f64).unwrap();
+/// }
+/// let cv = cvar.cvar().unwrap();
+/// let var = cvar.var().unwrap();
+/// assert!(cv < 500.0 && cv > 0.0);
+/// ```
+#[derive(Debug, Clone)]
+pub struct CvarF64 {
+    percentile: PercentileF64,
+    tail_sum: f64,
+    tail_count: u64,
+    count: u64,
+    alpha: f64,
 }
 
-impl_cvar!(CvarF64, CvarF64Builder, f64, PercentileF64);
-impl_cvar!(CvarF32, CvarF32Builder, f32, PercentileF32);
+/// Builder for [`CvarF64`].
+#[derive(Debug, Clone)]
+pub struct CvarF64Builder {
+    alpha: Option<f64>,
+}
+
+impl CvarF64 {
+    /// Creates a builder.
+    #[inline]
+    #[must_use]
+    pub fn builder() -> CvarF64Builder {
+        CvarF64Builder { alpha: None }
+    }
+
+    /// Feeds a sample.
+    ///
+    /// Samples below the current VaR estimate contribute to the
+    /// CVaR (conditional tail mean). The VaR estimate is updated
+    /// via the internal P² percentile tracker.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the sample is NaN, or
+    /// `DataError::Infinite` if the sample is infinite.
+    #[inline]
+    pub fn update(&mut self, sample: f64) -> Result<(), crate::DataError> {
+        check_finite!(sample);
+        self.percentile.update(sample)?;
+        self.count += 1;
+
+        if self.percentile.is_primed()
+            && let Some(var) = self.percentile.percentile()
+            && sample <= var
+        {
+            self.tail_sum += sample;
+            self.tail_count += 1;
+        }
+
+        Ok(())
+    }
+
+    /// CVaR (Expected Shortfall): mean of tail observations.
+    ///
+    /// Returns `None` if not primed or no tail observations.
+    #[inline]
+    #[must_use]
+    pub fn cvar(&self) -> Option<f64> {
+        if !self.is_primed() || self.tail_count == 0 {
+            return None;
+        }
+        Some(self.tail_sum / self.tail_count as f64)
+    }
+
+    /// VaR (Value at Risk): the alpha-quantile.
+    ///
+    /// Delegates to the internal P² percentile estimator.
+    #[inline]
+    #[must_use]
+    pub fn var(&self) -> Option<f64> {
+        self.percentile.percentile()
+    }
+
+    /// Confidence level.
+    #[inline]
+    #[must_use]
+    pub fn alpha(&self) -> f64 {
+        self.alpha
+    }
+
+    /// Number of samples classified into the tail.
+    #[inline]
+    #[must_use]
+    pub fn tail_count(&self) -> u64 {
+        self.tail_count
+    }
+
+    /// Total samples processed.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether the VaR estimate is primed and at least one tail
+    /// observation has been recorded.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.percentile.is_primed() && self.tail_count >= 1
+    }
+
+    /// Resets all state. Alpha is preserved.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.percentile.reset();
+        self.tail_sum = 0.0;
+        self.tail_count = 0;
+        self.count = 0;
+    }
+}
+
+impl CvarF64Builder {
+    /// Confidence level in (0, 1) exclusive.
+    ///
+    /// For 5% CVaR (worst 5%): `alpha(0.05)`.
+    #[inline]
+    #[must_use]
+    pub fn alpha(mut self, alpha: f64) -> Self {
+        self.alpha = Some(alpha);
+        self
+    }
+
+    /// Builds the CVaR tracker.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError` if alpha is missing or not in (0, 1).
+    pub fn build(self) -> Result<CvarF64, crate::ConfigError> {
+        let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+        if !(alpha > 0.0 && alpha < 1.0) {
+            return Err(crate::ConfigError::Invalid(
+                "alpha must be in (0, 1) exclusive",
+            ));
+        }
+
+        let percentile = PercentileF64::new(alpha)?;
+
+        Ok(CvarF64 {
+            percentile,
+            tail_sum: 0.0,
+            tail_count: 0,
+            count: 0,
+            alpha,
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {

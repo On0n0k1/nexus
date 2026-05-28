@@ -1,141 +1,126 @@
-macro_rules! impl_slew_float {
-    ($name:ident, $ty:ty) => {
-        /// Slew rate limiter — clamps output change per sample.
-        ///
-        /// Limits how fast the output can change between consecutive samples.
-        /// Useful for preventing sudden jumps from propagating through a system.
-        ///
-        /// # Use Cases
-        /// - Smoothing control signals
-        /// - Preventing sudden parameter changes from destabilizing a system
-        /// - Rate-limiting position updates
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            max_rate: $ty,
-            value: $ty,
-            initialized: bool,
-        }
-
-        impl $name {
-            /// Creates a new slew limiter with the given maximum change per sample.
-            #[inline]
-            pub fn new(max_rate: $ty) -> Result<Self, crate::ConfigError> {
-                #[allow(clippy::neg_cmp_op_on_partial_ord)]
-                if !(max_rate > 0.0 as $ty) {
-                    return Err(crate::ConfigError::Invalid("max_rate must be positive"));
-                }
-                Ok(Self {
-                    max_rate,
-                    value: 0.0 as $ty,
-                    initialized: false,
-                })
-            }
-
-            /// Feeds a sample. Returns the rate-limited output.
-            ///
-            /// # Errors
-            ///
-            /// Returns `DataError::NotANumber` if the sample is NaN, or
-            /// `DataError::Infinite` if the sample is infinite.
-            #[inline]
-            pub fn update(&mut self, sample: $ty) -> Result<$ty, crate::DataError> {
-                check_finite!(sample);
-                if !self.initialized {
-                    self.value = sample;
-                    self.initialized = true;
-                    return Ok(sample);
-                }
-
-                self.value = sample.clamp(self.value - self.max_rate, self.value + self.max_rate);
-                Ok(self.value)
-            }
-
-            /// Current output value.
-            #[inline]
-            #[must_use]
-            pub fn value(&self) -> $ty {
-                self.value
-            }
-
-            /// Resets to uninitialized state.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.value = 0.0 as $ty;
-                self.initialized = false;
-            }
-        }
-    };
+/// Slew rate limiter — clamps output change per sample.
+///
+/// Limits how fast the output can change between consecutive samples.
+/// Useful for preventing sudden jumps from propagating through a system.
+///
+/// # Use Cases
+/// - Smoothing control signals
+/// - Preventing sudden parameter changes from destabilizing a system
+/// - Rate-limiting position updates
+#[derive(Debug, Clone)]
+pub struct SlewF64 {
+    max_rate: f64,
+    value: f64,
+    initialized: bool,
 }
 
-macro_rules! impl_slew_int {
-    ($name:ident, $ty:ty, $zero:expr) => {
-        /// Slew rate limiter — clamps output change per sample.
-        ///
-        /// Limits how fast the output can change between consecutive samples.
-        /// Useful for preventing sudden jumps from propagating through a system.
-        ///
-        /// # Use Cases
-        /// - Smoothing control signals
-        /// - Preventing sudden parameter changes from destabilizing a system
-        /// - Rate-limiting position updates
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            max_rate: $ty,
-            value: $ty,
-            initialized: bool,
+impl SlewF64 {
+    /// Creates a new slew limiter with the given maximum change per sample.
+    #[inline]
+    pub fn new(max_rate: f64) -> Result<Self, crate::ConfigError> {
+        #[allow(clippy::neg_cmp_op_on_partial_ord)]
+        if !(max_rate > 0.0) {
+            return Err(crate::ConfigError::Invalid("max_rate must be positive"));
+        }
+        Ok(Self {
+            max_rate,
+            value: 0.0,
+            initialized: false,
+        })
+    }
+
+    /// Feeds a sample. Returns the rate-limited output.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the sample is NaN, or
+    /// `DataError::Infinite` if the sample is infinite.
+    #[inline]
+    pub fn update(&mut self, sample: f64) -> Result<f64, crate::DataError> {
+        check_finite!(sample);
+        if !self.initialized {
+            self.value = sample;
+            self.initialized = true;
+            return Ok(sample);
         }
 
-        impl $name {
-            /// Creates a new slew limiter with the given maximum change per sample.
-            #[inline]
-            pub fn new(max_rate: $ty) -> Result<Self, crate::ConfigError> {
-                #[allow(clippy::neg_cmp_op_on_partial_ord)]
-                if !(max_rate > $zero) {
-                    return Err(crate::ConfigError::Invalid("max_rate must be positive"));
-                }
-                Ok(Self {
-                    max_rate,
-                    value: $zero,
-                    initialized: false,
-                })
-            }
+        self.value = sample.clamp(self.value - self.max_rate, self.value + self.max_rate);
+        Ok(self.value)
+    }
 
-            /// Feeds a sample. Returns the rate-limited output.
-            #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> $ty {
-                if !self.initialized {
-                    self.value = sample;
-                    self.initialized = true;
-                    return sample;
-                }
+    /// Current output value.
+    #[inline]
+    #[must_use]
+    pub fn value(&self) -> f64 {
+        self.value
+    }
 
-                self.value = sample.clamp(self.value - self.max_rate, self.value + self.max_rate);
-                self.value
-            }
-
-            /// Current output value.
-            #[inline]
-            #[must_use]
-            pub fn value(&self) -> $ty {
-                self.value
-            }
-
-            /// Resets to uninitialized state.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.value = $zero;
-                self.initialized = false;
-            }
-        }
-    };
+    /// Resets to uninitialized state.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.value = 0.0;
+        self.initialized = false;
+    }
 }
 
-impl_slew_float!(SlewF64, f64);
-impl_slew_float!(SlewF32, f32);
-impl_slew_int!(SlewI64, i64, 0);
-impl_slew_int!(SlewI32, i32, 0);
-impl_slew_int!(SlewI128, i128, 0);
+/// Slew rate limiter — clamps output change per sample.
+///
+/// Limits how fast the output can change between consecutive samples.
+/// Useful for preventing sudden jumps from propagating through a system.
+///
+/// # Use Cases
+/// - Smoothing control signals
+/// - Preventing sudden parameter changes from destabilizing a system
+/// - Rate-limiting position updates
+#[derive(Debug, Clone)]
+pub struct SlewI64 {
+    max_rate: i64,
+    value: i64,
+    initialized: bool,
+}
+
+impl SlewI64 {
+    /// Creates a new slew limiter with the given maximum change per sample.
+    #[inline]
+    pub fn new(max_rate: i64) -> Result<Self, crate::ConfigError> {
+        if max_rate <= 0 {
+            return Err(crate::ConfigError::Invalid("max_rate must be positive"));
+        }
+        Ok(Self {
+            max_rate,
+            value: 0,
+            initialized: false,
+        })
+    }
+
+    /// Feeds a sample. Returns the rate-limited output.
+    #[inline]
+    #[must_use]
+    pub fn update(&mut self, sample: i64) -> i64 {
+        if !self.initialized {
+            self.value = sample;
+            self.initialized = true;
+            return sample;
+        }
+
+        self.value = sample.clamp(self.value - self.max_rate, self.value + self.max_rate);
+        self.value
+    }
+
+    /// Current output value.
+    #[inline]
+    #[must_use]
+    pub fn value(&self) -> i64 {
+        self.value
+    }
+
+    /// Resets to uninitialized state.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.value = 0;
+        self.initialized = false;
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -192,13 +177,6 @@ mod tests {
             SlewI64::new(0),
             Err(crate::ConfigError::Invalid(_))
         ));
-    }
-
-    #[test]
-    fn i128_basic() {
-        let mut s = SlewI128::new(5).unwrap();
-        assert_eq!(s.update(100), 100);
-        assert_eq!(s.update(200), 105);
     }
 
     #[test]

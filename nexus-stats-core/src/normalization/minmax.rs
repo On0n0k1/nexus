@@ -1,4 +1,5 @@
-use crate::monitoring::{WindowedMaxF32, WindowedMaxF64, WindowedMinF32, WindowedMinF64};
+use crate::monitoring::windowed::{WindowedMaxF32, WindowedMinF32};
+use crate::monitoring::{WindowedMaxF64, WindowedMinF64};
 
 macro_rules! impl_minmax_norm {
     ($name:ident, $builder:ident, $ty:ty, $windowed_min:ident, $windowed_max:ident) => {
@@ -241,7 +242,7 @@ mod tests {
         let v = mm.update(0, 42.0).unwrap().unwrap();
         assert!(
             (v - 0.5).abs() < 1e-10,
-            "single sample: range=0 → 0.5, got {v}"
+            "single sample: range=0 -> 0.5, got {v}"
         );
     }
 

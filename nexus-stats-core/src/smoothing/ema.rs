@@ -1,231 +1,8 @@
 use crate::math::MulAdd;
-// =============================================================================
-// Float EMA
-// =============================================================================
-
-macro_rules! impl_ema_float {
-    ($name:ident, $builder:ident, $ty:ty) => {
-        /// EMA — Exponential Moving Average.
-        ///
-        /// Smooths a streaming signal with exponential decay. Recent samples
-        /// weighted more heavily. Equivalent to a first-order IIR low-pass filter.
-        ///
-        /// # Construction
-        ///
-        /// Three ways to configure the smoothing factor:
-        /// - `alpha(a)` — direct, a ∈ (0, 1). Higher = more reactive.
-        /// - `halflife(h)` — samples for weight to decay by half.
-        /// - `span(n)` — pandas/finance convention, alpha = 2/(n+1).
-        ///
-        /// # Use Cases
-        /// - Smoothing noisy latency measurements
-        /// - Tracking moving average of throughput
-        /// - Baseline estimation for anomaly detection
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            alpha: $ty,
-            one_minus_alpha: $ty,
-            value: $ty,
-            count: u64,
-            min_samples: u64,
-        }
-
-        /// Builder for [`
-        #[doc = stringify!($name)]
-        /// `].
-        #[derive(Debug, Clone)]
-        pub struct $builder {
-            alpha: Option<$ty>,
-            min_samples: u64,
-            seed: Option<$ty>,
-        }
-
-        impl $name {
-            /// Creates a builder.
-            #[inline]
-            #[must_use]
-            pub fn builder() -> $builder {
-                $builder {
-                    alpha: Option::None,
-                    min_samples: 1,
-                    seed: Option::None,
-                }
-            }
-
-            /// Feeds a sample. Returns smoothed value once primed.
-            ///
-            /// First sample initializes the EMA directly (no smoothing).
-            ///
-            /// # Errors
-            ///
-            /// Returns `DataError::NotANumber` if the sample is NaN, or
-            /// `DataError::Infinite` if the sample is infinite.
-            #[inline]
-            pub fn update(&mut self, sample: $ty) -> Result<Option<$ty>, crate::DataError> {
-                check_finite!(sample);
-                self.count += 1;
-
-                if self.count == 1 {
-                    self.value = sample;
-                } else {
-                    self.value = self.alpha.fma(sample, self.one_minus_alpha * self.value);
-                }
-
-                if self.count >= self.min_samples {
-                    Ok(Option::Some(self.value))
-                } else {
-                    Ok(Option::None)
-                }
-            }
-
-            /// Current smoothed value, or `None` if not primed.
-            #[inline]
-            #[must_use]
-            pub fn value(&self) -> Option<$ty> {
-                if self.count >= self.min_samples {
-                    Option::Some(self.value)
-                } else {
-                    Option::None
-                }
-            }
-
-            /// The smoothing factor alpha.
-            #[inline]
-            #[must_use]
-            pub fn alpha(&self) -> $ty {
-                self.alpha
-            }
-
-            /// Number of samples processed.
-            #[inline]
-            #[must_use]
-            pub fn count(&self) -> u64 {
-                self.count
-            }
-
-            /// Whether the EMA has reached `min_samples`.
-            #[inline]
-            #[must_use]
-            pub fn is_primed(&self) -> bool {
-                self.count >= self.min_samples
-            }
-
-            /// Resets to uninitialized state. Parameters unchanged.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.value = 0.0 as $ty;
-                self.count = 0;
-            }
-
-            /// Updates the smoothing factor without resetting state.
-            ///
-            /// # Errors
-            ///
-            /// Alpha must be in (0, 1) exclusive.
-            #[inline]
-            pub fn reconfigure_alpha(&mut self, alpha: $ty) -> Result<(), crate::ConfigError> {
-                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
-                    return Err(crate::ConfigError::Invalid("EMA alpha must be in (0, 1)"));
-                }
-                self.alpha = alpha;
-                self.one_minus_alpha = 1.0 as $ty - alpha;
-                Ok(())
-            }
-        }
-
-        impl $builder {
-            /// Direct smoothing factor. Must be in (0, 1) exclusive.
-            #[inline]
-            #[must_use]
-            pub fn alpha(mut self, alpha: $ty) -> Self {
-                self.alpha = Option::Some(alpha);
-                self
-            }
-
-            /// Samples for weight to decay by half.
-            ///
-            /// Computes: `alpha = 1 - exp(-ln(2) / halflife)`
-            #[inline]
-            #[must_use]
-            #[cfg(any(feature = "std", feature = "libm"))]
-            pub fn halflife(mut self, halflife: $ty) -> Self {
-                let ln2 = core::f64::consts::LN_2 as $ty;
-                let alpha = 1.0 as $ty - crate::math::exp((-ln2 / halflife) as f64) as $ty;
-                self.alpha = Option::Some(alpha);
-                self
-            }
-
-            /// Number of samples for center of mass (pandas convention).
-            ///
-            /// Computes: `alpha = 2 / (n + 1)`
-            #[inline]
-            #[must_use]
-            pub fn span(mut self, n: u64) -> Self {
-                let alpha = 2.0 as $ty / (n as $ty + 1.0 as $ty);
-                self.alpha = Option::Some(alpha);
-                self
-            }
-
-            /// Minimum samples before value is considered valid. Default: 1.
-            #[inline]
-            #[must_use]
-            pub fn min_samples(mut self, min: u64) -> Self {
-                self.min_samples = min;
-                self
-            }
-
-            /// Pre-loads the smoothed value from calibration data.
-            ///
-            /// When seeded, `is_primed()` returns true immediately and
-            /// the first `update()` applies smoothing (no raw initialization).
-            #[inline]
-            #[must_use]
-            pub fn seed(mut self, value: $ty) -> Self {
-                self.seed = Option::Some(value);
-                self
-            }
-
-            /// Builds the EMA.
-            ///
-            /// # Errors
-            ///
-            /// - Alpha must have been set (via `alpha`, `halflife`, or `span`).
-            /// - Alpha must be in (0, 1) exclusive.
-            #[inline]
-            pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
-                    return Err(crate::ConfigError::Invalid("EMA alpha must be in (0, 1)"));
-                }
-
-                let (value, count) = if let Some(seed_val) = self.seed {
-                    (seed_val, self.min_samples)
-                } else {
-                    (0.0 as $ty, 0)
-                };
-
-                Ok($name {
-                    alpha,
-                    one_minus_alpha: 1.0 as $ty - alpha,
-                    value,
-                    count,
-                    min_samples: self.min_samples,
-                })
-            }
-        }
-    };
-}
-
-impl_ema_float!(EmaF64, EmaF64Builder, f64);
-impl_ema_float!(EmaF32, EmaF32Builder, f32);
-
-// =============================================================================
-// Integer EMA (kernel-style fixed-point)
-// =============================================================================
 
 /// Rounds `n` up to the next value of the form `2^k - 1`.
 ///
-/// Examples: 1→1, 2→3, 3→3, 4→7, 5→7, 10→15, 20→31.
+/// Examples: 1->1, 2->3, 3->3, 4->7, 5->7, 10->15, 20->31.
 #[inline]
 pub(crate) const fn next_power_of_two_minus_one(n: u64) -> u64 {
     if n == 0 {
@@ -245,232 +22,214 @@ pub(crate) const fn log2_of_span_plus_one(span: u64) -> u32 {
     (span + 1).trailing_zeros()
 }
 
-macro_rules! impl_ema_int {
-    ($name:ident, $builder:ident, $ty:ty, $acc_ty:ty) => {
-        /// EMA — Exponential Moving Average (integer fixed-point variant).
-        ///
-        /// Uses the Linux kernel pattern: bit-shift arithmetic with integer-only
-        /// operations. No floating point. Weight is derived from span, rounded
-        /// up to the next valid value (`2^k - 1`) for shift optimization.
-        ///
-        /// The weight reciprocal is `span + 1` (a power of 2), so division
-        /// becomes a right-shift by `k` bits.
-        ///
-        /// # Use Cases
-        /// - Smoothing nanosecond latency measurements without float
-        /// - Kernel-style EWMA for counters and durations
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            /// Accumulator — stores value << shift for precision
-            acc: $acc_ty,
-            /// Bit shift amount: log2(span + 1)
-            shift: u32,
-            /// Effective span (2^k - 1)
-            span: u64,
-            count: u64,
-            min_samples: u64,
-            initialized: bool,
-        }
-
-        /// Builder for [`
-        #[doc = stringify!($name)]
-        /// `].
-        #[derive(Debug, Clone)]
-        pub struct $builder {
-            span: Option<u64>,
-            min_samples: u64,
-            seed: Option<$ty>,
-        }
-
-        impl $name {
-            /// Creates a builder.
-            #[inline]
-            #[must_use]
-            pub fn builder() -> $builder {
-                $builder {
-                    span: Option::None,
-                    min_samples: 1,
-                    seed: Option::None,
-                }
-            }
-
-            /// Feeds a sample. Returns smoothed value once primed.
-            ///
-            /// First sample initializes the accumulator directly.
-            ///
-            /// Update formula (kernel pattern):
-            /// ```text
-            /// acc += (sample << shift) - acc) >> shift
-            /// ```
-            /// This is equivalent to: `value = value + (sample - value) / (span + 1)`
-            #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> Option<$ty> {
-                self.count += 1;
-
-                if !self.initialized {
-                    self.acc = (sample as $acc_ty) << self.shift;
-                    self.initialized = true;
-                } else {
-                    let sample_shifted = (sample as $acc_ty) << self.shift;
-                    self.acc += (sample_shifted - self.acc) >> self.shift;
-                }
-
-                if self.count >= self.min_samples {
-                    Option::Some((self.acc >> self.shift) as $ty)
-                } else {
-                    Option::None
-                }
-            }
-
-            /// Current smoothed value, or `None` if not primed.
-            #[inline]
-            #[must_use]
-            pub fn value(&self) -> Option<$ty> {
-                if self.count >= self.min_samples && self.initialized {
-                    Option::Some((self.acc >> self.shift) as $ty)
-                } else {
-                    Option::None
-                }
-            }
-
-            /// The actual span after rounding up to `2^k - 1`.
-            #[inline]
-            #[must_use]
-            pub fn effective_span(&self) -> u64 {
-                self.span
-            }
-
-            /// Number of samples processed.
-            #[inline]
-            #[must_use]
-            pub fn count(&self) -> u64 {
-                self.count
-            }
-
-            /// Whether the EMA has reached `min_samples`.
-            #[inline]
-            #[must_use]
-            pub fn is_primed(&self) -> bool {
-                self.count >= self.min_samples
-            }
-
-            /// Resets to uninitialized state. Parameters unchanged.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.acc = 0;
-                self.count = 0;
-                self.initialized = false;
-            }
-
-            /// Updates the span without resetting state.
-            ///
-            /// Unshifts the accumulator with the old shift and reshifts with the
-            /// new one, preserving the smoothed value.
-            ///
-            /// # Errors
-            ///
-            /// Span must be >= 1.
-            #[inline]
-            pub fn reconfigure_span(&mut self, span: u64) -> Result<(), crate::ConfigError> {
-                if span < 1 {
-                    return Err(crate::ConfigError::Invalid("EMA span must be >= 1"));
-                }
-                let effective = next_power_of_two_minus_one(span);
-                let new_shift = log2_of_span_plus_one(effective);
-
-                // Rescale accumulator directly to preserve fixed-point precision.
-                // Only loses bits when shifting down (smaller span), which is unavoidable.
-                if self.initialized {
-                    if new_shift > self.shift {
-                        self.acc <<= new_shift - self.shift;
-                    } else {
-                        self.acc >>= self.shift - new_shift;
-                    }
-                }
-
-                self.shift = new_shift;
-                self.span = effective;
-                Ok(())
-            }
-        }
-
-        impl $builder {
-            /// Minimum span. Rounded up to next `2^k - 1`.
-            ///
-            /// Call [`
-            #[doc = stringify!($name)]
-            /// ::effective_span()`] after build to see the actual value.
-            #[inline]
-            #[must_use]
-            pub fn span(mut self, n: u64) -> Self {
-                self.span = Option::Some(n);
-                self
-            }
-
-            /// Minimum samples before value is valid. Default: 1.
-            #[inline]
-            #[must_use]
-            pub fn min_samples(mut self, min: u64) -> Self {
-                self.min_samples = min;
-                self
-            }
-
-            /// Pre-loads the smoothed value from calibration data.
-            ///
-            /// When seeded, `is_primed()` returns true immediately.
-            #[inline]
-            #[must_use]
-            pub fn seed(mut self, value: $ty) -> Self {
-                self.seed = Option::Some(value);
-                self
-            }
-
-            /// Builds the EMA.
-            ///
-            /// # Errors
-            ///
-            /// - Span must have been set.
-            /// - Span must be >= 1.
-            #[inline]
-            pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let requested = self.span.ok_or(crate::ConfigError::Missing("span"))?;
-                if requested < 1 {
-                    return Err(crate::ConfigError::Invalid("EMA span must be >= 1"));
-                }
-
-                let effective = next_power_of_two_minus_one(requested);
-                let shift = log2_of_span_plus_one(effective);
-
-                let (acc, count, initialized) = if let Some(seed_val) = self.seed {
-                    ((seed_val as $acc_ty) << shift, self.min_samples, true)
-                } else {
-                    (0, 0, false)
-                };
-
-                Ok($name {
-                    acc,
-                    shift,
-                    span: effective,
-                    count,
-                    min_samples: self.min_samples,
-                    initialized,
-                })
-            }
-        }
-    };
+/// EMA — Exponential Moving Average.
+///
+/// Smooths a streaming signal with exponential decay. Recent samples
+/// weighted more heavily. Equivalent to a first-order IIR low-pass filter.
+///
+/// # Construction
+///
+/// Three ways to configure the smoothing factor:
+/// - `alpha(a)` — direct, a ∈ (0, 1). Higher = more reactive.
+/// - `halflife(h)` — samples for weight to decay by half.
+/// - `span(n)` — pandas/finance convention, alpha = 2/(n+1).
+///
+/// # Use Cases
+/// - Smoothing noisy latency measurements
+/// - Tracking moving average of throughput
+/// - Baseline estimation for anomaly detection
+#[derive(Debug, Clone)]
+pub struct EmaF64 {
+    alpha: f64,
+    one_minus_alpha: f64,
+    value: f64,
+    count: u64,
+    min_samples: u64,
 }
 
-impl_ema_int!(EmaI64, EmaI64Builder, i64, i128);
-impl_ema_int!(EmaI32, EmaI32Builder, i32, i64);
+/// Builder for [`EmaF64`].
+#[derive(Debug, Clone)]
+pub struct EmaF64Builder {
+    alpha: Option<f64>,
+    min_samples: u64,
+    seed: Option<f64>,
+}
+
+impl EmaF64 {
+    /// Creates a builder.
+    #[inline]
+    #[must_use]
+    pub fn builder() -> EmaF64Builder {
+        EmaF64Builder {
+            alpha: None,
+            min_samples: 1,
+            seed: None,
+        }
+    }
+
+    /// Feeds a sample. Returns smoothed value once primed.
+    ///
+    /// First sample initializes the EMA directly (no smoothing).
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the sample is NaN, or
+    /// `DataError::Infinite` if the sample is infinite.
+    #[inline]
+    pub fn update(&mut self, sample: f64) -> Result<Option<f64>, crate::DataError> {
+        check_finite!(sample);
+        self.count += 1;
+
+        if self.count == 1 {
+            self.value = sample;
+        } else {
+            self.value = self.alpha.fma(sample, self.one_minus_alpha * self.value);
+        }
+
+        if self.count >= self.min_samples {
+            Ok(Some(self.value))
+        } else {
+            Ok(None)
+        }
+    }
+
+    /// Current smoothed value, or `None` if not primed.
+    #[inline]
+    #[must_use]
+    pub fn value(&self) -> Option<f64> {
+        if self.count >= self.min_samples {
+            Some(self.value)
+        } else {
+            None
+        }
+    }
+
+    /// The smoothing factor alpha.
+    #[inline]
+    #[must_use]
+    pub fn alpha(&self) -> f64 {
+        self.alpha
+    }
+
+    /// Number of samples processed.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether the EMA has reached `min_samples`.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count >= self.min_samples
+    }
+
+    /// Resets to uninitialized state. Parameters unchanged.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.value = 0.0;
+        self.count = 0;
+    }
+
+    /// Updates the smoothing factor without resetting state.
+    ///
+    /// # Errors
+    ///
+    /// Alpha must be in (0, 1) exclusive.
+    #[inline]
+    pub fn reconfigure_alpha(&mut self, alpha: f64) -> Result<(), crate::ConfigError> {
+        if !(alpha > 0.0 && alpha < 1.0) {
+            return Err(crate::ConfigError::Invalid("EMA alpha must be in (0, 1)"));
+        }
+        self.alpha = alpha;
+        self.one_minus_alpha = 1.0 - alpha;
+        Ok(())
+    }
+}
+
+impl EmaF64Builder {
+    /// Direct smoothing factor. Must be in (0, 1) exclusive.
+    #[inline]
+    #[must_use]
+    pub fn alpha(mut self, alpha: f64) -> Self {
+        self.alpha = Some(alpha);
+        self
+    }
+
+    /// Samples for weight to decay by half.
+    ///
+    /// Computes: `alpha = 1 - exp(-ln(2) / halflife)`
+    #[inline]
+    #[must_use]
+    #[cfg(any(feature = "std", feature = "libm"))]
+    pub fn halflife(mut self, halflife: f64) -> Self {
+        let ln2 = core::f64::consts::LN_2;
+        let alpha = 1.0 - crate::math::exp(-ln2 / halflife);
+        self.alpha = Some(alpha);
+        self
+    }
+
+    /// Number of samples for center of mass (pandas convention).
+    ///
+    /// Computes: `alpha = 2 / (n + 1)`
+    #[inline]
+    #[must_use]
+    pub fn span(mut self, n: u64) -> Self {
+        let alpha = 2.0 / (n as f64 + 1.0);
+        self.alpha = Some(alpha);
+        self
+    }
+
+    /// Minimum samples before value is considered valid. Default: 1.
+    #[inline]
+    #[must_use]
+    pub fn min_samples(mut self, min: u64) -> Self {
+        self.min_samples = min;
+        self
+    }
+
+    /// Pre-loads the smoothed value from calibration data.
+    ///
+    /// When seeded, `is_primed()` returns true immediately and
+    /// the first `update()` applies smoothing (no raw initialization).
+    #[inline]
+    #[must_use]
+    pub fn seed(mut self, value: f64) -> Self {
+        self.seed = Some(value);
+        self
+    }
+
+    /// Builds the EMA.
+    ///
+    /// # Errors
+    ///
+    /// - Alpha must have been set (via `alpha`, `halflife`, or `span`).
+    /// - Alpha must be in (0, 1) exclusive.
+    #[inline]
+    pub fn build(self) -> Result<EmaF64, crate::ConfigError> {
+        let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+        if !(alpha > 0.0 && alpha < 1.0) {
+            return Err(crate::ConfigError::Invalid("EMA alpha must be in (0, 1)"));
+        }
+
+        let (value, count) = self
+            .seed
+            .map_or((0.0, 0), |seed_val| (seed_val, self.min_samples));
+
+        Ok(EmaF64 {
+            alpha,
+            one_minus_alpha: 1.0 - alpha,
+            value,
+            count,
+            min_samples: self.min_samples,
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // =========================================================================
-    // Float EMA
-    // =========================================================================
 
     #[test]
     fn first_sample_initializes() {
@@ -581,117 +340,6 @@ mod tests {
         assert!(matches!(result, Err(crate::ConfigError::Invalid(_))));
     }
 
-    #[test]
-    fn f32_basic() {
-        let mut ema = EmaF32::builder().alpha(0.5).build().unwrap();
-        assert_eq!(ema.update(100.0).unwrap(), Some(100.0));
-        let v = ema.update(200.0).unwrap().unwrap();
-        assert!((v - 150.0).abs() < 0.01);
-    }
-
-    // =========================================================================
-    // Integer EMA
-    // =========================================================================
-
-    #[test]
-    fn span_rounding() {
-        // 1 → 1 (2^1 - 1)
-        let ema = EmaI64::builder().span(1).build().unwrap();
-        assert_eq!(ema.effective_span(), 1);
-
-        // 2 → 3 (2^2 - 1)
-        let ema = EmaI64::builder().span(2).build().unwrap();
-        assert_eq!(ema.effective_span(), 3);
-
-        // 3 → 3
-        let ema = EmaI64::builder().span(3).build().unwrap();
-        assert_eq!(ema.effective_span(), 3);
-
-        // 7 → 7 (2^3 - 1, exact)
-        let ema = EmaI64::builder().span(7).build().unwrap();
-        assert_eq!(ema.effective_span(), 7);
-
-        // 10 → 15 (2^4 - 1)
-        let ema = EmaI64::builder().span(10).build().unwrap();
-        assert_eq!(ema.effective_span(), 15);
-
-        // 20 → 31 (2^5 - 1)
-        let ema = EmaI64::builder().span(20).build().unwrap();
-        assert_eq!(ema.effective_span(), 31);
-    }
-
-    #[test]
-    fn int_first_sample_initializes() {
-        let mut ema = EmaI64::builder().span(7).build().unwrap();
-        assert_eq!(ema.update(1000), Some(1000));
-    }
-
-    #[test]
-    fn int_convergence() {
-        let mut ema = EmaI64::builder().span(7).build().unwrap();
-
-        let _ = ema.update(0);
-        for _ in 0..10_000 {
-            let _ = ema.update(1000);
-        }
-
-        let val = ema.value().unwrap();
-        // Should converge close to 1000 (integer precision may be off by 1)
-        assert!(
-            (val - 1000).abs() <= 1,
-            "should converge to ~1000, got {val}"
-        );
-    }
-
-    #[test]
-    fn int_no_drift_over_many_samples() {
-        let mut ema = EmaI64::builder().span(15).build().unwrap();
-
-        // Feed constant value — should not drift
-        for _ in 0..100_000 {
-            let _ = ema.update(500);
-        }
-
-        let val = ema.value().unwrap();
-        assert_eq!(
-            val, 500,
-            "constant input should produce exact output, got {val}"
-        );
-    }
-
-    #[test]
-    fn int_priming() {
-        let mut ema = EmaI64::builder().span(7).min_samples(5).build().unwrap();
-
-        for _ in 0..4 {
-            assert_eq!(ema.update(100), None);
-        }
-        assert!(ema.update(100).is_some());
-    }
-
-    #[test]
-    fn int_reset() {
-        let mut ema = EmaI64::builder().span(7).build().unwrap();
-        let _ = ema.update(1000);
-        let _ = ema.update(2000);
-
-        ema.reset();
-        assert_eq!(ema.count(), 0);
-        assert_eq!(ema.value(), None);
-    }
-
-    #[test]
-    fn i32_basic() {
-        let mut ema = EmaI32::builder().span(3).build().unwrap();
-        assert_eq!(ema.update(100), Some(100));
-    }
-
-    #[test]
-    fn int_errors_without_span() {
-        let result = EmaI64::builder().build();
-        assert!(matches!(result, Err(crate::ConfigError::Missing("span"))));
-    }
-
     // =========================================================================
     // Reconfigure
     // =========================================================================
@@ -718,52 +366,6 @@ mod tests {
         assert!(ema.reconfigure_alpha(0.0).is_err());
         assert!(ema.reconfigure_alpha(1.0).is_err());
         assert!(ema.reconfigure_alpha(-0.1).is_err());
-    }
-
-    #[test]
-    fn int_reconfigure_span_preserves_value() {
-        let mut ema = EmaI64::builder().span(7).build().unwrap();
-        for _ in 0..100 {
-            let _ = ema.update(500);
-        }
-        let val_before = ema.value().unwrap();
-        let count_before = ema.count();
-
-        ema.reconfigure_span(15).unwrap();
-
-        assert_eq!(ema.effective_span(), 15);
-        assert_eq!(ema.value().unwrap(), val_before);
-        assert_eq!(ema.count(), count_before);
-    }
-
-    #[test]
-    fn int_reconfigure_span_validates() {
-        let mut ema = EmaI64::builder().span(7).build().unwrap();
-        assert!(ema.reconfigure_span(0).is_err());
-    }
-
-    #[test]
-    fn int_vs_float_comparison() {
-        // Both should produce similar results on the same input
-        let mut int_ema = EmaI64::builder().span(15).build().unwrap();
-        let mut float_ema = EmaF64::builder().span(15).build().unwrap();
-
-        let samples = [100, 110, 95, 105, 120, 90, 100, 115, 85, 100];
-
-        for &s in &samples {
-            let _ = int_ema.update(s);
-            float_ema.update(s as f64).unwrap();
-        }
-
-        let int_val = int_ema.value().unwrap();
-        let float_val = float_ema.value().unwrap();
-
-        // Should be within a few units of each other
-        let diff = (int_val as f64 - float_val).abs();
-        assert!(
-            diff < 5.0,
-            "int ({int_val}) and float ({float_val}) should be close, diff={diff}"
-        );
     }
 
     #[test]

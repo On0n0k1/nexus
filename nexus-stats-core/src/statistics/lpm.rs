@@ -1,198 +1,185 @@
-macro_rules! impl_lpm {
-    ($name:ident, $builder:ident, $ty:ty) => {
-        /// Lower Partial Moments — streaming downside risk.
-        ///
-        /// Measures deviations below a target threshold, raised to a
-        /// configurable integer order:
-        ///
-        /// - Order 0: shortfall probability (fraction below target)
-        /// - Order 1: expected shortfall (mean distance below target)
-        /// - Order 2: semivariance (variance of downside deviations)
-        ///
-        /// Fishburn (1977), Sortino & van der Meer (1991).
-        ///
-        /// # Examples
-        ///
-        /// ```
-        #[doc = concat!("use nexus_stats_core::statistics::", stringify!($name), ";")]
-        ///
-        #[doc = concat!("let mut lpm = ", stringify!($name), "::semivariance(0.0).unwrap();")]
-        /// for &v in &[-3.0, -1.0, 0.0, 2.0, 5.0] {
-        #[doc = concat!("    lpm.update(v as ", stringify!($ty), ").unwrap();")]
-        /// }
-        /// let sv = lpm.lpm().unwrap();
-        #[doc = concat!("assert!((sv - 2.0 as ", stringify!($ty), ").abs() < 0.01 as ", stringify!($ty), ");")]
-        /// ```
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            sum_lpm: $ty,
-            count: u64,
-            target: $ty,
-            order: u32,
-            min_samples: u64,
-        }
-
-        /// Builder for [`
-        #[doc = stringify!($name)]
-        /// `].
-        #[derive(Debug, Clone)]
-        pub struct $builder {
-            target: Option<$ty>,
-            order: Option<u32>,
-            min_samples: u64,
-        }
-
-        impl $name {
-            /// Creates a builder.
-            #[inline]
-            #[must_use]
-            pub fn builder() -> $builder {
-                $builder {
-                    target: Option::None,
-                    order: Option::None,
-                    min_samples: 1,
-                }
-            }
-
-            /// Convenience constructor for semivariance (order = 2).
-            #[inline]
-            pub fn semivariance(target: $ty) -> Result<Self, crate::ConfigError> {
-                Self::builder().target(target).order(2).build()
-            }
-
-            /// Feeds a sample.
-            ///
-            /// # Errors
-            ///
-            /// Returns `DataError::NotANumber` if the sample is NaN, or
-            /// `DataError::Infinite` if the sample is infinite.
-            #[inline]
-            pub fn update(&mut self, sample: $ty) -> Result<(), crate::DataError> {
-                check_finite!(sample);
-                let shortfall = self.target - sample;
-                if shortfall > 0.0 as $ty {
-                    match self.order {
-                        0 => self.sum_lpm += 1.0 as $ty,
-                        1 => self.sum_lpm += shortfall,
-                        2 => self.sum_lpm += shortfall * shortfall,
-                        d => {
-                            let mut power = shortfall;
-                            for _ in 1..d {
-                                power *= shortfall;
-                            }
-                            self.sum_lpm += power;
-                        }
-                    }
-                }
-                self.count += 1;
-                Ok(())
-            }
-
-            /// Lower partial moment: average downside deviation^order.
-            ///
-            /// Returns `None` if not primed.
-            #[inline]
-            #[must_use]
-            pub fn lpm(&self) -> Option<$ty> {
-                if self.count < self.min_samples {
-                    Option::None
-                } else {
-                    Option::Some(self.sum_lpm / self.count as $ty)
-                }
-            }
-
-            /// The target threshold.
-            #[inline]
-            #[must_use]
-            pub fn target(&self) -> $ty {
-                self.target
-            }
-
-            /// The moment order.
-            #[inline]
-            #[must_use]
-            pub fn order(&self) -> u32 {
-                self.order
-            }
-
-            /// Total samples processed.
-            #[inline]
-            #[must_use]
-            pub fn count(&self) -> u64 {
-                self.count
-            }
-
-            /// Whether enough samples have been observed.
-            #[inline]
-            #[must_use]
-            pub fn is_primed(&self) -> bool {
-                self.count >= self.min_samples
-            }
-
-            /// Resets accumulated state. Target and order are preserved.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.sum_lpm = 0.0 as $ty;
-                self.count = 0;
-            }
-        }
-
-        impl $builder {
-            /// Sets the target threshold (required).
-            #[inline]
-            #[must_use]
-            pub fn target(mut self, target: $ty) -> Self {
-                self.target = Option::Some(target);
-                self
-            }
-
-            /// Sets the moment order (required).
-            #[inline]
-            #[must_use]
-            pub fn order(mut self, order: u32) -> Self {
-                self.order = Option::Some(order);
-                self
-            }
-
-            /// Sets the minimum samples before `lpm()` returns a value.
-            #[inline]
-            #[must_use]
-            pub fn min_samples(mut self, n: u64) -> Self {
-                self.min_samples = n;
-                self
-            }
-
-            /// Builds the LPM tracker.
-            ///
-            /// # Errors
-            ///
-            /// Returns `ConfigError` if target is missing/non-finite or
-            /// order is missing.
-            pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let target = self
-                    .target
-                    .ok_or(crate::ConfigError::Missing("target"))?;
-                if !target.is_finite() {
-                    return Err(crate::ConfigError::Invalid("target must be finite"));
-                }
-                let order = self
-                    .order
-                    .ok_or(crate::ConfigError::Missing("order"))?;
-
-                Ok($name {
-                    sum_lpm: 0.0 as $ty,
-                    count: 0,
-                    target,
-                    order,
-                    min_samples: self.min_samples,
-                })
-            }
-        }
-    };
+/// Lower Partial Moments — streaming downside risk.
+///
+/// Measures deviations below a target threshold, raised to a
+/// configurable integer order:
+///
+/// - Order 0: shortfall probability (fraction below target)
+/// - Order 1: expected shortfall (mean distance below target)
+/// - Order 2: semivariance (variance of downside deviations)
+///
+/// Fishburn (1977), Sortino & van der Meer (1991).
+///
+/// # Examples
+///
+/// ```
+/// use nexus_stats_core::statistics::LpmF64;
+///
+/// let mut lpm = LpmF64::semivariance(0.0).unwrap();
+/// for &v in &[-3.0, -1.0, 0.0, 2.0, 5.0] {
+///     lpm.update(v).unwrap();
+/// }
+/// let sv = lpm.lpm().unwrap();
+/// assert!((sv - 2.0).abs() < 0.01);
+/// ```
+#[derive(Debug, Clone)]
+pub struct LpmF64 {
+    sum_lpm: f64,
+    count: u64,
+    target: f64,
+    order: u32,
+    min_samples: u64,
 }
 
-impl_lpm!(LpmF64, LpmF64Builder, f64);
-impl_lpm!(LpmF32, LpmF32Builder, f32);
+/// Builder for [`LpmF64`].
+#[derive(Debug, Clone)]
+pub struct LpmF64Builder {
+    target: Option<f64>,
+    order: Option<u32>,
+    min_samples: u64,
+}
+
+impl LpmF64 {
+    /// Creates a builder.
+    #[inline]
+    #[must_use]
+    pub fn builder() -> LpmF64Builder {
+        LpmF64Builder {
+            target: None,
+            order: None,
+            min_samples: 1,
+        }
+    }
+
+    /// Convenience constructor for semivariance (order = 2).
+    #[inline]
+    pub fn semivariance(target: f64) -> Result<Self, crate::ConfigError> {
+        Self::builder().target(target).order(2).build()
+    }
+
+    /// Feeds a sample.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the sample is NaN, or
+    /// `DataError::Infinite` if the sample is infinite.
+    #[inline]
+    pub fn update(&mut self, sample: f64) -> Result<(), crate::DataError> {
+        check_finite!(sample);
+        let shortfall = self.target - sample;
+        if shortfall > 0.0 {
+            match self.order {
+                0 => self.sum_lpm += 1.0,
+                1 => self.sum_lpm += shortfall,
+                2 => self.sum_lpm += shortfall * shortfall,
+                d => {
+                    let mut power = shortfall;
+                    for _ in 1..d {
+                        power *= shortfall;
+                    }
+                    self.sum_lpm += power;
+                }
+            }
+        }
+        self.count += 1;
+        Ok(())
+    }
+
+    /// Lower partial moment: average downside deviation^order.
+    ///
+    /// Returns `None` if not primed.
+    #[inline]
+    #[must_use]
+    pub fn lpm(&self) -> Option<f64> {
+        if self.count < self.min_samples {
+            None
+        } else {
+            Some(self.sum_lpm / self.count as f64)
+        }
+    }
+
+    /// The target threshold.
+    #[inline]
+    #[must_use]
+    pub fn target(&self) -> f64 {
+        self.target
+    }
+
+    /// The moment order.
+    #[inline]
+    #[must_use]
+    pub fn order(&self) -> u32 {
+        self.order
+    }
+
+    /// Total samples processed.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether enough samples have been observed.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count >= self.min_samples
+    }
+
+    /// Resets accumulated state. Target and order are preserved.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.sum_lpm = 0.0;
+        self.count = 0;
+    }
+}
+
+impl LpmF64Builder {
+    /// Sets the target threshold (required).
+    #[inline]
+    #[must_use]
+    pub fn target(mut self, target: f64) -> Self {
+        self.target = Some(target);
+        self
+    }
+
+    /// Sets the moment order (required).
+    #[inline]
+    #[must_use]
+    pub fn order(mut self, order: u32) -> Self {
+        self.order = Some(order);
+        self
+    }
+
+    /// Sets the minimum samples before `lpm()` returns a value.
+    #[inline]
+    #[must_use]
+    pub fn min_samples(mut self, n: u64) -> Self {
+        self.min_samples = n;
+        self
+    }
+
+    /// Builds the LPM tracker.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigError` if target is missing/non-finite or
+    /// order is missing.
+    pub fn build(self) -> Result<LpmF64, crate::ConfigError> {
+        let target = self.target.ok_or(crate::ConfigError::Missing("target"))?;
+        if !target.is_finite() {
+            return Err(crate::ConfigError::Invalid("target must be finite"));
+        }
+        let order = self.order.ok_or(crate::ConfigError::Missing("order"))?;
+
+        Ok(LpmF64 {
+            sum_lpm: 0.0,
+            count: 0,
+            target,
+            order,
+            min_samples: self.min_samples,
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {

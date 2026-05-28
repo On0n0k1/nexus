@@ -1,176 +1,168 @@
 use crate::math::MulAdd;
-macro_rules! impl_covariance {
-    ($name:ident, $ty:ty) => {
-        /// Online covariance and Pearson correlation between two signals.
-        ///
-        /// Uses Welford-style numerically stable single-pass computation.
-        /// Supports Chan's merge for parallel aggregation.
-        ///
-        /// # Use Cases
-        /// - "Are these two signals moving together?"
-        /// - Latency correlation across venues
-        /// - Co-movement detection
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            count: u64,
-            mean_x: $ty,
-            mean_y: $ty,
-            m2_x: $ty,
-            m2_y: $ty,
-            co_moment: $ty,
-        }
 
-        impl $name {
-            /// Creates a new empty accumulator.
-            #[inline]
-            #[must_use]
-            pub const fn new() -> Self {
-                Self {
-                    count: 0,
-                    mean_x: 0.0 as $ty,
-                    mean_y: 0.0 as $ty,
-                    m2_x: 0.0 as $ty,
-                    m2_y: 0.0 as $ty,
-                    co_moment: 0.0 as $ty,
-                }
-            }
-
-            /// Feeds a paired sample.
-            ///
-            /// # Errors
-            ///
-            /// Returns `DataError::NotANumber` if either input is NaN, or
-            /// `DataError::Infinite` if either input is infinite.
-            #[inline]
-            pub fn update(&mut self, x: $ty, y: $ty) -> Result<(), crate::DataError> {
-                check_finite!(x);
-                check_finite!(y);
-                self.count += 1;
-                let inv_n = 1.0 as $ty / self.count as $ty;
-
-                let dx = x - self.mean_x;
-                let dy = y - self.mean_y;
-
-                self.mean_x += dx * inv_n;
-                self.mean_y += dy * inv_n;
-
-                // Use the NEW mean_x but OLD mean_y for the co-moment update
-                let dx2 = x - self.mean_x;
-                self.co_moment += dx * (y - self.mean_y);
-
-                // Welford M2 updates
-                self.m2_x += dx * dx2;
-                let dy2 = y - self.mean_y;
-                self.m2_y += dy * dy2;
-                Ok(())
-            }
-
-            /// Number of paired samples processed.
-            #[inline]
-            #[must_use]
-            pub fn count(&self) -> u64 {
-                self.count
-            }
-
-            /// Mean of X, or `None` if empty.
-            #[inline]
-            #[must_use]
-            pub fn mean_x(&self) -> Option<$ty> {
-                if self.count == 0 {
-                    Option::None
-                } else {
-                    Option::Some(self.mean_x)
-                }
-            }
-
-            /// Mean of Y, or `None` if empty.
-            #[inline]
-            #[must_use]
-            pub fn mean_y(&self) -> Option<$ty> {
-                if self.count == 0 {
-                    Option::None
-                } else {
-                    Option::Some(self.mean_y)
-                }
-            }
-
-            /// Sample covariance (N-1 denominator), or `None` if < 2 samples.
-            #[inline]
-            #[must_use]
-            pub fn covariance(&self) -> Option<$ty> {
-                if self.count < 2 {
-                    Option::None
-                } else {
-                    Option::Some(self.co_moment / (self.count - 1) as $ty)
-                }
-            }
-
-            /// Pearson correlation coefficient, or `None` if < 2 samples.
-            ///
-            /// Returns a value in [-1, 1]. Returns `None` if either variable
-            /// has zero variance (undefined correlation).
-            #[cfg(any(feature = "std", feature = "libm"))]
-            #[inline]
-            #[must_use]
-            pub fn correlation(&self) -> Option<$ty> {
-                if self.count < 2 {
-                    return Option::None;
-                }
-                let var_product = self.m2_x * self.m2_y;
-                if var_product <= 0.0 as $ty {
-                    return Option::None;
-                }
-                let r = self.co_moment / crate::math::sqrt(var_product as f64) as $ty;
-                Option::Some(r)
-            }
-
-            /// Merges another accumulator into this one (Chan's algorithm).
-            #[inline]
-            pub fn merge(&mut self, other: &Self) {
-                if other.count == 0 {
-                    return;
-                }
-                if self.count == 0 {
-                    *self = other.clone();
-                    return;
-                }
-
-                let combined = self.count + other.count;
-                let dx = other.mean_x - self.mean_x;
-                let dy = other.mean_y - self.mean_y;
-                let weight = self.count as $ty * other.count as $ty / combined as $ty;
-
-                let new_mean_x =
-                    (dx * other.count as $ty).fma(1.0 as $ty / combined as $ty, self.mean_x);
-                let new_mean_y =
-                    (dy * other.count as $ty).fma(1.0 as $ty / combined as $ty, self.mean_y);
-
-                self.co_moment += (dx * dy).fma(weight, other.co_moment);
-                self.m2_x += (dx * dx).fma(weight, other.m2_x);
-                self.m2_y += (dy * dy).fma(weight, other.m2_y);
-                self.mean_x = new_mean_x;
-                self.mean_y = new_mean_y;
-                self.count = combined;
-            }
-
-            /// Resets to empty state.
-            #[inline]
-            pub fn reset(&mut self) {
-                *self = Self::new();
-            }
-        }
-
-        impl Default for $name {
-            #[inline]
-            fn default() -> Self {
-                Self::new()
-            }
-        }
-    };
+/// Online covariance and Pearson correlation between two signals.
+///
+/// Uses Welford-style numerically stable single-pass computation.
+/// Supports Chan's merge for parallel aggregation.
+///
+/// # Use Cases
+/// - "Are these two signals moving together?"
+/// - Latency correlation across venues
+/// - Co-movement detection
+#[derive(Debug, Clone)]
+pub struct CovarianceF64 {
+    count: u64,
+    mean_x: f64,
+    mean_y: f64,
+    m2_x: f64,
+    m2_y: f64,
+    co_moment: f64,
 }
 
-impl_covariance!(CovarianceF64, f64);
-impl_covariance!(CovarianceF32, f32);
+impl CovarianceF64 {
+    /// Creates a new empty accumulator.
+    #[inline]
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            count: 0,
+            mean_x: 0.0,
+            mean_y: 0.0,
+            m2_x: 0.0,
+            m2_y: 0.0,
+            co_moment: 0.0,
+        }
+    }
+
+    /// Feeds a paired sample.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if either input is NaN, or
+    /// `DataError::Infinite` if either input is infinite.
+    #[inline]
+    pub fn update(&mut self, x: f64, y: f64) -> Result<(), crate::DataError> {
+        check_finite!(x);
+        check_finite!(y);
+        self.count += 1;
+        let inv_n = 1.0 / self.count as f64;
+
+        let dx = x - self.mean_x;
+        let dy = y - self.mean_y;
+
+        self.mean_x += dx * inv_n;
+        self.mean_y += dy * inv_n;
+
+        // Use the NEW mean_x but OLD mean_y for the co-moment update
+        let dx2 = x - self.mean_x;
+        self.co_moment += dx * (y - self.mean_y);
+
+        // Welford M2 updates
+        self.m2_x += dx * dx2;
+        let dy2 = y - self.mean_y;
+        self.m2_y += dy * dy2;
+        Ok(())
+    }
+
+    /// Number of paired samples processed.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Mean of X, or `None` if empty.
+    #[inline]
+    #[must_use]
+    pub fn mean_x(&self) -> Option<f64> {
+        if self.count == 0 {
+            None
+        } else {
+            Some(self.mean_x)
+        }
+    }
+
+    /// Mean of Y, or `None` if empty.
+    #[inline]
+    #[must_use]
+    pub fn mean_y(&self) -> Option<f64> {
+        if self.count == 0 {
+            None
+        } else {
+            Some(self.mean_y)
+        }
+    }
+
+    /// Sample covariance (N-1 denominator), or `None` if < 2 samples.
+    #[inline]
+    #[must_use]
+    pub fn covariance(&self) -> Option<f64> {
+        if self.count < 2 {
+            None
+        } else {
+            Some(self.co_moment / (self.count - 1) as f64)
+        }
+    }
+
+    /// Pearson correlation coefficient, or `None` if < 2 samples.
+    ///
+    /// Returns a value in [-1, 1]. Returns `None` if either variable
+    /// has zero variance (undefined correlation).
+    #[cfg(any(feature = "std", feature = "libm"))]
+    #[inline]
+    #[must_use]
+    pub fn correlation(&self) -> Option<f64> {
+        if self.count < 2 {
+            return None;
+        }
+        let var_product = self.m2_x * self.m2_y;
+        if var_product <= 0.0 {
+            return None;
+        }
+        let r = self.co_moment / crate::math::sqrt(var_product);
+        Some(r)
+    }
+
+    /// Merges another accumulator into this one (Chan's algorithm).
+    #[inline]
+    pub fn merge(&mut self, other: &Self) {
+        if other.count == 0 {
+            return;
+        }
+        if self.count == 0 {
+            *self = other.clone();
+            return;
+        }
+
+        let combined = self.count + other.count;
+        let dx = other.mean_x - self.mean_x;
+        let dy = other.mean_y - self.mean_y;
+        let weight = self.count as f64 * other.count as f64 / combined as f64;
+
+        let new_mean_x = (dx * other.count as f64).fma(1.0 / combined as f64, self.mean_x);
+        let new_mean_y = (dy * other.count as f64).fma(1.0 / combined as f64, self.mean_y);
+
+        self.co_moment += (dx * dy).fma(weight, other.co_moment);
+        self.m2_x += (dx * dx).fma(weight, other.m2_x);
+        self.m2_y += (dy * dy).fma(weight, other.m2_y);
+        self.mean_x = new_mean_x;
+        self.mean_y = new_mean_y;
+        self.count = combined;
+    }
+
+    /// Resets to empty state.
+    #[inline]
+    pub fn reset(&mut self) {
+        *self = Self::new();
+    }
+}
+
+impl Default for CovarianceF64 {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -258,14 +250,6 @@ mod tests {
         c.update(3.0, 4.0).unwrap();
         c.reset();
         assert_eq!(c.count(), 0);
-    }
-
-    #[test]
-    fn f32_basic() {
-        let mut c = CovarianceF32::new();
-        c.update(1.0, 2.0).unwrap();
-        c.update(2.0, 4.0).unwrap();
-        assert!(c.covariance().is_some());
     }
 
     #[test]

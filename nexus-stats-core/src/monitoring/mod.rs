@@ -12,7 +12,7 @@ mod max_gauge;
 mod peak_hold;
 mod running;
 mod saturation;
-mod windowed;
+pub(crate) mod windowed;
 
 pub use codel::*;
 pub use drawdown::*;
