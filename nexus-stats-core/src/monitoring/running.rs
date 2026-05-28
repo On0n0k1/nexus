@@ -1,344 +1,316 @@
-macro_rules! impl_running_min_float {
-    ($name:ident, $ty:ty, $init:expr) => {
-        /// All-time minimum tracker.
-        ///
-        /// Tracks the smallest value ever seen. One comparison per update.
-        ///
-        /// # Use Cases
-        /// - Best-case latency tracking (all-time min RTT)
-        /// - Low-water mark for prices or levels
-        /// - Input to range calculations (max - min)
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            min: $ty,
-            count: u64,
-        }
-
-        impl $name {
-            /// Creates a new empty tracker.
-            #[inline]
-            #[must_use]
-            pub const fn new() -> Self {
-                Self {
-                    min: $init,
-                    count: 0,
-                }
-            }
-
-            /// Feeds a sample. Returns the current all-time minimum.
-            ///
-            /// # Errors
-            ///
-            /// Returns `DataError::NotANumber` if the sample is NaN, or
-            /// `DataError::Infinite` if the sample is infinite.
-            #[inline]
-            pub fn update(&mut self, sample: $ty) -> Result<$ty, crate::DataError> {
-                check_finite!(sample);
-                self.count += 1;
-                if sample < self.min {
-                    self.min = sample;
-                }
-                Ok(self.min)
-            }
-
-            /// All-time minimum, or `None` if empty.
-            #[inline]
-            #[must_use]
-            pub fn min(&self) -> Option<$ty> {
-                if self.count == 0 {
-                    Option::None
-                } else {
-                    Option::Some(self.min)
-                }
-            }
-
-            /// Number of samples processed.
-            #[inline]
-            #[must_use]
-            pub fn count(&self) -> u64 {
-                self.count
-            }
-
-            /// Whether at least one sample has been fed.
-            #[inline]
-            #[must_use]
-            pub fn is_primed(&self) -> bool {
-                self.count > 0
-            }
-
-            /// Resets to empty state.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.min = $init;
-                self.count = 0;
-            }
-        }
-
-        impl Default for $name {
-            #[inline]
-            fn default() -> Self {
-                Self::new()
-            }
-        }
-    };
+/// All-time minimum tracker.
+///
+/// Tracks the smallest value ever seen. One comparison per update.
+///
+/// # Use Cases
+/// - Best-case latency tracking (all-time min RTT)
+/// - Low-water mark for prices or levels
+/// - Input to range calculations (max - min)
+#[derive(Debug, Clone)]
+pub struct RunningMinF64 {
+    min: f64,
+    count: u64,
 }
 
-macro_rules! impl_running_min_int {
-    ($name:ident, $ty:ty, $init:expr) => {
-        /// All-time minimum tracker.
-        ///
-        /// Tracks the smallest value ever seen. One comparison per update.
-        ///
-        /// # Use Cases
-        /// - Best-case latency tracking (all-time min RTT)
-        /// - Low-water mark for prices or levels
-        /// - Input to range calculations (max - min)
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            min: $ty,
-            count: u64,
+impl RunningMinF64 {
+    /// Creates a new empty tracker.
+    #[inline]
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            min: f64::MAX,
+            count: 0,
         }
+    }
 
-        impl $name {
-            /// Creates a new empty tracker.
-            #[inline]
-            #[must_use]
-            pub const fn new() -> Self {
-                Self {
-                    min: $init,
-                    count: 0,
-                }
-            }
-
-            /// Feeds a sample. Returns the current all-time minimum.
-            #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> $ty {
-                self.count += 1;
-                if sample < self.min {
-                    self.min = sample;
-                }
-                self.min
-            }
-
-            /// All-time minimum, or `None` if empty.
-            #[inline]
-            #[must_use]
-            pub fn min(&self) -> Option<$ty> {
-                if self.count == 0 {
-                    Option::None
-                } else {
-                    Option::Some(self.min)
-                }
-            }
-
-            /// Number of samples processed.
-            #[inline]
-            #[must_use]
-            pub fn count(&self) -> u64 {
-                self.count
-            }
-
-            /// Whether at least one sample has been fed.
-            #[inline]
-            #[must_use]
-            pub fn is_primed(&self) -> bool {
-                self.count > 0
-            }
-
-            /// Resets to empty state.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.min = $init;
-                self.count = 0;
-            }
+    /// Feeds a sample. Returns the current all-time minimum.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the sample is NaN, or
+    /// `DataError::Infinite` if the sample is infinite.
+    #[inline]
+    pub fn update(&mut self, sample: f64) -> Result<f64, crate::DataError> {
+        check_finite!(sample);
+        self.count += 1;
+        if sample < self.min {
+            self.min = sample;
         }
+        Ok(self.min)
+    }
 
-        impl Default for $name {
-            #[inline]
-            fn default() -> Self {
-                Self::new()
-            }
+    /// All-time minimum, or `None` if empty.
+    #[inline]
+    #[must_use]
+    pub fn min(&self) -> Option<f64> {
+        if self.count == 0 {
+            None
+        } else {
+            Some(self.min)
         }
-    };
+    }
+
+    /// Number of samples processed.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether at least one sample has been fed.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
+    }
+
+    /// Resets to empty state.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.min = f64::MAX;
+        self.count = 0;
+    }
 }
 
-macro_rules! impl_running_max_float {
-    ($name:ident, $ty:ty, $init:expr) => {
-        /// All-time maximum tracker.
-        ///
-        /// Tracks the largest value ever seen. One comparison per update.
-        ///
-        /// # Use Cases
-        /// - High-water mark tracking (peak throughput, max latency)
-        /// - Capacity planning (peak resource usage)
-        /// - Input to range calculations (max - min)
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            max: $ty,
-            count: u64,
-        }
-
-        impl $name {
-            /// Creates a new empty tracker.
-            #[inline]
-            #[must_use]
-            pub const fn new() -> Self {
-                Self {
-                    max: $init,
-                    count: 0,
-                }
-            }
-
-            /// Feeds a sample. Returns the current all-time maximum.
-            ///
-            /// # Errors
-            ///
-            /// Returns `DataError::NotANumber` if the sample is NaN, or
-            /// `DataError::Infinite` if the sample is infinite.
-            #[inline]
-            pub fn update(&mut self, sample: $ty) -> Result<$ty, crate::DataError> {
-                check_finite!(sample);
-                self.count += 1;
-                if sample > self.max {
-                    self.max = sample;
-                }
-                Ok(self.max)
-            }
-
-            /// All-time maximum, or `None` if empty.
-            #[inline]
-            #[must_use]
-            pub fn max(&self) -> Option<$ty> {
-                if self.count == 0 {
-                    Option::None
-                } else {
-                    Option::Some(self.max)
-                }
-            }
-
-            /// Number of samples processed.
-            #[inline]
-            #[must_use]
-            pub fn count(&self) -> u64 {
-                self.count
-            }
-
-            /// Whether at least one sample has been fed.
-            #[inline]
-            #[must_use]
-            pub fn is_primed(&self) -> bool {
-                self.count > 0
-            }
-
-            /// Resets to empty state.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.max = $init;
-                self.count = 0;
-            }
-        }
-
-        impl Default for $name {
-            #[inline]
-            fn default() -> Self {
-                Self::new()
-            }
-        }
-    };
+impl Default for RunningMinF64 {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
-macro_rules! impl_running_max_int {
-    ($name:ident, $ty:ty, $init:expr) => {
-        /// All-time maximum tracker.
-        ///
-        /// Tracks the largest value ever seen. One comparison per update.
-        ///
-        /// # Use Cases
-        /// - High-water mark tracking (peak throughput, max latency)
-        /// - Capacity planning (peak resource usage)
-        /// - Input to range calculations (max - min)
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            max: $ty,
-            count: u64,
-        }
-
-        impl $name {
-            /// Creates a new empty tracker.
-            #[inline]
-            #[must_use]
-            pub const fn new() -> Self {
-                Self {
-                    max: $init,
-                    count: 0,
-                }
-            }
-
-            /// Feeds a sample. Returns the current all-time maximum.
-            #[inline]
-            #[must_use]
-            pub fn update(&mut self, sample: $ty) -> $ty {
-                self.count += 1;
-                if sample > self.max {
-                    self.max = sample;
-                }
-                self.max
-            }
-
-            /// All-time maximum, or `None` if empty.
-            #[inline]
-            #[must_use]
-            pub fn max(&self) -> Option<$ty> {
-                if self.count == 0 {
-                    Option::None
-                } else {
-                    Option::Some(self.max)
-                }
-            }
-
-            /// Number of samples processed.
-            #[inline]
-            #[must_use]
-            pub fn count(&self) -> u64 {
-                self.count
-            }
-
-            /// Whether at least one sample has been fed.
-            #[inline]
-            #[must_use]
-            pub fn is_primed(&self) -> bool {
-                self.count > 0
-            }
-
-            /// Resets to empty state.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.max = $init;
-                self.count = 0;
-            }
-        }
-
-        impl Default for $name {
-            #[inline]
-            fn default() -> Self {
-                Self::new()
-            }
-        }
-    };
+/// All-time minimum tracker.
+///
+/// Tracks the smallest value ever seen. One comparison per update.
+///
+/// # Use Cases
+/// - Best-case latency tracking (all-time min RTT)
+/// - Low-water mark for prices or levels
+/// - Input to range calculations (max - min)
+#[derive(Debug, Clone)]
+pub struct RunningMinI64 {
+    min: i64,
+    count: u64,
 }
 
-impl_running_min_float!(RunningMinF64, f64, f64::MAX);
-impl_running_min_float!(RunningMinF32, f32, f32::MAX);
-impl_running_min_int!(RunningMinI64, i64, i64::MAX);
-impl_running_min_int!(RunningMinI32, i32, i32::MAX);
-impl_running_min_int!(RunningMinI128, i128, i128::MAX);
+impl RunningMinI64 {
+    /// Creates a new empty tracker.
+    #[inline]
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            min: i64::MAX,
+            count: 0,
+        }
+    }
 
-impl_running_max_float!(RunningMaxF64, f64, f64::MIN);
-impl_running_max_float!(RunningMaxF32, f32, f32::MIN);
-impl_running_max_int!(RunningMaxI64, i64, i64::MIN);
-impl_running_max_int!(RunningMaxI32, i32, i32::MIN);
-impl_running_max_int!(RunningMaxI128, i128, i128::MIN);
+    /// Feeds a sample. Returns the current all-time minimum.
+    #[inline]
+    #[must_use]
+    pub fn update(&mut self, sample: i64) -> i64 {
+        self.count += 1;
+        if sample < self.min {
+            self.min = sample;
+        }
+        self.min
+    }
+
+    /// All-time minimum, or `None` if empty.
+    #[inline]
+    #[must_use]
+    pub fn min(&self) -> Option<i64> {
+        if self.count == 0 {
+            None
+        } else {
+            Some(self.min)
+        }
+    }
+
+    /// Number of samples processed.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether at least one sample has been fed.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
+    }
+
+    /// Resets to empty state.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.min = i64::MAX;
+        self.count = 0;
+    }
+}
+
+impl Default for RunningMinI64 {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// All-time maximum tracker.
+///
+/// Tracks the largest value ever seen. One comparison per update.
+///
+/// # Use Cases
+/// - High-water mark tracking (peak throughput, max latency)
+/// - Capacity planning (peak resource usage)
+/// - Input to range calculations (max - min)
+#[derive(Debug, Clone)]
+pub struct RunningMaxF64 {
+    max: f64,
+    count: u64,
+}
+
+impl RunningMaxF64 {
+    /// Creates a new empty tracker.
+    #[inline]
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            max: f64::MIN,
+            count: 0,
+        }
+    }
+
+    /// Feeds a sample. Returns the current all-time maximum.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the sample is NaN, or
+    /// `DataError::Infinite` if the sample is infinite.
+    #[inline]
+    pub fn update(&mut self, sample: f64) -> Result<f64, crate::DataError> {
+        check_finite!(sample);
+        self.count += 1;
+        if sample > self.max {
+            self.max = sample;
+        }
+        Ok(self.max)
+    }
+
+    /// All-time maximum, or `None` if empty.
+    #[inline]
+    #[must_use]
+    pub fn max(&self) -> Option<f64> {
+        if self.count == 0 {
+            None
+        } else {
+            Some(self.max)
+        }
+    }
+
+    /// Number of samples processed.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether at least one sample has been fed.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
+    }
+
+    /// Resets to empty state.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.max = f64::MIN;
+        self.count = 0;
+    }
+}
+
+impl Default for RunningMaxF64 {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// All-time maximum tracker.
+///
+/// Tracks the largest value ever seen. One comparison per update.
+///
+/// # Use Cases
+/// - High-water mark tracking (peak throughput, max latency)
+/// - Capacity planning (peak resource usage)
+/// - Input to range calculations (max - min)
+#[derive(Debug, Clone)]
+pub struct RunningMaxI64 {
+    max: i64,
+    count: u64,
+}
+
+impl RunningMaxI64 {
+    /// Creates a new empty tracker.
+    #[inline]
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            max: i64::MIN,
+            count: 0,
+        }
+    }
+
+    /// Feeds a sample. Returns the current all-time maximum.
+    #[inline]
+    #[must_use]
+    pub fn update(&mut self, sample: i64) -> i64 {
+        self.count += 1;
+        if sample > self.max {
+            self.max = sample;
+        }
+        self.max
+    }
+
+    /// All-time maximum, or `None` if empty.
+    #[inline]
+    #[must_use]
+    pub fn max(&self) -> Option<i64> {
+        if self.count == 0 {
+            None
+        } else {
+            Some(self.max)
+        }
+    }
+
+    /// Number of samples processed.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether at least one sample has been fed.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
+    }
+
+    /// Resets to empty state.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.max = i64::MIN;
+        self.count = 0;
+    }
+}
+
+impl Default for RunningMaxI64 {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -410,45 +382,6 @@ mod tests {
     }
 
     #[test]
-    fn max_i32() {
-        let mut rm = RunningMaxI32::new();
-        assert_eq!(rm.update(10), 10);
-        assert_eq!(rm.update(20), 20);
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn min_f32() {
-        let mut rm = RunningMinF32::new();
-        assert_eq!(rm.update(50.0).unwrap(), 50.0);
-        assert_eq!(rm.update(30.0).unwrap(), 30.0);
-    }
-
-    #[test]
-    #[allow(clippy::float_cmp)]
-    fn max_f32() {
-        let mut rm = RunningMaxF32::new();
-        assert_eq!(rm.update(30.0).unwrap(), 30.0);
-        assert_eq!(rm.update(50.0).unwrap(), 50.0);
-    }
-
-    #[test]
-    fn min_i128() {
-        let mut rm = RunningMinI128::new();
-        assert_eq!(rm.update(100), 100);
-        assert_eq!(rm.update(50), 50);
-        assert_eq!(rm.update(75), 50);
-    }
-
-    #[test]
-    fn max_i128() {
-        let mut rm = RunningMaxI128::new();
-        assert_eq!(rm.update(50), 50);
-        assert_eq!(rm.update(100), 100);
-        assert_eq!(rm.update(75), 100);
-    }
-
-    #[test]
     fn rejects_nan_and_inf() {
         let mut min64 = RunningMinF64::new();
         assert!(matches!(
@@ -472,18 +405,6 @@ mod tests {
         assert!(matches!(
             max64.update(f64::INFINITY),
             Err(crate::DataError::Infinite)
-        ));
-
-        let mut min32 = RunningMinF32::new();
-        assert!(matches!(
-            min32.update(f32::NAN),
-            Err(crate::DataError::NotANumber)
-        ));
-
-        let mut max32 = RunningMaxF32::new();
-        assert!(matches!(
-            max32.update(f32::NAN),
-            Err(crate::DataError::NotANumber)
         ));
     }
 }

@@ -12,7 +12,7 @@
 #![allow(clippy::suboptimal_flops)]
 
 macro_rules! impl_percentile {
-    ($name:ident, $builder:ident, $ty:ty) => {
+    ($(#[$struct_meta:meta])* $vis:vis $name:ident, $(#[$builder_meta:meta])* $bvis:vis $builder:ident, $ty:ty) => {
         /// P² streaming percentile estimator.
         ///
         /// Tracks a single percentile using 5 markers that converge via
@@ -22,24 +22,9 @@ macro_rules! impl_percentile {
         /// - p99 latency monitoring on the hot path
         /// - Streaming median estimation
         /// - Tail latency tracking without histograms
-        ///
-        /// # Examples
-        ///
-        /// ```
-        #[doc = concat!("use nexus_stats_core::statistics::", stringify!($name), ";")]
-        ///
-        #[doc = concat!("let mut p = ", stringify!($name), "::new(0.99).unwrap();")]
-        #[doc = concat!("for i in 1..=1000u64 { p.update(i as ", stringify!($ty), ").unwrap(); }")]
-        /// let est = p.percentile().unwrap();
-        #[doc = concat!("assert!((est - 990.0 as ", stringify!($ty), ").abs() < 50.0 as ", stringify!($ty), ");")]
-        /// ```
-        /// Marker positions are stored as the same float type as values.
-        /// For `PercentileF64`, precision degrades after 2^53 observations
-        /// (~9 quadrillion, ~285 years at 1M/s). For `PercentileF32`,
-        /// precision degrades after 2^24 observations (~16 million, ~16s at
-        /// 1M/s). Use `PercentileF64` unless memory is extremely constrained.
         #[derive(Debug, Clone)]
-        pub struct $name {
+        $(#[$struct_meta])*
+        $vis struct $name {
             /// Marker heights (value estimates).
             q: [$ty; 5],
             /// Marker positions (observation count, f64 for interpolation math).
@@ -60,10 +45,12 @@ macro_rules! impl_percentile {
         #[doc = stringify!($name)]
         /// `].
         #[derive(Debug, Clone)]
-        pub struct $builder {
+        $(#[$builder_meta])*
+        $bvis struct $builder {
             p: Option<$ty>,
         }
 
+        $(#[$struct_meta])*
         impl $name {
             /// Creates a builder.
             #[inline]
@@ -286,6 +273,7 @@ macro_rules! impl_percentile {
             }
         }
 
+        $(#[$builder_meta])*
         impl $builder {
             /// Target percentile in (0.0, 1.0). Required.
             #[inline]
@@ -334,8 +322,8 @@ macro_rules! impl_percentile {
     };
 }
 
-impl_percentile!(PercentileF64, PercentileF64Builder, f64);
-impl_percentile!(PercentileF32, PercentileF32Builder, f32);
+impl_percentile!(pub PercentileF64, pub PercentileF64Builder, f64);
+impl_percentile!(#[allow(dead_code)] pub(crate) PercentileF32, #[allow(dead_code)] pub(crate) PercentileF32Builder, f32);
 
 #[cfg(test)]
 mod tests {
@@ -435,7 +423,6 @@ mod tests {
     #[test]
     fn skewed_distribution() {
         let mut p = PercentileF64::new(0.99).unwrap();
-        // Interleave: 99 values of 10.0 for every 1 value of 1000.0
         for i in 0..10000u64 {
             if i % 100 == 99 {
                 p.update(1000.0).unwrap();
@@ -444,7 +431,6 @@ mod tests {
             }
         }
         let est = p.percentile().unwrap();
-        // p99 should be near the transition, not at 1000
         assert!(est < 500.0, "p99 = {est}, expected well below 1000");
     }
 

@@ -10,7 +10,7 @@ use std::hint::black_box;
 
 use nexus_stats::{
     control::{BoolWindow, HysteresisF64},
-    detection::{CusumF64, CusumI64, MosumF64, MultiGateF64, RobustZScoreF64, ShiryaevRobertsF64},
+    detection::{CusumF64, MosumF64, MultiGateF64, RobustZScoreF64, ShiryaevRobertsF64},
     frequency::TopK,
     learning::{EpsilonGreedyF64, Exp3F64, ThompsonBetaF64, ThompsonGammaF64, Ucb1F64},
     monitoring::{
@@ -19,7 +19,7 @@ use nexus_stats::{
     },
     signal::{AutocorrelationF64, CrossCorrelationF64, EntropyF64, TransferEntropyF64},
     smoothing::{
-        AsymEmaF64, EmaF64, EmaI64, HoltF64, Kalman1dF64, KamaF64, SlewF64, SpringF64,
+        AsymEmaF64, EmaF64, HoltF64, Kalman1dF64, KamaF64, SlewF64, SpringF64,
         WindowedMedianF64,
     },
     statistics::{CovarianceF64, EwmaVarF64, MomentsF64, WelfordF64},
@@ -122,27 +122,6 @@ fn bench_cusum_f64(samples: &mut [u64]) {
     }
 }
 
-fn bench_cusum_i64(samples: &mut [u64]) {
-    let mut cusum = CusumI64::builder(1000)
-        .slack(50)
-        .threshold(i64::MAX)
-        .build()
-        .unwrap();
-    let mut rng = 12345u64;
-    for _ in 0..WARMUP {
-        let _ = cusum.update(990 + (next_val(&mut rng) % 20) as i64);
-    }
-    for s in samples.iter_mut() {
-        let start = rdtsc_start();
-        for _ in 0..BATCH {
-            let v = 990 + (next_val(&mut rng) % 20) as i64;
-            black_box(cusum.update(black_box(v)));
-        }
-        let end = rdtsc_end();
-        *s = (end - start) / BATCH;
-    }
-}
-
 fn bench_ema_f64(samples: &mut [u64]) {
     let mut ema = EmaF64::builder().alpha(0.1).build().unwrap();
     let mut rng = 12345u64;
@@ -154,24 +133,6 @@ fn bench_ema_f64(samples: &mut [u64]) {
         let start = rdtsc_start();
         for _ in 0..BATCH {
             let _ = ema.update(90.0 + (next_val(&mut rng) % 20) as f64);
-        }
-        let end = rdtsc_end();
-        black_box(ema.value());
-        *s = (end - start) / BATCH;
-    }
-}
-
-fn bench_ema_i64(samples: &mut [u64]) {
-    let mut ema = EmaI64::builder().span(15).build().unwrap();
-    let mut rng = 12345u64;
-    let _ = ema.update(1000);
-    for _ in 0..WARMUP {
-        let _ = ema.update(990 + (next_val(&mut rng) % 20) as i64);
-    }
-    for s in samples.iter_mut() {
-        let start = rdtsc_start();
-        for _ in 0..BATCH {
-            let _ = ema.update(990 + (next_val(&mut rng) % 20) as i64);
         }
         let end = rdtsc_end();
         black_box(ema.value());
@@ -994,8 +955,6 @@ fn main() {
     print_header();
     bench_cusum_f64(&mut buf);
     print_row("CusumF64::update", &mut buf);
-    bench_cusum_i64(&mut buf);
-    print_row("CusumI64::update", &mut buf);
     bench_mosum_f64(&mut buf);
     print_row("MosumF64(64)::update", &mut buf);
     bench_shiryaev_roberts(&mut buf);
@@ -1005,8 +964,6 @@ fn main() {
     print_header();
     bench_ema_f64(&mut buf);
     print_row("EmaF64::update", &mut buf);
-    bench_ema_i64(&mut buf);
-    print_row("EmaI64::update", &mut buf);
     bench_holt_f64(&mut buf);
     print_row("HoltF64::update", &mut buf);
 

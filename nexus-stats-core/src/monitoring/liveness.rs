@@ -1,460 +1,447 @@
 use crate::math::MulAdd;
-macro_rules! impl_liveness_float {
-    ($name:ident, $builder:ident, $ty:ty) => {
-        /// Liveness detector — EMA of inter-arrival times with deadline threshold.
-        ///
-        /// Detects when a source goes quiet by tracking the smoothed interval
-        /// between events and comparing against a deadline.
-        ///
-        /// # Use Cases
-        /// - Stale quote detection
-        /// - Heartbeat monitoring
-        /// - Feed health checking
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            alpha: $ty,
-            one_minus_alpha: $ty,
-            interval: $ty,
-            last_timestamp: $ty,
-            deadline_multiple: Option<$ty>,
-            deadline_absolute: Option<$ty>,
-            count: u64,
-            min_samples: u64,
-        }
 
-        /// Builder for [`
-        #[doc = stringify!($name)]
-        /// `].
-        #[derive(Debug, Clone)]
-        pub struct $builder {
-            alpha: Option<$ty>,
-            deadline_multiple: Option<$ty>,
-            deadline_absolute: Option<$ty>,
-            min_samples: u64,
-        }
-
-        impl $name {
-            /// Creates a builder.
-            #[inline]
-            #[must_use]
-            pub fn builder() -> $builder {
-                $builder {
-                    alpha: Option::None,
-                    deadline_multiple: Option::None,
-                    deadline_absolute: Option::None,
-                    min_samples: 2,
-                }
-            }
-
-            /// Updates with an event at the given timestamp. Returns `true` if alive.
-            ///
-            /// The first event only records the timestamp. The second event
-            /// computes the first interval. Returns `true` until primed, then
-            /// checks against the deadline.
-            ///
-            /// # Errors
-            ///
-            /// Returns `DataError::NotANumber` if the timestamp is NaN, or
-            /// `DataError::Infinite` if the timestamp is infinite.
-            #[inline]
-            pub fn update(&mut self, timestamp: $ty) -> Result<bool, crate::DataError> {
-                check_finite!(timestamp);
-                self.count += 1;
-
-                if self.count == 1 {
-                    self.last_timestamp = timestamp;
-                    return Ok(true);
-                }
-
-                let dt = timestamp - self.last_timestamp;
-                self.last_timestamp = timestamp;
-
-                if self.count == 2 {
-                    self.interval = dt;
-                } else {
-                    self.interval = self.alpha.fma(dt, self.one_minus_alpha * self.interval);
-                }
-
-                if self.count < self.min_samples {
-                    return Ok(true);
-                }
-
-                Ok(self.is_alive_at_interval(dt))
-            }
-
-            /// Checks liveness at the given timestamp without recording an event.
-            ///
-            /// Returns `true` if the time since the last event is within the deadline.
-            /// Returns `true` if not yet primed.
-            #[inline]
-            #[must_use]
-            pub fn check(&self, now: $ty) -> bool {
-                if self.count < self.min_samples {
-                    return true;
-                }
-
-                let dt = now - self.last_timestamp;
-                self.is_alive_at_interval(dt)
-            }
-
-            #[inline]
-            fn is_alive_at_interval(&self, dt: $ty) -> bool {
-                if let Some(multiple) = self.deadline_multiple {
-                    return dt <= self.interval * multiple;
-                }
-                if let Some(absolute) = self.deadline_absolute {
-                    return dt <= absolute;
-                }
-                true
-            }
-
-            /// Current smoothed inter-arrival time, or `None` if < 2 events.
-            #[inline]
-            #[must_use]
-            pub fn interval(&self) -> Option<$ty> {
-                if self.count >= 2 {
-                    Option::Some(self.interval)
-                } else {
-                    Option::None
-                }
-            }
-
-            /// Number of events recorded.
-            #[inline]
-            #[must_use]
-            pub fn count(&self) -> u64 {
-                self.count
-            }
-
-            /// Whether the detector has reached `min_samples`.
-            #[inline]
-            #[must_use]
-            pub fn is_primed(&self) -> bool {
-                self.count >= self.min_samples
-            }
-
-            /// Resets to uninitialized state.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.interval = 0.0 as $ty;
-                self.last_timestamp = 0.0 as $ty;
-                self.count = 0;
-            }
-
-            /// Switches to a deadline-multiple threshold, clearing any absolute deadline.
-            #[inline]
-            pub fn reconfigure_deadline_multiple(&mut self, n: $ty) {
-                self.deadline_multiple = Option::Some(n);
-                self.deadline_absolute = Option::None;
-            }
-
-            /// Switches to an absolute deadline threshold, clearing any multiple deadline.
-            #[inline]
-            pub fn reconfigure_deadline_absolute(&mut self, t: $ty) {
-                self.deadline_absolute = Option::Some(t);
-                self.deadline_multiple = Option::None;
-            }
-        }
-
-        impl $builder {
-            /// Direct smoothing factor for interval EMA.
-            #[inline]
-            #[must_use]
-            pub fn alpha(mut self, alpha: $ty) -> Self {
-                self.alpha = Option::Some(alpha);
-                self
-            }
-
-            /// Halflife for interval smoothing.
-            #[inline]
-            #[must_use]
-            #[cfg(any(feature = "std", feature = "libm"))]
-            pub fn halflife(mut self, halflife: $ty) -> Self {
-                let ln2 = core::f64::consts::LN_2 as $ty;
-                let alpha = 1.0 as $ty - crate::math::exp((-ln2 / halflife) as f64) as $ty;
-                self.alpha = Option::Some(alpha);
-                self
-            }
-
-            /// Span for interval smoothing.
-            #[inline]
-            #[must_use]
-            pub fn span(mut self, n: u64) -> Self {
-                let alpha = 2.0 as $ty / (n as $ty + 1.0 as $ty);
-                self.alpha = Option::Some(alpha);
-                self
-            }
-
-            /// Alert when interval exceeds `n * smoothed_interval`.
-            ///
-            /// Typical values: 2.0-5.0.
-            #[inline]
-            #[must_use]
-            pub fn deadline_multiple(mut self, n: $ty) -> Self {
-                self.deadline_multiple = Option::Some(n);
-                self
-            }
-
-            /// Alert when interval exceeds a fixed deadline.
-            #[inline]
-            #[must_use]
-            pub fn deadline_absolute(mut self, t: $ty) -> Self {
-                self.deadline_absolute = Option::Some(t);
-                self
-            }
-
-            /// Minimum events before liveness checking activates. Default: 2.
-            #[inline]
-            #[must_use]
-            pub fn min_samples(mut self, min: u64) -> Self {
-                self.min_samples = min;
-                self
-            }
-
-            /// Builds the liveness detector.
-            ///
-            /// # Errors
-            ///
-            /// - Alpha must have been set.
-            /// - Alpha must be in (0, 1) exclusive.
-            /// - At least one deadline (multiple or absolute) must be set.
-            #[inline]
-            pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
-                    return Err(crate::ConfigError::Invalid("Liveness alpha must be in (0, 1)"));
-                }
-                if self.deadline_multiple.is_none() && self.deadline_absolute.is_none() {
-                    return Err(crate::ConfigError::Invalid("Liveness requires a deadline (use .deadline_multiple() or .deadline_absolute())"));
-                }
-
-                Ok($name {
-                    alpha,
-                    one_minus_alpha: 1.0 as $ty - alpha,
-                    interval: 0.0 as $ty,
-                    last_timestamp: 0.0 as $ty,
-                    deadline_multiple: self.deadline_multiple,
-                    deadline_absolute: self.deadline_absolute,
-                    count: 0,
-                    min_samples: self.min_samples,
-                })
-            }
-        }
-    };
+/// Liveness detector — EMA of inter-arrival times with deadline threshold.
+///
+/// Detects when a source goes quiet by tracking the smoothed interval
+/// between events and comparing against a deadline.
+///
+/// # Use Cases
+/// - Stale quote detection
+/// - Heartbeat monitoring
+/// - Feed health checking
+#[derive(Debug, Clone)]
+pub struct LivenessF64 {
+    alpha: f64,
+    one_minus_alpha: f64,
+    interval: f64,
+    last_timestamp: f64,
+    deadline_multiple: Option<f64>,
+    deadline_absolute: Option<f64>,
+    count: u64,
+    min_samples: u64,
 }
 
-impl_liveness_float!(LivenessF64, LivenessF64Builder, f64);
-impl_liveness_float!(LivenessF32, LivenessF32Builder, f32);
-
-macro_rules! impl_liveness_int {
-    ($name:ident, $builder:ident, $ty:ty, $acc_ty:ty) => {
-        /// Liveness detector (integer variant) — fixed-point EMA of inter-arrival ticks.
-        ///
-        /// Uses kernel-style bit-shift arithmetic for the interval smoothing.
-        /// Timestamps are integer ticks.
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            acc: $acc_ty,
-            shift: u32,
-            span: u64,
-            last_timestamp: $ty,
-            deadline_multiple: Option<u64>,
-            deadline_absolute: Option<$ty>,
-            count: u64,
-            min_samples: u64,
-            initialized: bool,
-        }
-
-        /// Builder for [`
-        #[doc = stringify!($name)]
-        /// `].
-        #[derive(Debug, Clone)]
-        pub struct $builder {
-            span: Option<u64>,
-            deadline_multiple: Option<u64>,
-            deadline_absolute: Option<$ty>,
-            min_samples: u64,
-        }
-
-        impl $name {
-            /// Creates a builder.
-            #[inline]
-            #[must_use]
-            pub fn builder() -> $builder {
-                $builder {
-                    span: Option::None,
-                    deadline_multiple: Option::None,
-                    deadline_absolute: Option::None,
-                    min_samples: 2,
-                }
-            }
-
-            /// Updates with an event at the given tick. Returns `true` if alive.
-            #[inline]
-            #[must_use]
-            pub fn update(&mut self, timestamp: $ty) -> bool {
-                self.count += 1;
-
-                if self.count == 1 {
-                    self.last_timestamp = timestamp;
-                    return true;
-                }
-
-                let dt = timestamp - self.last_timestamp;
-                self.last_timestamp = timestamp;
-
-                if !self.initialized {
-                    self.acc = (dt as $acc_ty) << self.shift;
-                    self.initialized = true;
-                } else {
-                    let dt_shifted = (dt as $acc_ty) << self.shift;
-                    self.acc += (dt_shifted - self.acc) >> self.shift;
-                }
-
-                if self.count < self.min_samples {
-                    return true;
-                }
-
-                let smoothed = (self.acc >> self.shift) as $ty;
-                self.is_alive_with(dt, smoothed)
-            }
-
-            /// Checks liveness at the given tick without recording.
-            #[inline]
-            #[must_use]
-            pub fn check(&self, now: $ty) -> bool {
-                if self.count < self.min_samples || !self.initialized {
-                    return true;
-                }
-
-                let dt = now - self.last_timestamp;
-                let smoothed = (self.acc >> self.shift) as $ty;
-                self.is_alive_with(dt, smoothed)
-            }
-
-            #[inline]
-            fn is_alive_with(&self, dt: $ty, smoothed: $ty) -> bool {
-                if let Some(multiple) = self.deadline_multiple {
-                    return dt <= smoothed * (multiple as $ty);
-                }
-                if let Some(absolute) = self.deadline_absolute {
-                    return dt <= absolute;
-                }
-                true
-            }
-
-            /// Current smoothed inter-arrival interval, or `None` if < 2 events.
-            #[inline]
-            #[must_use]
-            pub fn interval(&self) -> Option<$ty> {
-                if self.count >= 2 && self.initialized {
-                    Option::Some((self.acc >> self.shift) as $ty)
-                } else {
-                    Option::None
-                }
-            }
-
-            /// Effective span after rounding.
-            #[inline]
-            #[must_use]
-            pub fn effective_span(&self) -> u64 {
-                self.span
-            }
-
-            /// Number of events recorded.
-            #[inline]
-            #[must_use]
-            pub fn count(&self) -> u64 {
-                self.count
-            }
-
-            /// Whether the detector has reached `min_samples`.
-            #[inline]
-            #[must_use]
-            pub fn is_primed(&self) -> bool {
-                self.count >= self.min_samples
-            }
-
-            /// Resets to uninitialized state.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.acc = 0;
-                self.last_timestamp = 0;
-                self.count = 0;
-                self.initialized = false;
-            }
-        }
-
-        impl $builder {
-            /// Smoothing span. Rounded up to next `2^k - 1`.
-            #[inline]
-            #[must_use]
-            pub fn span(mut self, n: u64) -> Self {
-                self.span = Option::Some(n);
-                self
-            }
-
-            /// Alert when interval exceeds `n * smoothed_interval`.
-            #[inline]
-            #[must_use]
-            pub fn deadline_multiple(mut self, n: u64) -> Self {
-                self.deadline_multiple = Option::Some(n);
-                self
-            }
-
-            /// Alert when interval exceeds a fixed deadline (in ticks).
-            #[inline]
-            #[must_use]
-            pub fn deadline_absolute(mut self, t: $ty) -> Self {
-                self.deadline_absolute = Option::Some(t);
-                self
-            }
-
-            /// Minimum events before liveness checking activates. Default: 2.
-            #[inline]
-            #[must_use]
-            pub fn min_samples(mut self, min: u64) -> Self {
-                self.min_samples = min;
-                self
-            }
-
-            /// Builds the liveness detector.
-            ///
-            /// # Errors
-            ///
-            /// - Span must have been set and >= 1.
-            /// - At least one deadline must be set.
-            #[inline]
-            pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let requested = self.span.ok_or(crate::ConfigError::Missing("span"))?;
-                if requested < 1 {
-                    return Err(crate::ConfigError::Invalid("Liveness span must be >= 1"));
-                }
-                if self.deadline_multiple.is_none() && self.deadline_absolute.is_none() {
-                    return Err(crate::ConfigError::Invalid("Liveness requires a deadline"));
-                }
-
-                let effective = crate::smoothing::ema::next_power_of_two_minus_one(requested);
-                let shift = crate::smoothing::ema::log2_of_span_plus_one(effective);
-
-                Ok($name {
-                    acc: 0,
-                    shift,
-                    span: effective,
-                    last_timestamp: 0,
-                    deadline_multiple: self.deadline_multiple,
-                    deadline_absolute: self.deadline_absolute,
-                    count: 0,
-                    min_samples: self.min_samples,
-                    initialized: false,
-                })
-            }
-        }
-    };
+/// Builder for [`LivenessF64`].
+#[derive(Debug, Clone)]
+pub struct LivenessF64Builder {
+    alpha: Option<f64>,
+    deadline_multiple: Option<f64>,
+    deadline_absolute: Option<f64>,
+    min_samples: u64,
 }
 
-impl_liveness_int!(LivenessI64, LivenessI64Builder, i64, i128);
-impl_liveness_int!(LivenessI32, LivenessI32Builder, i32, i64);
+impl LivenessF64 {
+    /// Creates a builder.
+    #[inline]
+    #[must_use]
+    pub fn builder() -> LivenessF64Builder {
+        LivenessF64Builder {
+            alpha: None,
+            deadline_multiple: None,
+            deadline_absolute: None,
+            min_samples: 2,
+        }
+    }
+
+    /// Updates with an event at the given timestamp. Returns `true` if alive.
+    ///
+    /// The first event only records the timestamp. The second event
+    /// computes the first interval. Returns `true` until primed, then
+    /// checks against the deadline.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the timestamp is NaN, or
+    /// `DataError::Infinite` if the timestamp is infinite.
+    #[inline]
+    pub fn update(&mut self, timestamp: f64) -> Result<bool, crate::DataError> {
+        check_finite!(timestamp);
+        self.count += 1;
+
+        if self.count == 1 {
+            self.last_timestamp = timestamp;
+            return Ok(true);
+        }
+
+        let dt = timestamp - self.last_timestamp;
+        self.last_timestamp = timestamp;
+
+        if self.count == 2 {
+            self.interval = dt;
+        } else {
+            self.interval = self.alpha.fma(dt, self.one_minus_alpha * self.interval);
+        }
+
+        if self.count < self.min_samples {
+            return Ok(true);
+        }
+
+        Ok(self.is_alive_at_interval(dt))
+    }
+
+    /// Checks liveness at the given timestamp without recording an event.
+    ///
+    /// Returns `true` if the time since the last event is within the deadline.
+    /// Returns `true` if not yet primed.
+    #[inline]
+    #[must_use]
+    pub fn check(&self, now: f64) -> bool {
+        if self.count < self.min_samples {
+            return true;
+        }
+
+        let dt = now - self.last_timestamp;
+        self.is_alive_at_interval(dt)
+    }
+
+    #[inline]
+    fn is_alive_at_interval(&self, dt: f64) -> bool {
+        if let Some(multiple) = self.deadline_multiple {
+            return dt <= self.interval * multiple;
+        }
+        if let Some(absolute) = self.deadline_absolute {
+            return dt <= absolute;
+        }
+        true
+    }
+
+    /// Current smoothed inter-arrival time, or `None` if < 2 events.
+    #[inline]
+    #[must_use]
+    pub fn interval(&self) -> Option<f64> {
+        if self.count >= 2 {
+            Some(self.interval)
+        } else {
+            None
+        }
+    }
+
+    /// Number of events recorded.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether the detector has reached `min_samples`.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count >= self.min_samples
+    }
+
+    /// Resets to uninitialized state.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.interval = 0.0;
+        self.last_timestamp = 0.0;
+        self.count = 0;
+    }
+
+    /// Switches to a deadline-multiple threshold, clearing any absolute deadline.
+    #[inline]
+    pub fn reconfigure_deadline_multiple(&mut self, n: f64) {
+        self.deadline_multiple = Some(n);
+        self.deadline_absolute = None;
+    }
+
+    /// Switches to an absolute deadline threshold, clearing any multiple deadline.
+    #[inline]
+    pub fn reconfigure_deadline_absolute(&mut self, t: f64) {
+        self.deadline_absolute = Some(t);
+        self.deadline_multiple = None;
+    }
+}
+
+impl LivenessF64Builder {
+    /// Direct smoothing factor for interval EMA.
+    #[inline]
+    #[must_use]
+    pub fn alpha(mut self, alpha: f64) -> Self {
+        self.alpha = Some(alpha);
+        self
+    }
+
+    /// Halflife for interval smoothing.
+    #[inline]
+    #[must_use]
+    #[cfg(any(feature = "std", feature = "libm"))]
+    pub fn halflife(mut self, halflife: f64) -> Self {
+        let ln2 = core::f64::consts::LN_2;
+        let alpha = 1.0 - crate::math::exp(-ln2 / halflife);
+        self.alpha = Some(alpha);
+        self
+    }
+
+    /// Span for interval smoothing.
+    #[inline]
+    #[must_use]
+    pub fn span(mut self, n: u64) -> Self {
+        let alpha = 2.0 / (n as f64 + 1.0);
+        self.alpha = Some(alpha);
+        self
+    }
+
+    /// Alert when interval exceeds `n * smoothed_interval`.
+    ///
+    /// Typical values: 2.0-5.0.
+    #[inline]
+    #[must_use]
+    pub fn deadline_multiple(mut self, n: f64) -> Self {
+        self.deadline_multiple = Some(n);
+        self
+    }
+
+    /// Alert when interval exceeds a fixed deadline.
+    #[inline]
+    #[must_use]
+    pub fn deadline_absolute(mut self, t: f64) -> Self {
+        self.deadline_absolute = Some(t);
+        self
+    }
+
+    /// Minimum events before liveness checking activates. Default: 2.
+    #[inline]
+    #[must_use]
+    pub fn min_samples(mut self, min: u64) -> Self {
+        self.min_samples = min;
+        self
+    }
+
+    /// Builds the liveness detector.
+    ///
+    /// # Errors
+    ///
+    /// - Alpha must have been set.
+    /// - Alpha must be in (0, 1) exclusive.
+    /// - At least one deadline (multiple or absolute) must be set.
+    #[inline]
+    pub fn build(self) -> Result<LivenessF64, crate::ConfigError> {
+        let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+        if !(alpha > 0.0 && alpha < 1.0) {
+            return Err(crate::ConfigError::Invalid(
+                "Liveness alpha must be in (0, 1)",
+            ));
+        }
+        if self.deadline_multiple.is_none() && self.deadline_absolute.is_none() {
+            return Err(crate::ConfigError::Invalid(
+                "Liveness requires a deadline (use .deadline_multiple() or .deadline_absolute())",
+            ));
+        }
+
+        Ok(LivenessF64 {
+            alpha,
+            one_minus_alpha: 1.0 - alpha,
+            interval: 0.0,
+            last_timestamp: 0.0,
+            deadline_multiple: self.deadline_multiple,
+            deadline_absolute: self.deadline_absolute,
+            count: 0,
+            min_samples: self.min_samples,
+        })
+    }
+}
+
+/// Liveness detector (integer variant) — fixed-point EMA of inter-arrival ticks.
+///
+/// Uses kernel-style bit-shift arithmetic for the interval smoothing.
+/// Timestamps are integer ticks.
+#[derive(Debug, Clone)]
+pub struct LivenessI64 {
+    acc: i128,
+    shift: u32,
+    span: u64,
+    last_timestamp: i64,
+    deadline_multiple: Option<u64>,
+    deadline_absolute: Option<i64>,
+    count: u64,
+    min_samples: u64,
+    initialized: bool,
+}
+
+/// Builder for [`LivenessI64`].
+#[derive(Debug, Clone)]
+pub struct LivenessI64Builder {
+    span: Option<u64>,
+    deadline_multiple: Option<u64>,
+    deadline_absolute: Option<i64>,
+    min_samples: u64,
+}
+
+impl LivenessI64 {
+    /// Creates a builder.
+    #[inline]
+    #[must_use]
+    pub fn builder() -> LivenessI64Builder {
+        LivenessI64Builder {
+            span: None,
+            deadline_multiple: None,
+            deadline_absolute: None,
+            min_samples: 2,
+        }
+    }
+
+    /// Updates with an event at the given tick. Returns `true` if alive.
+    #[inline]
+    #[must_use]
+    pub fn update(&mut self, timestamp: i64) -> bool {
+        self.count += 1;
+
+        if self.count == 1 {
+            self.last_timestamp = timestamp;
+            return true;
+        }
+
+        let dt = timestamp - self.last_timestamp;
+        self.last_timestamp = timestamp;
+
+        if self.initialized {
+            let dt_shifted = (dt as i128) << self.shift;
+            self.acc += (dt_shifted - self.acc) >> self.shift;
+        } else {
+            self.acc = (dt as i128) << self.shift;
+            self.initialized = true;
+        }
+
+        if self.count < self.min_samples {
+            return true;
+        }
+
+        let smoothed = (self.acc >> self.shift) as i64;
+        self.is_alive_with(dt, smoothed)
+    }
+
+    /// Checks liveness at the given tick without recording.
+    #[inline]
+    #[must_use]
+    pub fn check(&self, now: i64) -> bool {
+        if self.count < self.min_samples || !self.initialized {
+            return true;
+        }
+
+        let dt = now - self.last_timestamp;
+        let smoothed = (self.acc >> self.shift) as i64;
+        self.is_alive_with(dt, smoothed)
+    }
+
+    #[inline]
+    fn is_alive_with(&self, dt: i64, smoothed: i64) -> bool {
+        if let Some(multiple) = self.deadline_multiple {
+            return dt <= smoothed * (multiple as i64);
+        }
+        if let Some(absolute) = self.deadline_absolute {
+            return dt <= absolute;
+        }
+        true
+    }
+
+    /// Current smoothed inter-arrival interval, or `None` if < 2 events.
+    #[inline]
+    #[must_use]
+    pub fn interval(&self) -> Option<i64> {
+        if self.count >= 2 && self.initialized {
+            Some((self.acc >> self.shift) as i64)
+        } else {
+            None
+        }
+    }
+
+    /// Effective span after rounding.
+    #[inline]
+    #[must_use]
+    pub fn effective_span(&self) -> u64 {
+        self.span
+    }
+
+    /// Number of events recorded.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether the detector has reached `min_samples`.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count >= self.min_samples
+    }
+
+    /// Resets to uninitialized state.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.acc = 0;
+        self.last_timestamp = 0;
+        self.count = 0;
+        self.initialized = false;
+    }
+}
+
+impl LivenessI64Builder {
+    /// Smoothing span. Rounded up to next `2^k - 1`.
+    #[inline]
+    #[must_use]
+    pub fn span(mut self, n: u64) -> Self {
+        self.span = Some(n);
+        self
+    }
+
+    /// Alert when interval exceeds `n * smoothed_interval`.
+    #[inline]
+    #[must_use]
+    pub fn deadline_multiple(mut self, n: u64) -> Self {
+        self.deadline_multiple = Some(n);
+        self
+    }
+
+    /// Alert when interval exceeds a fixed deadline (in ticks).
+    #[inline]
+    #[must_use]
+    pub fn deadline_absolute(mut self, t: i64) -> Self {
+        self.deadline_absolute = Some(t);
+        self
+    }
+
+    /// Minimum events before liveness checking activates. Default: 2.
+    #[inline]
+    #[must_use]
+    pub fn min_samples(mut self, min: u64) -> Self {
+        self.min_samples = min;
+        self
+    }
+
+    /// Builds the liveness detector.
+    ///
+    /// # Errors
+    ///
+    /// - Span must have been set and >= 1.
+    /// - At least one deadline must be set.
+    #[inline]
+    pub fn build(self) -> Result<LivenessI64, crate::ConfigError> {
+        let requested = self.span.ok_or(crate::ConfigError::Missing("span"))?;
+        if requested < 1 {
+            return Err(crate::ConfigError::Invalid("Liveness span must be >= 1"));
+        }
+        if self.deadline_multiple.is_none() && self.deadline_absolute.is_none() {
+            return Err(crate::ConfigError::Invalid("Liveness requires a deadline"));
+        }
+
+        let effective = crate::smoothing::ema::next_power_of_two_minus_one(requested);
+        let shift = crate::smoothing::ema::log2_of_span_plus_one(effective);
+
+        Ok(LivenessI64 {
+            acc: 0,
+            shift,
+            span: effective,
+            last_timestamp: 0,
+            deadline_multiple: self.deadline_multiple,
+            deadline_absolute: self.deadline_absolute,
+            count: 0,
+            min_samples: self.min_samples,
+            initialized: false,
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -491,7 +478,7 @@ mod tests {
         }
 
         // Check after long silence — should be dead
-        // Smoothed interval ≈ 10, deadline = 3 * 10 = 30, silence = 100
+        // Smoothed interval ~= 10, deadline = 3 * 10 = 30, silence = 100
         assert!(!lv.check(190.0), "should be dead after long silence");
     }
 
@@ -561,20 +548,6 @@ mod tests {
 
         // Long silence
         assert!(!lv.check(2000));
-    }
-
-    #[test]
-    fn i32_basic() {
-        let mut lv = LivenessI32::builder()
-            .span(3)
-            .deadline_absolute(500)
-            .build()
-            .unwrap();
-
-        let _ = lv.update(0);
-        let _ = lv.update(100);
-        assert!(lv.check(400));
-        assert!(!lv.check(700));
     }
 
     #[test]
@@ -658,16 +631,6 @@ mod tests {
         assert!(matches!(
             lv.update(f64::INFINITY),
             Err(crate::DataError::Infinite)
-        ));
-
-        let mut lv32 = LivenessF32::builder()
-            .alpha(0.3)
-            .deadline_multiple(3.0)
-            .build()
-            .unwrap();
-        assert!(matches!(
-            lv32.update(f32::NAN),
-            Err(crate::DataError::NotANumber)
         ));
     }
 }

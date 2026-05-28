@@ -1,196 +1,183 @@
 use crate::Condition;
 use crate::math::MulAdd;
 
-macro_rules! impl_saturation {
-    ($name:ident, $builder:ident, $ty:ty) => {
-        /// Saturation detector — smoothed utilization with threshold.
-        ///
-        /// Internally uses an EMA to smooth the utilization signal and
-        /// compares against a configured threshold.
-        ///
-        /// # Use Cases
-        /// - CPU/memory utilization monitoring
-        /// - Queue fill level monitoring
-        /// - Bandwidth saturation detection
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            alpha: $ty,
-            one_minus_alpha: $ty,
-            value: $ty,
-            threshold: $ty,
-            count: u64,
-            min_samples: u64,
-        }
-
-        /// Builder for [`
-        #[doc = stringify!($name)]
-        /// `].
-        #[derive(Debug, Clone)]
-        pub struct $builder {
-            alpha: Option<$ty>,
-            threshold: Option<$ty>,
-            min_samples: u64,
-        }
-
-        impl $name {
-            /// Creates a builder.
-            #[inline]
-            #[must_use]
-            pub fn builder() -> $builder {
-                $builder {
-                    alpha: Option::None,
-                    threshold: Option::None,
-                    min_samples: 1,
-                }
-            }
-
-            /// Feeds a utilization sample. Returns pressure state once primed.
-            ///
-            /// # Errors
-            ///
-            /// Returns `DataError::NotANumber` if the sample is NaN, or
-            /// `DataError::Infinite` if the sample is infinite.
-            #[inline]
-            pub fn update(
-                &mut self,
-                utilization: $ty,
-            ) -> Result<Option<Condition>, crate::DataError> {
-                check_finite!(utilization);
-                self.count += 1;
-
-                if self.count == 1 {
-                    self.value = utilization;
-                } else {
-                    self.value = self
-                        .alpha
-                        .fma(utilization, self.one_minus_alpha * self.value);
-                }
-
-                if self.count < self.min_samples {
-                    return Ok(Option::None);
-                }
-
-                Ok(if self.value > self.threshold {
-                    Option::Some(Condition::Degraded)
-                } else {
-                    Option::Some(Condition::Normal)
-                })
-            }
-
-            /// Current smoothed utilization, or `None` if not primed.
-            #[inline]
-            #[must_use]
-            pub fn utilization(&self) -> Option<$ty> {
-                if self.count >= self.min_samples {
-                    Option::Some(self.value)
-                } else {
-                    Option::None
-                }
-            }
-
-            /// Number of samples processed.
-            #[inline]
-            #[must_use]
-            pub fn count(&self) -> u64 {
-                self.count
-            }
-
-            /// Whether enough data has been collected.
-            #[inline]
-            #[must_use]
-            pub fn is_primed(&self) -> bool {
-                self.count >= self.min_samples
-            }
-
-            /// Resets to empty state. Parameters unchanged.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.value = 0.0 as $ty;
-                self.count = 0;
-            }
-
-            /// Updates the saturation threshold without resetting state.
-            #[inline]
-            pub fn reconfigure_threshold(&mut self, threshold: $ty) {
-                self.threshold = threshold;
-            }
-        }
-
-        impl $builder {
-            /// Smoothing factor.
-            #[inline]
-            #[must_use]
-            pub fn alpha(mut self, alpha: $ty) -> Self {
-                self.alpha = Option::Some(alpha);
-                self
-            }
-
-            /// Halflife for smoothing.
-            #[inline]
-            #[must_use]
-            #[cfg(any(feature = "std", feature = "libm"))]
-            pub fn halflife(mut self, halflife: $ty) -> Self {
-                let ln2 = core::f64::consts::LN_2 as $ty;
-                self.alpha =
-                    Option::Some(1.0 as $ty - crate::math::exp((-ln2 / halflife) as f64) as $ty);
-                self
-            }
-
-            /// Span for smoothing.
-            #[inline]
-            #[must_use]
-            pub fn span(mut self, n: u64) -> Self {
-                self.alpha = Option::Some(2.0 as $ty / (n as $ty + 1.0 as $ty));
-                self
-            }
-
-            /// Saturation threshold. Default must be set.
-            #[inline]
-            #[must_use]
-            pub fn threshold(mut self, threshold: $ty) -> Self {
-                self.threshold = Option::Some(threshold);
-                self
-            }
-
-            /// Minimum samples before detection activates. Default: 1.
-            #[inline]
-            #[must_use]
-            pub fn min_samples(mut self, min: u64) -> Self {
-                self.min_samples = min;
-                self
-            }
-
-            /// Builds the saturation detector.
-            ///
-            /// # Errors
-            ///
-            /// - Alpha and threshold must have been set.
-            /// - Alpha must be in (0, 1) exclusive.
-            #[inline]
-            pub fn build(self) -> Result<$name, crate::ConfigError> {
-                let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
-                let threshold = self
-                    .threshold
-                    .ok_or(crate::ConfigError::Missing("threshold"))?;
-                if !(alpha > 0.0 as $ty && alpha < 1.0 as $ty) {
-                    return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
-                }
-
-                Ok($name {
-                    alpha,
-                    one_minus_alpha: 1.0 as $ty - alpha,
-                    value: 0.0 as $ty,
-                    threshold,
-                    count: 0,
-                    min_samples: self.min_samples,
-                })
-            }
-        }
-    };
+/// Saturation detector — smoothed utilization with threshold.
+///
+/// Internally uses an EMA to smooth the utilization signal and
+/// compares against a configured threshold.
+///
+/// # Use Cases
+/// - CPU/memory utilization monitoring
+/// - Queue fill level monitoring
+/// - Bandwidth saturation detection
+#[derive(Debug, Clone)]
+pub struct SaturationF64 {
+    alpha: f64,
+    one_minus_alpha: f64,
+    value: f64,
+    threshold: f64,
+    count: u64,
+    min_samples: u64,
 }
 
-impl_saturation!(SaturationF64, SaturationF64Builder, f64);
-impl_saturation!(SaturationF32, SaturationF32Builder, f32);
+/// Builder for [`SaturationF64`].
+#[derive(Debug, Clone)]
+pub struct SaturationF64Builder {
+    alpha: Option<f64>,
+    threshold: Option<f64>,
+    min_samples: u64,
+}
+
+impl SaturationF64 {
+    /// Creates a builder.
+    #[inline]
+    #[must_use]
+    pub fn builder() -> SaturationF64Builder {
+        SaturationF64Builder {
+            alpha: None,
+            threshold: None,
+            min_samples: 1,
+        }
+    }
+
+    /// Feeds a utilization sample. Returns pressure state once primed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the sample is NaN, or
+    /// `DataError::Infinite` if the sample is infinite.
+    #[inline]
+    pub fn update(&mut self, utilization: f64) -> Result<Option<Condition>, crate::DataError> {
+        check_finite!(utilization);
+        self.count += 1;
+
+        if self.count == 1 {
+            self.value = utilization;
+        } else {
+            self.value = self
+                .alpha
+                .fma(utilization, self.one_minus_alpha * self.value);
+        }
+
+        if self.count < self.min_samples {
+            return Ok(None);
+        }
+
+        Ok(if self.value > self.threshold {
+            Some(Condition::Degraded)
+        } else {
+            Some(Condition::Normal)
+        })
+    }
+
+    /// Current smoothed utilization, or `None` if not primed.
+    #[inline]
+    #[must_use]
+    pub fn utilization(&self) -> Option<f64> {
+        if self.count >= self.min_samples {
+            Some(self.value)
+        } else {
+            None
+        }
+    }
+
+    /// Number of samples processed.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether enough data has been collected.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count >= self.min_samples
+    }
+
+    /// Resets to empty state. Parameters unchanged.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.value = 0.0;
+        self.count = 0;
+    }
+
+    /// Updates the saturation threshold without resetting state.
+    #[inline]
+    pub fn reconfigure_threshold(&mut self, threshold: f64) {
+        self.threshold = threshold;
+    }
+}
+
+impl SaturationF64Builder {
+    /// Smoothing factor.
+    #[inline]
+    #[must_use]
+    pub fn alpha(mut self, alpha: f64) -> Self {
+        self.alpha = Some(alpha);
+        self
+    }
+
+    /// Halflife for smoothing.
+    #[inline]
+    #[must_use]
+    #[cfg(any(feature = "std", feature = "libm"))]
+    pub fn halflife(mut self, halflife: f64) -> Self {
+        let ln2 = core::f64::consts::LN_2;
+        self.alpha = Some(1.0 - crate::math::exp(-ln2 / halflife));
+        self
+    }
+
+    /// Span for smoothing.
+    #[inline]
+    #[must_use]
+    pub fn span(mut self, n: u64) -> Self {
+        self.alpha = Some(2.0 / (n as f64 + 1.0));
+        self
+    }
+
+    /// Saturation threshold. Default must be set.
+    #[inline]
+    #[must_use]
+    pub fn threshold(mut self, threshold: f64) -> Self {
+        self.threshold = Some(threshold);
+        self
+    }
+
+    /// Minimum samples before detection activates. Default: 1.
+    #[inline]
+    #[must_use]
+    pub fn min_samples(mut self, min: u64) -> Self {
+        self.min_samples = min;
+        self
+    }
+
+    /// Builds the saturation detector.
+    ///
+    /// # Errors
+    ///
+    /// - Alpha and threshold must have been set.
+    /// - Alpha must be in (0, 1) exclusive.
+    #[inline]
+    pub fn build(self) -> Result<SaturationF64, crate::ConfigError> {
+        let alpha = self.alpha.ok_or(crate::ConfigError::Missing("alpha"))?;
+        let threshold = self
+            .threshold
+            .ok_or(crate::ConfigError::Missing("threshold"))?;
+        if !(alpha > 0.0 && alpha < 1.0) {
+            return Err(crate::ConfigError::Invalid("alpha must be in (0, 1)"));
+        }
+
+        Ok(SaturationF64 {
+            alpha,
+            one_minus_alpha: 1.0 - alpha,
+            value: 0.0,
+            threshold,
+            count: 0,
+            min_samples: self.min_samples,
+        })
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -273,17 +260,6 @@ mod tests {
         s.reset();
         assert_eq!(s.count(), 0);
         assert!(s.utilization().is_none());
-    }
-
-    #[test]
-    fn f32_basic() {
-        let mut s = SaturationF32::builder()
-            .alpha(0.3)
-            .threshold(0.8)
-            .build()
-            .unwrap();
-
-        assert_eq!(s.update(0.5).unwrap(), Some(Condition::Normal));
     }
 
     #[test]

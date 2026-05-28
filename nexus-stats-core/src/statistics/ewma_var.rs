@@ -1,6 +1,6 @@
 use crate::math::MulAdd;
 macro_rules! impl_ewma_var {
-    ($name:ident, $builder:ident, $ty:ty) => {
+    ($(#[$struct_meta:meta])* $vis:vis $name:ident, $(#[$builder_meta:meta])* $bvis:vis $builder:ident, $ty:ty) => {
         /// EWMA Variance — Exponentially Weighted Moving Average with variance tracking.
         ///
         /// Tracks both the exponentially smoothed mean and variance of a streaming
@@ -11,7 +11,8 @@ macro_rules! impl_ewma_var {
         /// - Adaptive thresholds (mean ± k * std_dev)
         /// - Regime detection (variance spike = regime change)
         #[derive(Debug, Clone)]
-        pub struct $name {
+        $(#[$struct_meta])*
+        $vis struct $name {
             alpha: $ty,
             one_minus_alpha: $ty,
             mean: $ty,
@@ -24,13 +25,15 @@ macro_rules! impl_ewma_var {
         #[doc = stringify!($name)]
         /// `].
         #[derive(Debug, Clone)]
-        pub struct $builder {
+        $(#[$builder_meta])*
+        $bvis struct $builder {
             alpha: Option<$ty>,
             min_samples: u64,
             seed_mean: Option<$ty>,
             seed_variance: Option<$ty>,
         }
 
+        $(#[$struct_meta])*
         impl $name {
             /// Creates a builder.
             #[inline]
@@ -139,6 +142,7 @@ macro_rules! impl_ewma_var {
             }
         }
 
+        $(#[$builder_meta])*
         impl $builder {
             /// Direct smoothing factor. Must be in (0, 1) exclusive.
             #[inline]
@@ -220,8 +224,8 @@ macro_rules! impl_ewma_var {
     };
 }
 
-impl_ewma_var!(EwmaVarF64, EwmaVarF64Builder, f64);
-impl_ewma_var!(EwmaVarF32, EwmaVarF32Builder, f32);
+impl_ewma_var!(pub EwmaVarF64, pub EwmaVarF64Builder, f64);
+impl_ewma_var!(#[allow(dead_code)] pub(crate) EwmaVarF32, #[allow(dead_code)] pub(crate) EwmaVarF32Builder, f32);
 
 #[cfg(test)]
 mod tests {

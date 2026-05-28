@@ -1,98 +1,88 @@
-macro_rules! impl_harmonic_mean {
-    ($name:ident, $ty:ty) => {
-        /// Online harmonic mean.
-        ///
-        /// Tracks the sum of reciprocals for computing the harmonic mean
-        /// incrementally. Useful for averaging rates (e.g., throughput in
-        /// requests/second across multiple servers).
-        ///
-        /// # Use Cases
-        /// - Average throughput across heterogeneous servers
-        /// - Mean speed over equal-distance segments
-        /// - Any rate where arithmetic mean would be misleading
-        #[derive(Debug, Clone)]
-        pub struct $name {
-            reciprocal_sum: $ty,
-            count: u64,
-        }
-
-        impl $name {
-            /// Creates a new empty accumulator.
-            #[inline]
-            #[must_use]
-            pub const fn new() -> Self {
-                Self {
-                    reciprocal_sum: 0.0 as $ty,
-                    count: 0,
-                }
-            }
-
-            /// Feeds a sample. Must be positive and non-zero.
-            ///
-            /// # Errors
-            ///
-            /// Returns `DataError::NotANumber` if the sample is NaN, or
-            /// `DataError::Infinite` if the sample is infinite.
-            ///
-            /// # Panics
-            ///
-            /// Panics if sample is zero or negative.
-            #[inline]
-            pub fn update(&mut self, sample: $ty) -> Result<(), crate::DataError> {
-                check_finite!(sample);
-                assert!(
-                    sample > 0.0 as $ty,
-                    "harmonic mean requires positive values"
-                );
-                self.count += 1;
-                self.reciprocal_sum += 1.0 as $ty / sample;
-                Ok(())
-            }
-
-            /// Harmonic mean, or `None` if empty.
-            #[inline]
-            #[must_use]
-            pub fn mean(&self) -> Option<$ty> {
-                if self.count == 0 {
-                    Option::None
-                } else {
-                    Option::Some(self.count as $ty / self.reciprocal_sum)
-                }
-            }
-
-            /// Number of samples processed.
-            #[inline]
-            #[must_use]
-            pub fn count(&self) -> u64 {
-                self.count
-            }
-
-            /// Whether at least one sample has been recorded.
-            #[inline]
-            #[must_use]
-            pub fn is_primed(&self) -> bool {
-                self.count > 0
-            }
-
-            /// Resets to empty state.
-            #[inline]
-            pub fn reset(&mut self) {
-                self.reciprocal_sum = 0.0 as $ty;
-                self.count = 0;
-            }
-        }
-
-        impl Default for $name {
-            #[inline]
-            fn default() -> Self {
-                Self::new()
-            }
-        }
-    };
+/// Online harmonic mean.
+///
+/// Tracks the sum of reciprocals for computing the harmonic mean
+/// incrementally. Useful for averaging rates (e.g., throughput in
+/// requests/second across multiple servers).
+///
+/// # Use Cases
+/// - Average throughput across heterogeneous servers
+/// - Mean speed over equal-distance segments
+/// - Any rate where arithmetic mean would be misleading
+#[derive(Debug, Clone)]
+pub struct HarmonicMeanF64 {
+    reciprocal_sum: f64,
+    count: u64,
 }
 
-impl_harmonic_mean!(HarmonicMeanF64, f64);
-impl_harmonic_mean!(HarmonicMeanF32, f32);
+impl HarmonicMeanF64 {
+    /// Creates a new empty accumulator.
+    #[inline]
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            reciprocal_sum: 0.0,
+            count: 0,
+        }
+    }
+
+    /// Feeds a sample. Must be positive and non-zero.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DataError::NotANumber` if the sample is NaN, or
+    /// `DataError::Infinite` if the sample is infinite.
+    ///
+    /// # Panics
+    ///
+    /// Panics if sample is zero or negative.
+    #[inline]
+    pub fn update(&mut self, sample: f64) -> Result<(), crate::DataError> {
+        check_finite!(sample);
+        assert!(sample > 0.0, "harmonic mean requires positive values");
+        self.count += 1;
+        self.reciprocal_sum += 1.0 / sample;
+        Ok(())
+    }
+
+    /// Harmonic mean, or `None` if empty.
+    #[inline]
+    #[must_use]
+    pub fn mean(&self) -> Option<f64> {
+        if self.count == 0 {
+            None
+        } else {
+            Some(self.count as f64 / self.reciprocal_sum)
+        }
+    }
+
+    /// Number of samples processed.
+    #[inline]
+    #[must_use]
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Whether at least one sample has been recorded.
+    #[inline]
+    #[must_use]
+    pub fn is_primed(&self) -> bool {
+        self.count > 0
+    }
+
+    /// Resets to empty state.
+    #[inline]
+    pub fn reset(&mut self) {
+        self.reciprocal_sum = 0.0;
+        self.count = 0;
+    }
+}
+
+impl Default for HarmonicMeanF64 {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -151,14 +141,6 @@ mod tests {
         hm.reset();
         assert_eq!(hm.count(), 0);
         assert!(hm.mean().is_none());
-    }
-
-    #[test]
-    fn f32_basic() {
-        let mut hm = HarmonicMeanF32::new();
-        hm.update(2.0).unwrap();
-        hm.update(4.0).unwrap();
-        assert!(hm.mean().is_some());
     }
 
     #[test]
