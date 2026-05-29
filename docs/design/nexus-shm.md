@@ -74,6 +74,18 @@ Regardless of crate structure, the foundation layer handles:
 - **Crash/stale peer detection:** Heartbeat or epoch mechanism to
   distinguish dead peers from slow ones. This is the core invariant
   the upper layers depend on.
+
+> **[altug]** I'd steer the foundation away from timing as the source of truth for liveness. A heartbeat threshold can't actually separate a dead peer from a busy one. Too tight and a peer mid-burst looks dead, too loose and you carry stale state for seconds.
+>
+> The robust answer is to ask the kernel instead of inferring from a clock. Two options that give crash detection for free:
+>
+> - A robust futex on the control word (FUTEX_OWNER_DIED, PTHREAD_MUTEX_ROBUST). The kernel flags it when the owning process dies, the next attacher gets EOWNERDEAD and runs recovery. Canonical Linux answer to "shm lock owner died".
+> - An flock or OFD lock per process. The kernel releases it on death, so a peer can test it to know definitively whether the other side is alive.
+>
+> Pair either one with a generation counter in the control block so restarts and PID reuse stay unambiguous. A restarted peer bumps the generation, and stale state from the dead instance is detectable structurally, not by timing.
+>
+> Heartbeat is still useful as a soft "making progress" hint for the slow-but-alive case. It just shouldn't be the thing that declares a peer dead. That call should come from the OS.
+
 - **Recovery routine:** Given a mapping that may contain half-written
   data from a crashed writer, restore to a consistent state.
 
@@ -123,6 +135,11 @@ recovery. Primary caller: FIX message journaling.
   thread, no extra copies
 - Crash recovery: scan last segment on startup, find the last
   committed record, discard partial writes
+
+> **[altug]** Worth making the commit-ordering invariant explicit, since the whole recovery story rests on it. Write body first, publish the length or a commit marker last behind a release fence. Recovery scans forward while records carry a valid committed marker and stops at the first partial one. That ordering is the real correctness property, and it's exactly the kind of thing a later refactor can silently reorder and break.
+>
+> One open call: a SIGKILL can land mid-memcpy on the payload, so a length-last marker alone won't catch a torn body. A per-record checksum catches it but costs you on the hot path. Might be worth a config flag. Checksums on for the journal where durability matters, off for callers fine with discarding the last partial record on a length mismatch.
+
 - Cross-process read: other processes mmap segments read-only
 
 **Design question: sequence awareness**
@@ -213,6 +230,10 @@ Lock-free readers, no torn reads.
 (version left odd)? Options: timeout-based staleness detection, or
 epoch/heartbeat in a separate field so readers know the writer is
 alive.
+
+> **[altug]** I'd reuse the foundation liveness primitive here rather than add a separate timeout. Reader logic: if the version is odd, check writer liveness with the same robust-futex or lock signal from the foundation. If the writer is alive, retry, it's genuinely mid-write. If it's dead, fall back to the last good value and surface a staleness flag instead of spinning forever or risking a torn read.
+>
+> That means the reader keeps a shadow of the last even-version snapshot it read. Cheap for Pod types, and it gives a clean degraded mode: last-good plus "writer gone" rather than a hang.
 
 ### 4. ShmMap — Shared memory map (Chronicle-Map style)
 
