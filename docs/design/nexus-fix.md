@@ -73,30 +73,163 @@ convention. Path B can be explored later if there's demand.
 
 ### Flyweight decoder (zero allocation)
 
+The codegen knows the full message structure from the XML dictionary
+at compile time — which tags appear, their order, which start
+repeating groups, what fields each group contains. This means the
+generated decoder is a typed struct with named fields, not a generic
+offset array. Single parse pass populates the field spans. All
+access after that is O(1): struct field read + buffer index.
+
 ```rust
+// Generated from FIX44_coinbase.xml — one struct per message type.
+// Every field the dictionary defines becomes a struct member.
 pub struct NewOrderSingleDecoder<'buf> {
     buffer: &'buf [u8],
-    // Pre-indexed hot fields (O(1))
+    // Fixed fields — populated during single parse pass
     cl_ord_id: FieldSpan,
     symbol: FieldSpan,
-    side: u8,
+    side: FieldSpan,
+    order_qty: FieldSpan,
     price: FieldSpan,
-    // Cold fields (linear scan)
-    offsets: [FieldOffset; MAX_FIELDS],
-    count: u8,
+    time_in_force: FieldSpan,
+    // Repeating group — byte offset where group starts + count
+    no_allocs_offset: u16,
+    no_allocs_count: u8,
+}
+
+impl<'buf> NewOrderSingleDecoder<'buf> {
+    /// Single-pass decode. Walks the buffer once, records all field
+    /// positions as FieldSpans. No allocation.
+    pub fn decode(buffer: &'buf [u8]) -> Result<Self, DecodeError>;
+
+    /// O(1) — struct field read + buffer slice.
+    pub fn cl_ord_id(&self) -> &'buf [u8] {
+        self.buffer[self.cl_ord_id.range()]
+    }
+
+    /// Lazy parse — only converts when accessed.
+    pub fn side(&self) -> Result<Side, DecodeError> {
+        Side::from_byte(self.buffer[self.side.offset])
+    }
+
+    /// Returns a typed iterator over the group's entries.
+    pub fn allocs(&self) -> AllocGroupIter<'buf> {
+        AllocGroupIter {
+            buffer: self.buffer,
+            pos: self.no_allocs_offset as usize,
+            remaining: self.no_allocs_count,
+        }
+    }
 }
 ```
 
-The flyweight pattern provides zero-copy access over a buffer
-segment. The decoder borrows the underlying bytes and provides
-typed accessors that interpret field spans without copying.
+The decoder IS the index. After the parse pass, the struct is a
+complete map of the message — pure flyweight over the original
+buffer. `FieldSpan` is a `(u16, u16)` pair (offset + length),
+so the struct is compact and cache-friendly.
 
-### Hot-path concern: repeating groups
+### Repeating groups (zero allocation)
 
-Most FIX engines fall back to HashMap for repeating groups and give
-back the latency earned everywhere else. This needs a purpose-built
-solution — likely a small inline array with overflow to a pre-
-allocated buffer.
+FIX repeating groups can appear anywhere in the message body, not
+just at the end (unlike SBE). A message can have fixed fields, then
+a group, then more fixed fields, then another group. Any field
+after a group requires the parser to have walked through the group
+to know where it starts.
+
+Most FIX engines fall back to HashMap for groups and give back the
+latency earned everywhere else. The flyweight approach avoids this
+entirely — the codegen knows the group structure from the XML
+dictionary and generates typed iterators and entry decoders.
+
+**How it works:**
+
+During the single parse pass, the decoder records where each group
+starts (byte offset) and how many entries it has (from the count
+tag). It does NOT parse individual group entries — it just notes
+the region.
+
+Group access is lazy: the generated iterator walks the buffer
+region on demand, yielding typed entry decoders. Each entry decoder
+is just a `(start, end)` byte range into the original buffer.
+
+```rust
+// Generated — one iterator + entry decoder per group definition.
+pub struct AllocGroupIter<'buf> {
+    buffer: &'buf [u8],
+    pos: usize,       // current position in buffer
+    remaining: u8,    // entries left
+}
+
+impl<'buf> Iterator for AllocGroupIter<'buf> {
+    type Item = AllocEntryDecoder<'buf>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 { return None; }
+        // Walk from `pos` to find entry boundaries.
+        // The delimiter tag (first field in group definition)
+        // signals the start of each entry.
+        let (start, end) = find_entry_bounds(
+            self.buffer, self.pos, /* delimiter tag from codegen */
+        );
+        self.pos = end;
+        self.remaining -= 1;
+        Some(AllocEntryDecoder {
+            buffer: self.buffer,
+            start,
+            end,
+        })
+    }
+}
+
+// Generated — one accessor per field in the group definition.
+pub struct AllocEntryDecoder<'buf> {
+    buffer: &'buf [u8],
+    start: usize,
+    end: usize,
+}
+
+impl<'buf> AllocEntryDecoder<'buf> {
+    /// Scan within [start..end] for tag 79.
+    /// Entry is small (typically 50-100 bytes), scan is trivial.
+    pub fn alloc_account(&self) -> Option<&'buf [u8]> {
+        find_tag(self.buffer, self.start, self.end, 79)
+    }
+
+    pub fn alloc_qty(&self) -> Option<&'buf [u8]> {
+        find_tag(self.buffer, self.start, self.end, 80)
+    }
+}
+```
+
+**Why this works without allocation:**
+
+- The message decoder struct stores group metadata as struct
+  fields (`offset: u16`, `count: u8`) — no arrays, no heap.
+- The iterator walks the buffer directly. Its state is three words
+  (pointer, position, remaining). Stack-allocated.
+- Each entry decoder is two words (start, end) plus the buffer
+  reference. Stack-allocated.
+- Field access within an entry is a small linear scan. Entries are
+  typically 5-10 fields / 50-100 bytes — trivial.
+- Nested groups (rare, mostly allocation/settlement messages off
+  the hot path) follow the same pattern recursively. The codegen
+  generates nested iterator types from the XML.
+
+**What the codegen provides vs what's shared:**
+
+The `FieldSpan` type, `find_tag` / `find_entry_bounds` scanning
+functions, and SOH-delimited parsing utilities live in the shared
+`nexus-fix` library crate. The codegen generates only the typed
+structs (decoders, encoders, group iterators, entry decoders, enum
+types) per dictionary. No buffer wrapper types regenerated per
+schema.
+
+**Practical note:** Most hot fields in trading messages (ClOrdID,
+Symbol, Side, Price, OrderQty) appear before any repeating groups.
+The groups are typically legs, parties, or allocation entries —
+important for downstream processing but not on the tightest
+order-entry hot path. The lazy group iteration means you pay for
+groups only when you access them.
 
 ### Shared vs generated types
 
