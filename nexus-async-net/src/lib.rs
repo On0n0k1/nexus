@@ -20,7 +20,7 @@
 //!
 //! # Custom transports
 //!
-//! `WsStream<S>` / `HttpConnection<S>` consume a
+//! `WsReader`/`WsWriter` and `HttpConnection<S>` accept any
 //! [`WireStream`](nexus_net::WireStream) — the canonical `MaybeTls`
 //! transport implements it directly. To plug a custom
 //! `AsyncRead+AsyncWrite` transport into the same API, wrap it at
@@ -31,7 +31,7 @@
 //!
 //! ```ignore
 //! let tcp = tokio::net::TcpStream::connect(addr).await?;
-//! let ws = WsStreamBuilder::new()
+//! let (mut reader, mut writer, mut conn) = WsStreamBuilder::new()
 //!     .connect_with(AsyncReadAdapter::new(tcp), url)
 //!     .await?;
 //! ```
@@ -56,5 +56,19 @@ pub use wire::AsyncReadAdapter;
 #[cfg(feature = "nexus")]
 pub use wire::NexusAsyncReadAdapter;
 
-// Re-export nexus-net types for convenience
-pub use nexus_net;
+// Re-export nexus-net types that appear in our public API.
+// Users who need deeper access can depend on nexus-net directly.
+pub use nexus_net::ws::{
+    CloseCode, CloseFrame, Error as WsError, FrameReader, FrameReaderBuilder, FrameWriter,
+    HandshakeError, Message, OwnedCloseFrame, OwnedMessage, Role,
+};
+pub use nexus_net::{WireStream, buf::WriteBuf};
+
+/// REST types used in [`rest::HttpConnection`] and [`rest::ClientSlot`].
+pub mod rest_types {
+    pub use nexus_net::http::ResponseReader;
+    pub use nexus_net::rest::{Request, RequestWriter, RestError, RestResponse};
+}
+
+#[cfg(feature = "tls")]
+pub use nexus_net::tls::{TlsConfig, TlsError};

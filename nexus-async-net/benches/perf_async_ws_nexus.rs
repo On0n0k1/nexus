@@ -138,21 +138,23 @@ fn block_on<F: std::future::Future>(f: F) -> F::Output {
 // =============================================================================
 
 fn bench_inmemory(wire: &[u8], msg_count: u64) -> (Duration, u64) {
-    use nexus_async_net::ws::WsStream;
-    use nexus_net::ws::{FrameReader, FrameWriter, Message, Role};
+    use nexus_async_net::ws::WsReader;
+    use nexus_net::ws::{FrameReader, Message, Role};
 
-    let mock = NexusAsyncReadAdapter::new(MockAsyncReader { data: wire, pos: 0 });
-    let reader = FrameReader::builder()
-        .role(Role::Client)
-        .buffer_capacity(64 * 1024)
-        .build();
-    let mut ws = WsStream::from_parts(mock, reader, FrameWriter::new(Role::Client));
+    let mut conn = NexusAsyncReadAdapter::new(MockAsyncReader { data: wire, pos: 0 });
+    let mut reader = WsReader::from_raw_parts(
+        FrameReader::builder()
+            .role(Role::Client)
+            .buffer_capacity(64 * 1024)
+            .build(),
+        usize::MAX,
+    );
 
     let start = Instant::now();
     let mut received = 0u64;
     block_on(async {
         while received < msg_count {
-            match ws.recv().await.unwrap() {
+            match reader.recv(&mut conn).await.unwrap() {
                 Some(Message::Binary(d)) => {
                     black_box(&d);
                     received += 1;

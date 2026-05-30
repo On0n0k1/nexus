@@ -165,9 +165,8 @@ fn maybe_tls_handles_oversize_app_data_burst() {
             .build()
             .expect("client tls config");
 
-        let mut ws = WsStreamBuilder::new()
+        let (mut reader, mut writer, mut conn) = WsStreamBuilder::new()
             .tls(&tls_config)
-            // Frame reader buffer must hold the whole 256 KiB message.
             .buffer_capacity(2 * PAYLOAD_LEN)
             .max_frame_size(PAYLOAD_LEN as u64 + 1024)
             .max_message_size(PAYLOAD_LEN + 1024)
@@ -176,8 +175,8 @@ fn maybe_tls_handles_oversize_app_data_burst() {
             .await
             .expect("client wss connect");
 
-        let msg = ws
-            .recv()
+        let msg = reader
+            .recv(&mut conn)
             .await
             .expect("client recv")
             .expect("server closed early");
@@ -189,7 +188,8 @@ fn maybe_tls_handles_oversize_app_data_burst() {
             other => panic!("expected Binary, got {other:?}"),
         }
 
-        ws.close(CloseCode::Normal, "done")
+        writer
+            .close(&mut conn, CloseCode::Normal, "done")
             .await
             .expect("client close");
     });
@@ -218,7 +218,7 @@ fn maybe_tls_handles_large_write_via_chunking() {
 
         // write_buffer_capacity must hold one whole frame; 256 KiB
         // payload + WS header.
-        let mut ws = WsStreamBuilder::new()
+        let (mut _reader, mut writer, mut conn) = WsStreamBuilder::new()
             .tls(&tls_config)
             .write_buffer_capacity(PAYLOAD_LEN + 1024)
             .connect_timeout(Duration::from_secs(15))
@@ -227,9 +227,13 @@ fn maybe_tls_handles_large_write_via_chunking() {
             .expect("client wss connect");
 
         let payload = vec![b'z'; PAYLOAD_LEN];
-        ws.send_binary(&payload).await.expect("client send big");
+        writer
+            .send_binary(&mut conn, &payload)
+            .await
+            .expect("client send big");
 
-        ws.close(CloseCode::Normal, "done")
+        writer
+            .close(&mut conn, CloseCode::Normal, "done")
             .await
             .expect("client close");
     });
@@ -267,7 +271,7 @@ fn maybe_tls_oversize_write_with_tiny_pending_write() {
         let capacities = nexus_net::tls::TlsBufferCapacities::builder()
             .pending_write(8 * 1024)
             .build();
-        let mut ws = WsStreamBuilder::new()
+        let (mut _reader, mut writer, mut conn) = WsStreamBuilder::new()
             .tls(&tls_config)
             .write_buffer_capacity(payload_len + 1024)
             .tls_buffer_capacities(capacities)
@@ -277,9 +281,13 @@ fn maybe_tls_oversize_write_with_tiny_pending_write() {
             .expect("client wss connect");
 
         let payload = vec![b'y'; payload_len];
-        ws.send_binary(&payload).await.expect("client send");
+        writer
+            .send_binary(&mut conn, &payload)
+            .await
+            .expect("client send");
 
-        ws.close(CloseCode::Normal, "done")
+        writer
+            .close(&mut conn, CloseCode::Normal, "done")
             .await
             .expect("client close");
     });

@@ -171,7 +171,7 @@ fn nexus_async_wss_echo_with_oversize_handshake_burst() {
         // async TLS handshake which calls `read_and_process_tls` on
         // each ciphertext chunk read from the async socket — the bug
         // surface for #200.
-        let mut ws = WsStreamBuilder::new()
+        let (mut reader, mut writer, mut conn) = WsStreamBuilder::new()
             .tls(&tls_config)
             .connect_timeout(Duration::from_secs(15))
             .connect(&format!("wss://127.0.0.1:{port}/"))
@@ -180,9 +180,12 @@ fn nexus_async_wss_echo_with_oversize_handshake_burst() {
 
         // Text echo round-trip.
         let probe = "hello-from-#200-async-regression-test";
-        ws.send_text(probe).await.expect("client send");
-        match ws
-            .recv()
+        writer
+            .send_text(&mut conn, probe)
+            .await
+            .expect("client send");
+        match reader
+            .recv(&mut conn)
             .await
             .expect("client recv")
             .expect("server closed early")
@@ -193,9 +196,12 @@ fn nexus_async_wss_echo_with_oversize_handshake_burst() {
 
         // Larger payload to keep the data path honest.
         let big = "x".repeat(8192);
-        ws.send_text(&big).await.expect("client send big");
-        match ws
-            .recv()
+        writer
+            .send_text(&mut conn, &big)
+            .await
+            .expect("client send big");
+        match reader
+            .recv(&mut conn)
             .await
             .expect("client recv big")
             .expect("server closed early")
@@ -204,7 +210,8 @@ fn nexus_async_wss_echo_with_oversize_handshake_burst() {
             other => panic!("expected Text, got {other:?}"),
         }
 
-        ws.close(CloseCode::Normal, "done")
+        writer
+            .close(&mut conn, CloseCode::Normal, "done")
             .await
             .expect("client close");
     });

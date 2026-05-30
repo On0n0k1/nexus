@@ -14,8 +14,9 @@ use std::pin::Pin;
 use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
 use nexus_async_net::NexusAsyncReadAdapter;
-use nexus_async_net::ws::WsStream;
+use nexus_async_net::ws::{WsReader, WsWriter};
 use nexus_async_rt::{AsyncRead, AsyncWrite};
+use nexus_net::buf::WriteBuf;
 use nexus_net::ws::{FrameReader, FrameWriter, Role};
 
 // =============================================================================
@@ -195,13 +196,20 @@ fn wire_bytes(payload_size: usize, count: usize) -> usize {
     frame_len * count
 }
 
-fn make_ws(wire: &[u8], total_bytes: usize) -> WsStream<NexusAsyncReadAdapter<MockStream<'_>>> {
+fn make_parts(
+    wire: &[u8],
+    total_bytes: usize,
+) -> (WsReader, WsWriter, NexusAsyncReadAdapter<MockStream<'_>>) {
     let mock = NexusAsyncReadAdapter::new(MockStream::new(wire, total_bytes));
     let reader = FrameReader::builder()
         .role(Role::Client)
         .buffer_capacity(256 * 1024)
         .build();
-    WsStream::from_parts(mock, reader, FrameWriter::new(Role::Client))
+    (
+        WsReader::from_raw_parts(reader, usize::MAX),
+        WsWriter::from_raw_parts(FrameWriter::new(Role::Client), WriteBuf::new(65_536, 14)),
+        mock,
+    )
 }
 
 // =============================================================================
@@ -222,13 +230,13 @@ fn bench_recv_per_msg(label: &str, payload_size: usize) {
     let total = WARMUP + SAMPLES;
     let wire = build_wire_chunk(payload_size);
     let total_bytes = wire_bytes(payload_size, total);
-    let mut ws = make_ws(&wire, total_bytes);
+    let (mut reader, _writer, mut conn) = make_parts(&wire, total_bytes);
     let mut samples = Vec::with_capacity(SAMPLES);
 
     for i in 0..total {
         let start = rdtsc_start();
         block_on(async {
-            let msg = ws.recv().await.unwrap();
+            let msg = reader.recv(&mut conn).await.unwrap();
             black_box(&msg);
         });
         let end = rdtsc_end();
@@ -245,14 +253,14 @@ fn bench_recv_batched(label: &str, payload_size: usize) {
     let total_msgs = total_batches * BATCH as usize;
     let wire = build_wire_chunk(payload_size);
     let total_bytes = wire_bytes(payload_size, total_msgs);
-    let mut ws = make_ws(&wire, total_bytes);
+    let (mut reader, _writer, mut conn) = make_parts(&wire, total_bytes);
     let mut samples = Vec::with_capacity(BATCH_SAMPLES);
 
     for i in 0..total_batches {
         let start = rdtsc_start();
         block_on(async {
             for _ in 0..BATCH {
-                let msg = ws.recv().await.unwrap();
+                let msg = reader.recv(&mut conn).await.unwrap();
                 black_box(&msg);
             }
         });
@@ -272,13 +280,13 @@ fn bench_recv_batched(label: &str, payload_size: usize) {
 fn bench_send_per_msg(label: &str, payload_size: usize) {
     let text = "x".repeat(payload_size);
     let wire = build_wire_chunk(payload_size);
-    let mut ws = make_ws(&wire, 0);
+    let (_reader, mut writer, mut conn) = make_parts(&wire, 0);
     let mut samples = Vec::with_capacity(SAMPLES);
     let total = WARMUP + SAMPLES;
 
     for i in 0..total {
         let start = rdtsc_start();
-        block_on(ws.send_text(&text)).unwrap();
+        block_on(writer.send_text(&mut conn, &text)).unwrap();
         let end = rdtsc_end();
         if i >= WARMUP {
             samples.push(end - start);
@@ -291,7 +299,7 @@ fn bench_send_per_msg(label: &str, payload_size: usize) {
 fn bench_send_batched(label: &str, payload_size: usize) {
     let text = "x".repeat(payload_size);
     let wire = build_wire_chunk(payload_size);
-    let mut ws = make_ws(&wire, 0);
+    let (_reader, mut writer, mut conn) = make_parts(&wire, 0);
     let mut samples = Vec::with_capacity(BATCH_SAMPLES);
     let total_batches = BATCH_WARMUP + BATCH_SAMPLES;
 
@@ -299,7 +307,7 @@ fn bench_send_batched(label: &str, payload_size: usize) {
         let start = rdtsc_start();
         block_on(async {
             for _ in 0..BATCH {
-                ws.send_text(&text).await.unwrap();
+                writer.send_text(&mut conn, &text).await.unwrap();
             }
         });
         let end = rdtsc_end();

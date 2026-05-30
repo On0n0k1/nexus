@@ -125,20 +125,22 @@ impl AsyncWrite for MockAsyncReader<'_> {
 // =============================================================================
 
 async fn bench_inmemory_nexus(wire: &[u8], msg_count: u64) -> (Duration, u64) {
-    use nexus_async_net::ws::WsStream;
-    use nexus_net::ws::{FrameReader, FrameWriter, Message, Role};
+    use nexus_async_net::ws::WsReader;
+    use nexus_net::ws::{FrameReader, Message, Role};
 
-    let mock = AsyncReadAdapter::new(MockAsyncReader { data: wire, pos: 0 });
-    let reader = FrameReader::builder()
-        .role(Role::Client)
-        .buffer_capacity(64 * 1024)
-        .build();
-    let mut ws = WsStream::from_parts(mock, reader, FrameWriter::new(Role::Client));
+    let mut conn = AsyncReadAdapter::new(MockAsyncReader { data: wire, pos: 0 });
+    let mut reader = WsReader::from_raw_parts(
+        FrameReader::builder()
+            .role(Role::Client)
+            .buffer_capacity(64 * 1024)
+            .build(),
+        usize::MAX,
+    );
 
     let start = Instant::now();
     let mut received = 0u64;
     while received < msg_count {
-        match ws.recv().await.unwrap() {
+        match reader.recv(&mut conn).await.unwrap() {
             Some(Message::Binary(d)) => {
                 black_box(&d);
                 received += 1;
@@ -270,20 +272,22 @@ async fn bench_json_nexus<T: for<'de> Deserialize<'de>>(
     wire: &[u8],
     msg_count: u64,
 ) -> (Duration, u64) {
-    use nexus_net::ws::{FrameReader, FrameWriter, Message, Role};
+    use nexus_async_net::ws::WsReader;
+    use nexus_net::ws::{FrameReader, Message, Role};
 
-    let mock = AsyncReadAdapter::new(MockAsyncReader { data: wire, pos: 0 });
-    let reader = FrameReader::builder()
-        .role(Role::Client)
-        .buffer_capacity(64 * 1024)
-        .build();
-    let mut ws =
-        nexus_async_net::ws::WsStream::from_parts(mock, reader, FrameWriter::new(Role::Client));
+    let mut conn = AsyncReadAdapter::new(MockAsyncReader { data: wire, pos: 0 });
+    let mut reader = WsReader::from_raw_parts(
+        FrameReader::builder()
+            .role(Role::Client)
+            .buffer_capacity(64 * 1024)
+            .build(),
+        usize::MAX,
+    );
 
     let start = Instant::now();
     let mut received = 0u64;
     while received < msg_count {
-        match ws.recv().await.unwrap() {
+        match reader.recv(&mut conn).await.unwrap() {
             Some(Message::Text(s)) => {
                 let val: T = sonic_rs::from_str(s).unwrap();
                 black_box(&val);
@@ -344,15 +348,21 @@ fn bench_deser_only<T: for<'de> Deserialize<'de>>(json: &str, msg_count: u64) ->
 
 async fn bench_stream_nexus(wire: &[u8], msg_count: u64) -> (Duration, u64) {
     use futures_util::StreamExt;
+    use nexus_async_net::ws::{WsReader, WsStream, WsWriter};
+    use nexus_net::buf::WriteBuf;
     use nexus_net::ws::{FrameReader, FrameWriter, Role};
 
-    let mock = AsyncReadAdapter::new(MockAsyncReader { data: wire, pos: 0 });
-    let reader = FrameReader::builder()
-        .role(Role::Client)
-        .buffer_capacity(64 * 1024)
-        .build();
-    let mut ws =
-        nexus_async_net::ws::WsStream::from_parts(mock, reader, FrameWriter::new(Role::Client));
+    let conn = AsyncReadAdapter::new(MockAsyncReader { data: wire, pos: 0 });
+    let reader = WsReader::from_raw_parts(
+        FrameReader::builder()
+            .role(Role::Client)
+            .buffer_capacity(64 * 1024)
+            .build(),
+        usize::MAX,
+    );
+    let writer =
+        WsWriter::from_raw_parts(FrameWriter::new(Role::Client), WriteBuf::new(65_536, 14));
+    let mut ws = WsStream::from_parts(reader, writer, conn);
 
     let start = Instant::now();
     let mut received = 0u64;
@@ -373,7 +383,7 @@ async fn bench_stream_nexus(wire: &[u8], msg_count: u64) -> (Duration, u64) {
 // =============================================================================
 
 async fn bench_loopback_nexus(port: u16, wire: Vec<u8>, msg_count: u64) -> (Duration, u64) {
-    use nexus_async_net::ws::WsStream;
+    use nexus_async_net::ws::WsStreamBuilder;
     use nexus_net::ws::Message;
 
     let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
@@ -383,9 +393,7 @@ async fn bench_loopback_nexus(port: u16, wire: Vec<u8>, msg_count: u64) -> (Dura
     let server = tokio::spawn(async move {
         let (tcp, _) = listener.accept().await.unwrap();
         tcp.set_nodelay(true).unwrap();
-        // Accept WS handshake using tungstenite (server side)
         let mut ws = tokio_tungstenite::accept_async(tcp).await.unwrap();
-        // Get raw stream, blast frames
         let raw = ws.get_mut();
         tokio::io::AsyncWriteExt::write_all(raw, &wire)
             .await
@@ -400,17 +408,18 @@ async fn bench_loopback_nexus(port: u16, wire: Vec<u8>, msg_count: u64) -> (Dura
         .await
         .unwrap();
     tcp.set_nodelay(true).unwrap();
-    let mut ws = WsStream::connect_with(
-        AsyncReadAdapter::new(tcp),
-        &format!("ws://127.0.0.1:{port}/"),
-    )
-    .await
-    .unwrap();
+    let (mut reader, _writer, mut conn) = WsStreamBuilder::new()
+        .connect_with(
+            AsyncReadAdapter::new(tcp),
+            &format!("ws://127.0.0.1:{port}/"),
+        )
+        .await
+        .unwrap();
 
     let start = Instant::now();
     let mut received = 0u64;
     while received < msg_count {
-        match ws.recv().await.unwrap() {
+        match reader.recv(&mut conn).await.unwrap() {
             Some(Message::Binary(d)) => {
                 black_box(&d);
                 received += 1;
@@ -812,7 +821,7 @@ async fn tls_accept_and_blast(
 }
 
 async fn bench_tls_loopback_nexus(port: u16, wire: Vec<u8>, msg_count: u64) -> (Duration, u64) {
-    use nexus_async_net::ws::WsStream;
+    use nexus_async_net::ws::WsStreamBuilder;
     use nexus_net::ws::Message;
 
     let addr = format!("127.0.0.1:{port}");
@@ -832,14 +841,15 @@ async fn bench_tls_loopback_nexus(port: u16, wire: Vec<u8>, msg_count: u64) -> (
         .to_owned();
     let tls_stream = connector.connect(server_name, tcp).await.unwrap();
 
-    let mut ws = WsStream::connect_with(AsyncReadAdapter::new(tls_stream), "ws://localhost/")
+    let (mut reader, _writer, mut conn) = WsStreamBuilder::new()
+        .connect_with(AsyncReadAdapter::new(tls_stream), "ws://localhost/")
         .await
         .unwrap();
 
     let start = Instant::now();
     let mut received = 0u64;
     while received < msg_count {
-        match ws.recv().await.unwrap() {
+        match reader.recv(&mut conn).await.unwrap() {
             Some(Message::Binary(d)) => {
                 black_box(&d);
                 received += 1;

@@ -1,415 +1,227 @@
-//! Async WebSocket stream — nexus-async-rt backend.
+//! Async WebSocket — nexus-async-rt backend.
+//!
+//! Builder + handshake logic. `WsReader`/`WsWriter` (the primary API)
+//! live in the shared `ws::parts` module.
 
 use std::io;
 use std::net::ToSocketAddrs;
-use std::pin::Pin;
 
 use nexus_async_rt::TcpStream;
+use nexus_net::WireStream;
 use nexus_net::buf::WriteBuf;
 use nexus_net::http::HTTP_HANDSHAKE_BUFFER;
 #[cfg(feature = "tls")]
 use nexus_net::tls::TlsConfig;
 use nexus_net::ws::{
-    CloseCode, Error as WsError, FrameReader, FrameReaderBuilder, FrameWriter, HandshakeError,
-    Message, Role, parse_ws_url,
+    Error as WsError, FrameReader, FrameReaderBuilder, FrameWriter, HandshakeError, Role,
+    parse_ws_url,
 };
-use nexus_net::{ParserSink, WireStream};
 
 use crate::maybe_tls::MaybeTls;
+use crate::ws::parts::{WsReader, WsWriter, fill_async, write_all_async};
 
 // =============================================================================
-// Async I/O helpers (poll_fn wrappers over WireStream)
+// Handshake — standalone async functions
 // =============================================================================
 
-/// Drive a single `poll_fill_into` call on the stream.
-async fn fill_async<W: WireStream + Unpin, P: ParserSink>(
-    s: &mut W,
-    sink: &mut P,
-    max: usize,
-) -> io::Result<usize> {
-    std::future::poll_fn(|cx| Pin::new(&mut *s).poll_fill_into(cx, sink, max)).await
-}
-
-async fn write_all_async<W: WireStream + Unpin>(s: &mut W, mut buf: &[u8]) -> io::Result<()> {
-    while !buf.is_empty() {
-        let n = std::future::poll_fn(|cx| Pin::new(&mut *s).poll_write(cx, buf)).await?;
-        if n == 0 {
-            return Err(io::Error::new(io::ErrorKind::WriteZero, "write returned 0"));
-        }
-        buf = &buf[n..];
-    }
-    Ok(())
-}
-
-// =============================================================================
-// WsStream
-// =============================================================================
-
-/// Async WebSocket stream (nexus-async-rt backend).
-///
-/// Wraps nexus-net's synchronous FrameReader/FrameWriter with async I/O.
-/// Same zero-copy parsing, same Message type — just `.await` on socket ops.
-///
-/// # Usage
-///
-/// ```ignore
-/// use nexus_async_net::ws::WsStreamBuilder;
-/// use nexus_net::tls::TlsConfig;
-///
-/// // Plain WebSocket
-/// let mut ws = WsStreamBuilder::new().connect("ws://localhost:8080/ws").await?;
-///
-/// // TLS WebSocket
-/// let tls = TlsConfig::new()?;
-/// let mut ws = WsStreamBuilder::new().tls(&tls).connect("wss://exchange.com/ws").await?;
-///
-/// ws.send_text("Hello!").await?;
-/// while let Some(msg) = ws.recv().await? {
-///     // msg is nexus_net::ws::Message<'_>
-/// }
-/// ```
-pub struct WsStream<S> {
-    stream: S,
-    reader: FrameReader,
-    writer: FrameWriter,
-    write_buf: WriteBuf,
+async fn connect_handshake<S: WireStream + Unpin>(
+    mut stream: S,
+    url: &str,
+    reader_builder: FrameReaderBuilder,
+    write_cap: usize,
     max_read_size: usize,
-}
+) -> Result<(WsReader, WsWriter, S), WsError> {
+    let parsed = parse_ws_url(url)?;
+    let host_header = parsed.host_header();
 
-// -- Generic impl for any WireStream-bearing transport ----------------------
+    let key = nexus_net::ws::handshake::generate_key();
+    let key_str =
+        std::str::from_utf8(&key).expect("base64-encoded key is always valid ASCII/UTF-8");
 
-impl<S: WireStream + Unpin> WsStream<S> {
-    /// Connect with a pre-connected async stream.
-    pub async fn connect_with(stream: S, url: &str) -> Result<Self, WsError> {
-        WsStreamBuilder::new().connect_with(stream, url).await
-    }
+    let headers: [(&str, &str); 5] = [
+        ("Host", &host_header),
+        ("Upgrade", "websocket"),
+        ("Connection", "Upgrade"),
+        ("Sec-WebSocket-Key", key_str),
+        ("Sec-WebSocket-Version", "13"),
+    ];
+    let req_size = nexus_net::http::request_size("GET", parsed.path, &headers);
+    let mut req_buf = vec![0u8; req_size];
+    let n = nexus_net::http::write_request("GET", parsed.path, &headers, &mut req_buf)
+        .map_err(|_| HandshakeError::MalformedHttp)?;
 
-    /// Accept an incoming WebSocket connection (server-side).
-    ///
-    /// Reads the client's HTTP upgrade request, validates it,
-    /// sends back 101 Switching Protocols, and returns a server-role
-    /// WsStream ready for recv/send.
-    pub async fn accept(stream: S) -> Result<Self, WsError> {
-        WsStreamBuilder::new().accept(stream).await
-    }
+    write_all_async(&mut stream, &req_buf[..n]).await?;
 
-    /// Create from pre-existing parts. For testing or custom handshakes.
-    ///
-    /// `max_read_size` defaults to unlimited. Call [`set_max_read_size`](Self::set_max_read_size)
-    /// after construction to cap per-recv read size for better tail latency.
-    pub fn from_parts(stream: S, reader: FrameReader, writer: FrameWriter) -> Self {
-        Self {
-            stream,
-            reader,
-            writer,
-            write_buf: WriteBuf::new(65_536, 14),
-            max_read_size: usize::MAX,
+    let mut resp_reader = nexus_net::http::ResponseReader::new(HTTP_HANDSHAKE_BUFFER);
+    loop {
+        if resp_reader.spare().is_empty() {
+            return Err(HandshakeError::MalformedHttp.into());
         }
-    }
-
-    /// Receive the next message.
-    pub async fn recv(&mut self) -> Result<Option<Message<'_>>, WsError> {
-        loop {
-            if self.reader.poll()? {
-                return Ok(self.reader.next()?);
-            }
-
-            if self.reader.should_compact() {
-                self.reader.compact();
-            }
-            if self.reader.spare().is_empty() {
-                self.reader.compact();
-                if self.reader.spare().is_empty() {
-                    return Ok(None); // buffer genuinely full
+        let n = fill_async(&mut stream, &mut resp_reader, HTTP_HANDSHAKE_BUFFER).await?;
+        if n == 0 {
+            return Err(HandshakeError::MalformedHttp.into());
+        }
+        match resp_reader.next() {
+            Ok(Some(resp)) => {
+                if resp.status != 101 {
+                    return Err(HandshakeError::UnexpectedStatus(resp.status).into());
                 }
-            }
+                let upgrade = resp
+                    .header("Upgrade")
+                    .ok_or(HandshakeError::MissingUpgrade)?;
+                if !upgrade.eq_ignore_ascii_case("websocket") {
+                    return Err(HandshakeError::MissingUpgrade.into());
+                }
+                let conn = resp
+                    .header("Connection")
+                    .ok_or(HandshakeError::MissingConnection)?;
+                if !conn
+                    .as_bytes()
+                    .windows(7)
+                    .any(|w| w.eq_ignore_ascii_case(b"upgrade"))
+                {
+                    return Err(HandshakeError::MissingConnection.into());
+                }
+                let accept = resp
+                    .header("Sec-WebSocket-Accept")
+                    .ok_or(HandshakeError::InvalidAcceptKey)?;
+                if !nexus_net::ws::handshake::validate_accept(key_str, accept) {
+                    return Err(HandshakeError::InvalidAcceptKey.into());
+                }
 
-            // poll_fill_into delivers bytes directly into reader.spare()
-            // and commits via reader.filled(n) — zero-copy on adapters
-            // that support it (nexus-async-rt TLS).
-            let n = fill_async(&mut self.stream, &mut self.reader, self.max_read_size).await?;
-            if n == 0 {
-                return Ok(None); // EOF
-            }
-        }
-    }
+                let mut reader = reader_builder.role(Role::Client).build();
+                let remainder = resp_reader.remainder();
+                if !remainder.is_empty() {
+                    reader
+                        .read(remainder)
+                        .map_err(|_| HandshakeError::MalformedHttp)?;
+                }
 
-    /// Send a text message.
-    pub async fn send_text(&mut self, text: &str) -> Result<(), WsError> {
-        self.writer
-            .encode_text_into(text.as_bytes(), &mut self.write_buf);
-        write_all_async(&mut self.stream, self.write_buf.data()).await?;
-        Ok(())
-    }
-
-    /// Send a binary message.
-    pub async fn send_binary(&mut self, data: &[u8]) -> Result<(), WsError> {
-        self.writer.encode_binary_into(data, &mut self.write_buf);
-        write_all_async(&mut self.stream, self.write_buf.data()).await?;
-        Ok(())
-    }
-
-    /// Send a ping.
-    pub async fn send_ping(&mut self, data: &[u8]) -> Result<(), WsError> {
-        self.writer
-            .encode_ping_into(data, &mut self.write_buf)
-            .map_err(WsError::Encode)?;
-        write_all_async(&mut self.stream, self.write_buf.data()).await?;
-        Ok(())
-    }
-
-    /// Send a pong.
-    pub async fn send_pong(&mut self, data: &[u8]) -> Result<(), WsError> {
-        self.writer
-            .encode_pong_into(data, &mut self.write_buf)
-            .map_err(WsError::Encode)?;
-        write_all_async(&mut self.stream, self.write_buf.data()).await?;
-        Ok(())
-    }
-
-    /// Initiate close handshake.
-    pub async fn close(&mut self, code: CloseCode, reason: &str) -> Result<(), WsError> {
-        if code == CloseCode::NoStatus {
-            let mut dst = [0u8; 14];
-            let n = self.writer.encode_empty_close(&mut dst);
-            write_all_async(&mut self.stream, &dst[..n]).await?;
-        } else {
-            self.writer
-                .encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf)
-                .map_err(WsError::Encode)?;
-            write_all_async(&mut self.stream, self.write_buf.data()).await?;
-        }
-        Ok(())
-    }
-
-    /// Access the underlying stream.
-    pub fn stream(&self) -> &S {
-        &self.stream
-    }
-
-    /// Mutable access to the underlying stream.
-    pub fn stream_mut(&mut self) -> &mut S {
-        &mut self.stream
-    }
-
-    /// Access the FrameReader.
-    pub fn reader(&self) -> &FrameReader {
-        &self.reader
-    }
-
-    /// Access the FrameWriter.
-    pub fn frame_writer(&self) -> &FrameWriter {
-        &self.writer
-    }
-
-    /// Override max bytes read per recv call.
-    pub fn set_max_read_size(&mut self, n: usize) {
-        self.max_read_size = n.max(1);
-    }
-
-    // =========================================================================
-    // Internal — async handshake (client connect)
-    // =========================================================================
-
-    async fn connect_impl(
-        mut stream: S,
-        url: &str,
-        reader_builder: FrameReaderBuilder,
-        write_cap: usize,
-        max_read_size: usize,
-    ) -> Result<Self, WsError> {
-        let parsed = parse_ws_url(url)?;
-        let host_header = parsed.host_header();
-
-        let key = nexus_net::ws::handshake::generate_key();
-        let key_str =
-            std::str::from_utf8(&key).expect("base64-encoded key is always valid ASCII/UTF-8");
-
-        let headers: [(&str, &str); 5] = [
-            ("Host", &host_header),
-            ("Upgrade", "websocket"),
-            ("Connection", "Upgrade"),
-            ("Sec-WebSocket-Key", key_str),
-            ("Sec-WebSocket-Version", "13"),
-        ];
-        let req_size = nexus_net::http::request_size("GET", parsed.path, &headers);
-        let mut req_buf = vec![0u8; req_size];
-        let n = nexus_net::http::write_request("GET", parsed.path, &headers, &mut req_buf)
-            .map_err(|_| HandshakeError::MalformedHttp)?;
-
-        write_all_async(&mut stream, &req_buf[..n]).await?;
-
-        // Feed bytes directly into resp_reader's spare region via
-        // WireStream — one fewer copy than reading into a tmp slice
-        // and pushing through resp_reader.read().
-        let mut resp_reader = nexus_net::http::ResponseReader::new(HTTP_HANDSHAKE_BUFFER);
-        loop {
-            // Pre-check the WireStream::poll_fill_into precondition
-            // (sink.spare() non-empty). If full without a parsed
-            // response, the head exceeds capacity — treat as malformed.
-            if resp_reader.spare().is_empty() {
-                return Err(HandshakeError::MalformedHttp.into());
-            }
-            let n = fill_async(&mut stream, &mut resp_reader, HTTP_HANDSHAKE_BUFFER).await?;
-            if n == 0 {
-                return Err(HandshakeError::MalformedHttp.into());
-            }
-            match resp_reader.next() {
-                Ok(Some(resp)) => {
-                    if resp.status != 101 {
-                        return Err(HandshakeError::UnexpectedStatus(resp.status).into());
-                    }
-                    let upgrade = resp
-                        .header("Upgrade")
-                        .ok_or(HandshakeError::MissingUpgrade)?;
-                    if !upgrade.eq_ignore_ascii_case("websocket") {
-                        return Err(HandshakeError::MissingUpgrade.into());
-                    }
-                    let conn = resp
-                        .header("Connection")
-                        .ok_or(HandshakeError::MissingConnection)?;
-                    if !conn
-                        .as_bytes()
-                        .windows(7)
-                        .any(|w| w.eq_ignore_ascii_case(b"upgrade"))
-                    {
-                        return Err(HandshakeError::MissingConnection.into());
-                    }
-                    let accept = resp
-                        .header("Sec-WebSocket-Accept")
-                        .ok_or(HandshakeError::InvalidAcceptKey)?;
-                    if !nexus_net::ws::handshake::validate_accept(key_str, accept) {
-                        return Err(HandshakeError::InvalidAcceptKey.into());
-                    }
-
-                    let mut reader = reader_builder.role(Role::Client).build();
-                    let remainder = resp_reader.remainder();
-                    if !remainder.is_empty() {
-                        reader
-                            .read(remainder)
-                            .map_err(|_| HandshakeError::MalformedHttp)?;
-                    }
-
-                    return Ok(Self {
-                        stream,
+                return Ok((
+                    WsReader {
                         reader,
+                        max_read_size,
+                    },
+                    WsWriter {
                         writer: FrameWriter::new(Role::Client),
                         write_buf: WriteBuf::new(write_cap, 14),
-                        max_read_size,
-                    });
-                }
-                Ok(None) => {} // need more bytes
-                Err(_) => return Err(HandshakeError::MalformedHttp.into()),
+                    },
+                    stream,
+                ));
             }
+            Ok(None) => {}
+            Err(_) => return Err(HandshakeError::MalformedHttp.into()),
+        }
+    }
+}
+
+async fn accept_handshake<S: WireStream + Unpin>(
+    mut stream: S,
+    reader_builder: FrameReaderBuilder,
+    write_cap: usize,
+    max_read_size: usize,
+) -> Result<(WsReader, WsWriter, S), WsError> {
+    let mut req_reader = nexus_net::http::RequestReader::new(HTTP_HANDSHAKE_BUFFER);
+
+    let ws_key;
+    loop {
+        if req_reader.spare().is_empty() {
+            return Err(HandshakeError::MalformedHttp.into());
+        }
+        let n = fill_async(&mut stream, &mut req_reader, HTTP_HANDSHAKE_BUFFER).await?;
+        if n == 0 {
+            return Err(HandshakeError::MalformedHttp.into());
+        }
+        match req_reader.next() {
+            Ok(Some(req)) => {
+                if req.method != "GET" {
+                    return Err(HandshakeError::MalformedHttp.into());
+                }
+                let upgrade = req
+                    .header("Upgrade")
+                    .ok_or(HandshakeError::MissingUpgrade)?;
+                if !upgrade.eq_ignore_ascii_case("websocket") {
+                    return Err(HandshakeError::MissingUpgrade.into());
+                }
+                let conn = req
+                    .header("Connection")
+                    .ok_or(HandshakeError::MissingConnection)?;
+                if !conn
+                    .as_bytes()
+                    .windows(7)
+                    .any(|w| w.eq_ignore_ascii_case(b"upgrade"))
+                {
+                    return Err(HandshakeError::MissingConnection.into());
+                }
+                let version = req
+                    .header("Sec-WebSocket-Version")
+                    .ok_or(HandshakeError::UnsupportedVersion)?;
+                if version != "13" {
+                    return Err(HandshakeError::UnsupportedVersion.into());
+                }
+                let key = req
+                    .header("Sec-WebSocket-Key")
+                    .ok_or(HandshakeError::MissingKey)?;
+                ws_key = key.to_owned();
+                break;
+            }
+            Ok(None) => {}
+            Err(_) => return Err(HandshakeError::MalformedHttp.into()),
         }
     }
 
-    // =========================================================================
-    // Internal — async accept (server-side)
-    // =========================================================================
+    let accept = nexus_net::ws::handshake::compute_accept_key(&ws_key);
+    let accept_str = std::str::from_utf8(&accept).expect("base64 output is valid ASCII");
 
-    async fn accept_impl(
-        mut stream: S,
-        reader_builder: FrameReaderBuilder,
-        write_cap: usize,
-        max_read_size: usize,
-    ) -> Result<Self, WsError> {
-        let mut req_reader = nexus_net::http::RequestReader::new(HTTP_HANDSHAKE_BUFFER);
+    let resp_headers = [
+        ("Upgrade", "websocket"),
+        ("Connection", "Upgrade"),
+        ("Sec-WebSocket-Accept", accept_str),
+    ];
+    let resp_size = nexus_net::http::response_size("Switching Protocols", &resp_headers);
+    let mut resp_buf = vec![0u8; resp_size];
+    let n =
+        nexus_net::http::write_response(101, "Switching Protocols", &resp_headers, &mut resp_buf)
+            .map_err(|_| HandshakeError::MalformedHttp)?;
+    write_all_async(&mut stream, &resp_buf[..n]).await?;
 
-        let ws_key;
-        loop {
-            // Pre-check the WireStream::poll_fill_into precondition
-            // (sink.spare() non-empty). If full without a parsed
-            // request, the head exceeds capacity — treat as malformed.
-            if req_reader.spare().is_empty() {
-                return Err(HandshakeError::MalformedHttp.into());
-            }
-            // Direct-feed via WireStream — bytes land in
-            // req_reader.spare() without a tmp slice intermediate.
-            let n = fill_async(&mut stream, &mut req_reader, HTTP_HANDSHAKE_BUFFER).await?;
-            if n == 0 {
-                return Err(HandshakeError::MalformedHttp.into());
-            }
-            match req_reader.next() {
-                Ok(Some(req)) => {
-                    if req.method != "GET" {
-                        return Err(HandshakeError::MalformedHttp.into());
-                    }
-                    let upgrade = req
-                        .header("Upgrade")
-                        .ok_or(HandshakeError::MissingUpgrade)?;
-                    if !upgrade.eq_ignore_ascii_case("websocket") {
-                        return Err(HandshakeError::MissingUpgrade.into());
-                    }
-                    let conn = req
-                        .header("Connection")
-                        .ok_or(HandshakeError::MissingConnection)?;
-                    if !conn
-                        .as_bytes()
-                        .windows(7)
-                        .any(|w| w.eq_ignore_ascii_case(b"upgrade"))
-                    {
-                        return Err(HandshakeError::MissingConnection.into());
-                    }
-                    let version = req
-                        .header("Sec-WebSocket-Version")
-                        .ok_or(HandshakeError::UnsupportedVersion)?;
-                    if version != "13" {
-                        return Err(HandshakeError::UnsupportedVersion.into());
-                    }
-                    let key = req
-                        .header("Sec-WebSocket-Key")
-                        .ok_or(HandshakeError::MissingKey)?;
-                    ws_key = key.to_owned();
-                    break;
-                }
-                Ok(None) => {}
-                Err(_) => return Err(HandshakeError::MalformedHttp.into()),
-            }
-        }
+    let mut reader = reader_builder.role(Role::Server).build();
+    let remainder = req_reader.remainder();
+    if !remainder.is_empty() {
+        reader
+            .read(remainder)
+            .map_err(|_| HandshakeError::MalformedHttp)?;
+    }
 
-        let accept = nexus_net::ws::handshake::compute_accept_key(&ws_key);
-        let accept_str = std::str::from_utf8(&accept).expect("base64 output is valid ASCII");
-
-        let resp_headers = [
-            ("Upgrade", "websocket"),
-            ("Connection", "Upgrade"),
-            ("Sec-WebSocket-Accept", accept_str),
-        ];
-        let resp_size = nexus_net::http::response_size("Switching Protocols", &resp_headers);
-        let mut resp_buf = vec![0u8; resp_size];
-        let n = nexus_net::http::write_response(
-            101,
-            "Switching Protocols",
-            &resp_headers,
-            &mut resp_buf,
-        )
-        .map_err(|_| HandshakeError::MalformedHttp)?;
-        write_all_async(&mut stream, &resp_buf[..n]).await?;
-
-        let mut reader = reader_builder.role(Role::Server).build();
-        let remainder = req_reader.remainder();
-        if !remainder.is_empty() {
-            reader
-                .read(remainder)
-                .map_err(|_| HandshakeError::MalformedHttp)?;
-        }
-
-        Ok(Self {
-            stream,
+    Ok((
+        WsReader {
             reader,
+            max_read_size,
+        },
+        WsWriter {
             writer: FrameWriter::new(Role::Server),
             write_buf: WriteBuf::new(write_cap, 14),
-            max_read_size,
-        })
-    }
+        },
+        stream,
+    ))
 }
 
 // =============================================================================
 // Builder
 // =============================================================================
 
-/// Builder for [`WsStream`].
+/// Builder for WebSocket connections (nexus-async-rt backend).
+///
+/// Returns `(WsReader, WsWriter, S)` — the decomposed sans-IO types.
+///
+/// # Example
+///
+/// ```ignore
+/// let (mut reader, mut writer, mut conn) = WsStreamBuilder::new()
+///     .disable_nagle()
+///     .connect("ws://localhost:8080/ws")
+///     .await?;
+/// ```
 pub struct WsStreamBuilder {
     reader_builder: FrameReaderBuilder,
     write_buf_capacity: usize,
@@ -455,7 +267,6 @@ impl WsStreamBuilder {
         }
     }
 
-    /// Resolve max_read_size: user override clamped to buffer, or default 1/8 of buffer.
     fn resolved_max_read_size(&self) -> usize {
         self.max_read_size.map_or_else(
             || (self.buffer_capacity / 8).max(1),
@@ -586,7 +397,7 @@ impl WsStreamBuilder {
     /// DNS resolution uses blocking `ToSocketAddrs` (cold path).
     /// TCP connect uses `nexus_async_rt::TcpStream::connect` (mio, non-blocking).
     #[allow(clippy::future_not_send)]
-    pub async fn connect(self, url: &str) -> Result<WsStream<MaybeTls>, WsError> {
+    pub async fn connect(self, url: &str) -> Result<(WsReader, WsWriter, MaybeTls), WsError> {
         let parsed = parse_ws_url(url)?;
         let addr_str = format!("{}:{}", parsed.host, parsed.port);
         let addr = addr_str
@@ -605,7 +416,7 @@ impl WsStreamBuilder {
             Ok::<TcpStream, WsError>(tcp)
         };
 
-        #[allow(unused_mut)] // mut needed when tls feature is enabled
+        #[allow(unused_mut)]
         let mut tcp = match self.connect_timeout {
             Some(dur) => nexus_async_rt::timeout(dur, connect_fn)
                 .await
@@ -643,7 +454,7 @@ impl WsStreamBuilder {
         };
 
         let max_read_size = self.resolved_max_read_size();
-        WsStream::connect_impl(
+        connect_handshake(
             stream,
             url,
             self.reader_builder,
@@ -658,9 +469,9 @@ impl WsStreamBuilder {
         self,
         stream: S,
         url: &str,
-    ) -> Result<WsStream<S>, WsError> {
+    ) -> Result<(WsReader, WsWriter, S), WsError> {
         let max_read_size = self.resolved_max_read_size();
-        WsStream::connect_impl(
+        connect_handshake(
             stream,
             url,
             self.reader_builder,
@@ -671,9 +482,12 @@ impl WsStreamBuilder {
     }
 
     /// Accept an incoming WebSocket connection (server-side).
-    pub async fn accept<S: WireStream + Unpin>(self, stream: S) -> Result<WsStream<S>, WsError> {
+    pub async fn accept<S: WireStream + Unpin>(
+        self,
+        stream: S,
+    ) -> Result<(WsReader, WsWriter, S), WsError> {
         let max_read_size = self.resolved_max_read_size();
-        WsStream::accept_impl(
+        accept_handshake(
             stream,
             self.reader_builder,
             self.write_buf_capacity,
@@ -716,14 +530,14 @@ impl Default for WsStreamBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::NexusAsyncReadAdapter;
+    use nexus_net::ws::{CloseCode, Message};
     use std::io::Cursor;
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
-    use crate::NexusAsyncReadAdapter;
     use nexus_async_rt::{AsyncRead, AsyncWrite};
 
-    /// Mock async stream backed by a byte buffer.
     struct MockStream {
         read: Cursor<Vec<u8>>,
         written: Vec<u8>,
@@ -766,7 +580,6 @@ mod tests {
         }
     }
 
-    /// Minimal single-poll executor for futures that resolve immediately.
     fn block_on<F: std::future::Future>(f: F) -> F::Output {
         use std::task::{RawWaker, RawWakerVTable, Waker};
 
@@ -808,19 +621,29 @@ mod tests {
         frame
     }
 
-    fn ws_from_bytes(data: Vec<u8>) -> WsStream<NexusAsyncReadAdapter<MockStream>> {
+    fn parts_from_bytes(data: Vec<u8>) -> (WsReader, WsWriter, NexusAsyncReadAdapter<MockStream>) {
         let mock = NexusAsyncReadAdapter::new(MockStream::from_bytes(data));
         let reader = FrameReader::builder().role(Role::Client).build();
         let writer = FrameWriter::new(Role::Client);
-        WsStream::from_parts(mock, reader, writer)
+        (
+            WsReader {
+                reader,
+                max_read_size: usize::MAX,
+            },
+            WsWriter {
+                writer,
+                write_buf: WriteBuf::new(65_536, 14),
+            },
+            mock,
+        )
     }
 
     #[test]
     fn recv_text() {
         let frame = make_frame(true, 0x1, b"Hello");
-        let mut ws = ws_from_bytes(frame);
+        let (mut reader, _writer, mut conn) = parts_from_bytes(frame);
         block_on(async {
-            match ws.recv().await.unwrap().unwrap() {
+            match reader.recv(&mut conn).await.unwrap().unwrap() {
                 Message::Text(s) => assert_eq!(s, "Hello"),
                 other => panic!("expected Text, got {other:?}"),
             }
@@ -830,9 +653,9 @@ mod tests {
     #[test]
     fn recv_binary() {
         let frame = make_frame(true, 0x2, &[0x42; 100]);
-        let mut ws = ws_from_bytes(frame);
+        let (mut reader, _writer, mut conn) = parts_from_bytes(frame);
         block_on(async {
-            match ws.recv().await.unwrap().unwrap() {
+            match reader.recv(&mut conn).await.unwrap().unwrap() {
                 Message::Binary(b) => assert_eq!(b.len(), 100),
                 other => panic!("expected Binary, got {other:?}"),
             }
@@ -842,9 +665,9 @@ mod tests {
     #[test]
     fn recv_ping() {
         let frame = make_frame(true, 0x9, b"ping");
-        let mut ws = ws_from_bytes(frame);
+        let (mut reader, _writer, mut conn) = parts_from_bytes(frame);
         block_on(async {
-            match ws.recv().await.unwrap().unwrap() {
+            match reader.recv(&mut conn).await.unwrap().unwrap() {
                 Message::Ping(p) => assert_eq!(p, b"ping"),
                 other => panic!("expected Ping, got {other:?}"),
             }
@@ -855,9 +678,9 @@ mod tests {
     fn recv_fragmented_text() {
         let mut data = make_frame(false, 0x1, b"Hel");
         data.extend_from_slice(&make_frame(true, 0x0, b"lo"));
-        let mut ws = ws_from_bytes(data);
+        let (mut reader, _writer, mut conn) = parts_from_bytes(data);
         block_on(async {
-            match ws.recv().await.unwrap().unwrap() {
+            match reader.recv(&mut conn).await.unwrap().unwrap() {
                 Message::Text(s) => assert_eq!(s, "Hello"),
                 other => panic!("expected Text, got {other:?}"),
             }
@@ -869,15 +692,13 @@ mod tests {
         let mut data = make_frame(false, 0x1, b"Hel");
         data.extend_from_slice(&make_frame(true, 0x9, b"ping"));
         data.extend_from_slice(&make_frame(true, 0x0, b"lo"));
-        let mut ws = ws_from_bytes(data);
+        let (mut reader, _writer, mut conn) = parts_from_bytes(data);
         block_on(async {
-            // Ping first
-            match ws.recv().await.unwrap().unwrap() {
+            match reader.recv(&mut conn).await.unwrap().unwrap() {
                 Message::Ping(p) => assert_eq!(p, b"ping"),
                 other => panic!("expected Ping, got {other:?}"),
             }
-            // Then assembled text
-            match ws.recv().await.unwrap().unwrap() {
+            match reader.recv(&mut conn).await.unwrap().unwrap() {
                 Message::Text(s) => assert_eq!(s, "Hello"),
                 other => panic!("expected Text, got {other:?}"),
             }
@@ -890,9 +711,9 @@ mod tests {
         payload.extend_from_slice(&1000u16.to_be_bytes());
         payload.extend_from_slice(b"bye");
         let frame = make_frame(true, 0x8, &payload);
-        let mut ws = ws_from_bytes(frame);
+        let (mut reader, _writer, mut conn) = parts_from_bytes(frame);
         block_on(async {
-            match ws.recv().await.unwrap().unwrap() {
+            match reader.recv(&mut conn).await.unwrap().unwrap() {
                 Message::Close(cf) => {
                     assert_eq!(cf.code, CloseCode::Normal);
                     assert_eq!(cf.reason, "bye");
@@ -904,9 +725,9 @@ mod tests {
 
     #[test]
     fn eof_returns_none() {
-        let mut ws = ws_from_bytes(Vec::new());
+        let (mut reader, _writer, mut conn) = parts_from_bytes(Vec::new());
         block_on(async {
-            assert!(ws.recv().await.unwrap().is_none());
+            assert!(reader.recv(&mut conn).await.unwrap().is_none());
         });
     }
 
@@ -915,18 +736,18 @@ mod tests {
         let mut data = make_frame(true, 0x1, b"first");
         data.extend_from_slice(&make_frame(true, 0x1, b"second"));
         data.extend_from_slice(&make_frame(true, 0x1, b"third"));
-        let mut ws = ws_from_bytes(data);
+        let (mut reader, _writer, mut conn) = parts_from_bytes(data);
 
         block_on(async {
-            match ws.recv().await.unwrap().unwrap() {
+            match reader.recv(&mut conn).await.unwrap().unwrap() {
                 Message::Text(s) => assert_eq!(s, "first"),
                 other => panic!("expected first, got {other:?}"),
             }
-            match ws.recv().await.unwrap().unwrap() {
+            match reader.recv(&mut conn).await.unwrap().unwrap() {
                 Message::Text(s) => assert_eq!(s, "second"),
                 other => panic!("expected second, got {other:?}"),
             }
-            match ws.recv().await.unwrap().unwrap() {
+            match reader.recv(&mut conn).await.unwrap().unwrap() {
                 Message::Text(s) => assert_eq!(s, "third"),
                 other => panic!("expected third, got {other:?}"),
             }
@@ -935,40 +756,60 @@ mod tests {
 
     #[test]
     fn send_text_writes_frame() {
-        let mut ws = ws_from_bytes(Vec::new());
+        let (_, mut writer, mut conn) = parts_from_bytes(Vec::new());
         block_on(async {
-            ws.send_text("hello").await.unwrap();
+            writer.send_text(&mut conn, "hello").await.unwrap();
         });
-        // Verify bytes were written to the mock (peek through the adapter).
-        assert!(!ws.stream.get_ref().written.is_empty());
+        assert!(!conn.get_ref().written.is_empty());
     }
 
     #[test]
     fn send_binary_writes_frame() {
-        let mut ws = ws_from_bytes(Vec::new());
+        let (_, mut writer, mut conn) = parts_from_bytes(Vec::new());
         block_on(async {
-            ws.send_binary(&[1, 2, 3]).await.unwrap();
+            writer.send_binary(&mut conn, &[1, 2, 3]).await.unwrap();
         });
-        assert!(!ws.stream.get_ref().written.is_empty());
+        assert!(!conn.get_ref().written.is_empty());
     }
 
     #[test]
-    fn from_parts_construction() {
-        let mock =
-            NexusAsyncReadAdapter::new(MockStream::from_bytes(make_frame(true, 0x1, b"test")));
-        let reader = FrameReader::builder().role(Role::Client).build();
-        let writer = FrameWriter::new(Role::Client);
-        let mut ws = WsStream::from_parts(mock, reader, writer);
+    fn ping_echo_split_borrow() {
+        let mut data = make_frame(true, 0x9, b"ping-data");
+        data.extend_from_slice(&make_frame(true, 0x1, b"hello"));
+        let (mut reader, mut writer, mut conn) = parts_from_bytes(data);
 
         block_on(async {
-            match ws.recv().await.unwrap().unwrap() {
-                Message::Text(s) => assert_eq!(s, "test"),
+            match reader.recv(&mut conn).await.unwrap().unwrap() {
+                Message::Ping(payload) => {
+                    writer.send_pong(&mut conn, payload).await.unwrap();
+                }
+                other => panic!("expected Ping, got {other:?}"),
+            }
+
+            match reader.recv(&mut conn).await.unwrap().unwrap() {
+                Message::Text(s) => assert_eq!(s, "hello"),
                 other => panic!("expected Text, got {other:?}"),
             }
         });
     }
 
-    /// A mock stream that fails all writes with BrokenPipe.
+    #[test]
+    fn text_response_while_holding_message() {
+        let data = make_frame(true, 0x1, b"request");
+        let (mut reader, mut writer, mut conn) = parts_from_bytes(data);
+
+        block_on(async {
+            match reader.recv(&mut conn).await.unwrap().unwrap() {
+                Message::Text(req) => {
+                    assert_eq!(req, "request");
+                    let response = format!("echo: {req}");
+                    writer.send_text(&mut conn, &response).await.unwrap();
+                }
+                other => panic!("expected Text, got {other:?}"),
+            }
+        });
+    }
+
     struct BrokenWriteStream(Cursor<Vec<u8>>);
 
     impl AsyncRead for BrokenWriteStream {
@@ -1004,15 +845,17 @@ mod tests {
     #[test]
     fn send_on_broken_stream_returns_error() {
         let mock = NexusAsyncReadAdapter::new(BrokenWriteStream(Cursor::new(Vec::new())));
-        let reader = FrameReader::builder().role(Role::Client).build();
-        let writer = FrameWriter::new(Role::Client);
-        let mut ws = WsStream::from_parts(mock, reader, writer);
+        let mut writer = WsWriter {
+            writer: FrameWriter::new(Role::Client),
+            write_buf: WriteBuf::new(65_536, 14),
+        };
+        let mut conn = mock;
 
         block_on(async {
-            let result = ws.send_text("hello").await;
+            let result = writer.send_text(&mut conn, "hello").await;
             assert!(result.is_err(), "send on broken stream should return error");
 
-            let result = ws.send_binary(&[1, 2, 3]).await;
+            let result = writer.send_binary(&mut conn, &[1, 2, 3]).await;
             assert!(result.is_err(), "subsequent send should also fail");
         });
     }
