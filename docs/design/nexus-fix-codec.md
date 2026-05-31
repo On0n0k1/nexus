@@ -79,15 +79,20 @@ nexus-fix-codegen/
 
 ### FieldSpan
 
-The fundamental unit. A `(offset: u32, len: u16)` pair pointing
-into the original message buffer. 6 bytes. All field access goes
+The fundamental unit. A `(offset: u32, len: u32)` pair pointing
+into the original message buffer. 8 bytes. All field access goes
 through this — the accessor reads `buffer[span.offset..][..span.len]`.
+
+`u32` length accommodates DATA-type fields (RawData, XmlData,
+EncodedText) which can exceed 64KB. Normal fields are tiny (1-50
+bytes), but the uniform type keeps the generated code simple —
+no separate span type for DATA fields.
 
 ```rust
 #[derive(Copy, Clone)]
 pub struct FieldSpan {
     pub offset: u32,
-    pub len: u16,
+    pub len: u32,
 }
 
 impl FieldSpan {
@@ -127,6 +132,30 @@ pub fn find_eq(buf: &[u8], pos: usize) -> Option<usize>;
 
 These are the only two delimiter scan functions needed. Everything
 else composes on top.
+
+### DATA Fields (Length-Delimited)
+
+FIX DATA-type fields (tag pairs 95/96 RawData, 90/91 SecureData,
+212/213 XmlData, 348/349 EncodedText, 358/359 EncodedListStatusText)
+can legally contain embedded SOH (`\x01`) and `=` bytes in the
+value. A pure SOH scan would split the value at the first embedded
+delimiter and desync the rest of the message.
+
+The dictionary knows which fields are DATA type — each is preceded
+by a LENGTH field that gives the byte count. The generated scanner
+handles this: when the watermark scan encounters a LENGTH tag, it
+parses the integer value, then consumes the next field as exactly
+N raw bytes instead of scanning for SOH. This is a correctness
+path, not an optimization.
+
+```
+95=5\x01 96=AB\x01CD\x01
+         ^^^^^^^^^^
+         5 raw bytes — the embedded \x01 is data, not a delimiter
+```
+
+The codegen emits the LENGTH/DATA association from the dictionary.
+The core `find_soh` scanner is never called within a DATA field.
 
 ### Checksum (SIMD)
 
@@ -178,22 +207,31 @@ scanner has progressed.
 **Three cases on field access:**
 
 1. **Offset already cached** → direct return, zero scanning.
-2. **Watermark past where the field could appear** → field not
-   present in message.
-3. **Watermark hasn't reached the field** → scan forward from
-   watermark, caching every tag encountered, until the target
-   tag is found or end-of-message.
+2. **Scanned to end-of-message and field not cached** → field
+   not present in message.
+3. **Watermark hasn't reached end-of-message** → scan forward
+   from watermark, caching every tag encountered, until the
+   target tag is found or end-of-message.
+
+FIX only guarantees field order within the header and within
+repeating groups — body field order is not significant on the
+wire. A field cannot be declared absent until the entire message
+has been scanned. Most counterparties send canonical order, so
+accessing fields in order does short forward scans in practice,
+but the correctness invariant is: "not present" means "scanned
+to end and not found."
 
 This means:
 - Accessing the first field is a short scan of the header.
-- Accessing fields in message order (the natural pattern —
-  business logic reads header then body) does short forward
-  scans, each continuing where the last left off.
+- Accessing fields in message order (the common case) does
+  short forward scans, each continuing where the last left off.
 - Accessing the last field worst-case scans the whole message
   once. But that scan also caches every other field, so
   subsequent accesses are free.
 - If you only access 3 fields out of 40, you only scan the
   bytes up to and including the last field you need.
+- If a field is truly absent, one full scan confirms it and
+  caches everything else — all future accesses are free.
 
 ```
 Buffer:
