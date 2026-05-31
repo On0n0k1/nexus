@@ -32,6 +32,7 @@ members = [
 	"nexus-collections",
 	"nexus-async-rt",
 	"nexus-inference",
+	"nexus-fix-codec",
 ]
 
 [workspace.package]
