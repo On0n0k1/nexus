@@ -29,6 +29,35 @@ impl FieldSpan {
     }
 }
 
+/// Location and count of a repeating group within a FIX message buffer.
+///
+/// 8 bytes (2 bytes padding after `count`). Stored in the generated
+/// flyweight decoder to track where a group starts and how many
+/// entries it contains.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+#[repr(C)]
+pub struct GroupSpan {
+    pub offset: u32,
+    pub count: u16,
+}
+
+impl GroupSpan {
+    pub const EMPTY: Self = Self {
+        offset: 0,
+        count: 0,
+    };
+
+    #[inline]
+    pub const fn new(offset: u32, count: u16) -> Self {
+        Self { offset, count }
+    }
+
+    #[inline]
+    pub const fn is_present(&self) -> bool {
+        self.count > 0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,5 +85,23 @@ mod tests {
     #[test]
     fn size_is_8_bytes() {
         assert_eq!(size_of::<FieldSpan>(), 8);
+    }
+
+    #[test]
+    fn group_empty_is_not_present() {
+        assert!(!GroupSpan::EMPTY.is_present());
+    }
+
+    #[test]
+    fn group_new_is_present() {
+        let g = GroupSpan::new(100, 3);
+        assert!(g.is_present());
+        assert_eq!(g.offset, 100);
+        assert_eq!(g.count, 3);
+    }
+
+    #[test]
+    fn group_size_is_8_bytes() {
+        assert_eq!(size_of::<GroupSpan>(), 8);
     }
 }

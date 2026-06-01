@@ -18,7 +18,7 @@
 mod _bench_utils;
 
 use _bench_utils::{ITERATIONS, WARMUP, percentile, print_intro, rdtsc};
-use nexus_fix_codec::parser::FieldParser;
+use nexus_fix_codec::reader::FieldReader;
 use nexus_fix_codec::scan;
 use std::hint::black_box;
 
@@ -200,14 +200,14 @@ fn main() {
     );
 
     // =========================================================================
-    // FieldParser: fused scan + tag parse + checksum
+    // FieldReader: fused scan + tag parse + checksum
     // =========================================================================
 
-    println!("\n=== FieldParser: fused scan + tag + checksum ===\n");
+    println!("\n=== FieldReader: fused scan + tag + checksum ===\n");
 
     let (p50_parse, p99_parse, p999_parse) = benchmark(|| {
         let buf = black_box(msg.as_slice());
-        let mut parser = FieldParser::new(buf, 0);
+        let mut parser = FieldReader::new(buf, 0);
         let mut count = 0u64;
         while parser.next_field().is_some() {
             count += 1;
@@ -216,7 +216,7 @@ fn main() {
         count
     });
 
-    println!("  FieldParser (scan + tag parse + checksum):");
+    println!("  FieldReader (scan + tag parse + checksum):");
     println!(
         "    p50={} p99={} p999={} cycles",
         p50_parse, p99_parse, p999_parse

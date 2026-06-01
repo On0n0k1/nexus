@@ -1,6 +1,6 @@
-//! Fused FIX field parser with SIMD-accelerated SOH scanning and checksum.
+//! FIX field reader with SIMD-accelerated SOH scanning and checksum.
 //!
-//! Combines SOH delimiter scanning, tag=value parsing, and byte-sum
+//! Combines SOH delimiter scanning, tag=value reading, and byte-sum
 //! checksum accumulation in a single pass. Each SIMD chunk load
 //! performs both `cmpeq` (SOH detection) and `PSADBW` (checksum
 //! accumulation), avoiding a second pass over the data.
@@ -14,6 +14,7 @@
 //! - Scalar: byte-by-byte tail
 
 use crate::FieldSpan;
+use crate::error::ChecksumError;
 
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
@@ -28,7 +29,7 @@ pub struct RawField {
     pub value: FieldSpan,
 }
 
-/// Fused FIX field parser with checksum accumulation.
+/// FIX field reader with fused checksum accumulation.
 ///
 /// Iterates over `tag=value\x01` fields, yielding [`RawField`] pairs.
 /// Accumulates a running byte-sum checksum via SIMD PSADBW alongside
@@ -40,10 +41,10 @@ pub struct RawField {
 /// # Example
 ///
 /// ```
-/// use nexus_fix_codec::parser::FieldParser;
+/// use nexus_fix_codec::reader::FieldReader;
 ///
 /// let msg = b"8=FIX.4.4\x0135=D\x0149=SENDER\x01";
-/// let mut parser = FieldParser::new(msg, 0);
+/// let mut parser = FieldReader::new(msg, 0);
 ///
 /// while let Some(field) = parser.next_field() {
 ///     // field.tag, field.value
@@ -51,7 +52,7 @@ pub struct RawField {
 ///
 /// let _checksum = parser.checksum();
 /// ```
-pub struct FieldParser<'a> {
+pub struct FieldReader<'a> {
     buf: &'a [u8],
     scan_pos: usize,
     field_start: usize,
@@ -60,7 +61,7 @@ pub struct FieldParser<'a> {
     mask_base: usize,
 }
 
-impl<'a> FieldParser<'a> {
+impl<'a> FieldReader<'a> {
     #[inline]
     pub fn new(buf: &'a [u8], start: usize) -> Self {
         Self {
@@ -123,7 +124,7 @@ impl<'a> FieldParser<'a> {
     }
 }
 
-impl Iterator for FieldParser<'_> {
+impl Iterator for FieldReader<'_> {
     type Item = RawField;
 
     #[inline]
@@ -152,10 +153,74 @@ pub fn parse_tag(buf: &[u8]) -> (u32, usize) {
 }
 
 // =============================================================================
+// Standalone helpers
+// =============================================================================
+
+/// Compute the FIX checksum: byte sum mod 256.
+///
+/// Simple scalar sum — useful for encoder checksum computation
+/// and anywhere a standalone checksum is needed without a full parse.
+#[inline]
+pub fn checksum(data: &[u8]) -> u8 {
+    data.iter().map(|&b| b as u32).sum::<u32>() as u8
+}
+
+/// Find the first field with a specific tag number.
+///
+/// Scans from `start` using [`FieldReader`], returning the value
+/// [`FieldSpan`] of the first field with matching tag number.
+#[inline]
+pub fn find_tag(buf: &[u8], start: usize, tag: u32) -> Option<FieldSpan> {
+    FieldReader::new(buf, start)
+        .find(|f| f.tag == tag)
+        .map(|f| f.value)
+}
+
+/// Validate a FIX message checksum against tag 10.
+///
+/// Parses all fields via [`FieldReader`] (fused PSADBW checksum),
+/// then compares the computed byte sum against the declared tag 10
+/// value.
+///
+/// Returns `Ok(())` if valid, `Err(ChecksumError)` on mismatch.
+/// Returns `Ok(())` if tag 10 is absent (nothing to validate
+/// against — structural validation is the decoder's job).
+pub fn validate_checksum(msg: &[u8]) -> Result<(), ChecksumError> {
+    let mut parser = FieldReader::new(msg, 0);
+    let mut expected_span = None;
+
+    while let Some(field) = parser.next_field() {
+        if field.tag == 10 {
+            expected_span = Some(field.value);
+        }
+    }
+
+    let Some(span) = expected_span else {
+        return Ok(());
+    };
+
+    let expected = parse_checksum_bytes(span.slice(msg));
+    let computed = parser.checksum();
+    if expected == computed {
+        Ok(())
+    } else {
+        Err(ChecksumError { expected, computed })
+    }
+}
+
+fn parse_checksum_bytes(bytes: &[u8]) -> u8 {
+    let mut val = 0u32;
+    for &b in bytes {
+        val = val * 10 + (b - b'0') as u32;
+    }
+    (val & 0xFF) as u8
+}
+
+// =============================================================================
 // SOH scanning with fused checksum accumulation
 // =============================================================================
 
-impl FieldParser<'_> {
+impl FieldReader<'_> {
     #[inline(always)]
     fn emit_soh_mask(&mut self, mask: u64, chunk_offset: usize, chunk_size: usize) -> usize {
         self.mask_base = self.scan_pos + chunk_offset;
@@ -280,7 +345,7 @@ impl FieldParser<'_> {
 // =============================================================================
 
 #[cfg(target_arch = "x86_64")]
-impl FieldParser<'_> {
+impl FieldReader<'_> {
     #[inline(always)]
     fn hsum_sad_128(v: __m128i) -> u32 {
         // SAFETY: SSE2 is baseline on x86_64. Pure SIMD arithmetic.
@@ -347,14 +412,14 @@ mod tests {
 
     #[test]
     fn empty_buffer() {
-        let mut parser = FieldParser::new(b"", 0);
+        let mut parser = FieldReader::new(b"", 0);
         assert!(parser.next_field().is_none());
     }
 
     #[test]
     fn single_field() {
         let msg = b"35=D\x01";
-        let mut parser = FieldParser::new(msg, 0);
+        let mut parser = FieldReader::new(msg, 0);
         let field = parser.next_field().unwrap();
         assert_eq!(field.tag, 35);
         assert_eq!(field.value.slice(msg), b"D");
@@ -364,7 +429,7 @@ mod tests {
     #[test]
     fn multiple_fields() {
         let msg = b"8=FIX.4.4\x0135=D\x0149=SENDER\x01";
-        let mut parser = FieldParser::new(msg, 0);
+        let mut parser = FieldReader::new(msg, 0);
 
         let f1 = parser.next_field().unwrap();
         assert_eq!(f1.tag, 8);
@@ -384,7 +449,7 @@ mod tests {
     #[test]
     fn from_offset() {
         let msg = b"8=FIX.4.4\x0135=D\x01";
-        let mut parser = FieldParser::new(msg, 10);
+        let mut parser = FieldReader::new(msg, 10);
         let field = parser.next_field().unwrap();
         assert_eq!(field.tag, 35);
         assert_eq!(field.value.slice(msg), b"D");
@@ -394,14 +459,14 @@ mod tests {
     #[test]
     fn tag_numbers() {
         let msg = b"8=v\x0135=v\x01150=v\x015592=v\x01";
-        let tags: Vec<u32> = FieldParser::new(msg, 0).map(|f| f.tag).collect();
+        let tags: Vec<u32> = FieldReader::new(msg, 0).map(|f| f.tag).collect();
         assert_eq!(tags, vec![8, 35, 150, 5592]);
     }
 
     #[test]
     fn value_spans() {
         let msg = b"44=50000.00\x0155=BTC-USD\x01";
-        let mut parser = FieldParser::new(msg, 0);
+        let mut parser = FieldReader::new(msg, 0);
 
         let f1 = parser.next_field().unwrap();
         assert_eq!(f1.value.slice(msg), b"50000.00");
@@ -413,7 +478,7 @@ mod tests {
     #[test]
     fn checksum_matches_byte_sum() {
         let msg = b"8=FIX.4.4\x0135=D\x0149=SENDER\x01";
-        let mut parser = FieldParser::new(msg, 0);
+        let mut parser = FieldReader::new(msg, 0);
         while parser.next_field().is_some() {}
 
         let expected: u8 = msg.iter().map(|&b| b as u32).sum::<u32>() as u8;
@@ -423,7 +488,7 @@ mod tests {
     #[test]
     fn checksum_from_offset() {
         let msg = b"8=FIX.4.4\x0135=D\x01";
-        let mut parser = FieldParser::new(msg, 10);
+        let mut parser = FieldReader::new(msg, 10);
         while parser.next_field().is_some() {}
 
         let expected: u8 = msg[10..].iter().map(|&b| b as u32).sum::<u32>() as u8;
@@ -438,7 +503,7 @@ mod tests {
             let msg = msg.as_bytes();
 
             let expected: u8 = msg.iter().map(|&b| b as u32).sum::<u32>() as u8;
-            let mut parser = FieldParser::new(msg, 0);
+            let mut parser = FieldReader::new(msg, 0);
             while parser.next_field().is_some() {}
             assert_eq!(parser.checksum(), expected, "len={}", len);
         }
@@ -447,7 +512,7 @@ mod tests {
     #[test]
     fn malformed_no_equals() {
         let msg = b"garbage\x01";
-        let mut parser = FieldParser::new(msg, 0);
+        let mut parser = FieldReader::new(msg, 0);
         assert!(parser.next_field().is_none());
     }
 
@@ -456,7 +521,7 @@ mod tests {
         let msg = b"8=FIX.4.4\x019=65\x0135=D\x0149=SENDER\x0156=TARGET\x01\
                      34=1\x0152=20260530-12:00:00\x0111=order1\x0155=BTC-USD\x01\
                      54=1\x0138=100\x0140=2\x0144=50000.00\x0110=123\x01";
-        let count = FieldParser::new(msg, 0).count();
+        let count = FieldReader::new(msg, 0).count();
         assert_eq!(count, 14);
     }
 
@@ -467,7 +532,7 @@ mod tests {
                      55=BTC-USD\x0154=1\x0138=1.50000000\x0140=2\x01\
                      44=67500.00\x0159=0\x0110=178\x01";
 
-        let mut parser = FieldParser::new(msg, 0);
+        let mut parser = FieldReader::new(msg, 0);
         let mut fields = Vec::new();
         while let Some(field) = parser.next_field() {
             fields.push(field);
@@ -491,7 +556,7 @@ mod tests {
     #[test]
     fn checksum_excludes_tag_10() {
         let msg = b"35=D\x0149=SENDER\x0110=099\x01";
-        let mut parser = FieldParser::new(msg, 0);
+        let mut parser = FieldReader::new(msg, 0);
         while parser.next_field().is_some() {}
 
         let body = b"35=D\x0149=SENDER\x01";
@@ -505,7 +570,7 @@ mod tests {
         let msg = format!("1={}\x01", value);
         let msg = msg.as_bytes();
 
-        let mut parser = FieldParser::new(msg, 0);
+        let mut parser = FieldReader::new(msg, 0);
         let field = parser.next_field().unwrap();
         assert_eq!(field.tag, 1);
         assert_eq!(field.value.len, 300);
@@ -522,7 +587,7 @@ mod tests {
             msg.extend_from_slice(format!("{}=v\x01", i).as_bytes());
         }
 
-        let mut parser = FieldParser::new(&msg, 0);
+        let mut parser = FieldReader::new(&msg, 0);
         let mut count = 0;
         while parser.next_field().is_some() {
             count += 1;
@@ -539,7 +604,7 @@ mod tests {
     fn dense_soh_in_swar_chunk() {
         // Multiple SOH bytes within a single 8-byte window
         let msg = b"1=A\x012=B\x013=C\x01";
-        let fields: Vec<(u32, &[u8])> = FieldParser::new(msg, 0)
+        let fields: Vec<(u32, &[u8])> = FieldReader::new(msg, 0)
             .map(|f| (f.tag, f.value.slice(msg)))
             .collect();
         assert_eq!(
@@ -551,7 +616,7 @@ mod tests {
     #[test]
     fn pos_advances() {
         let msg = b"8=FIX.4.4\x0135=D\x01";
-        let mut parser = FieldParser::new(msg, 0);
+        let mut parser = FieldReader::new(msg, 0);
         assert_eq!(parser.pos(), 0);
         parser.next_field();
         assert_eq!(parser.pos(), 10);
@@ -582,5 +647,88 @@ mod tests {
         assert_eq!(swar_to_byte_mask(0x80_00_00_00), 0x08);
         // Matches at bytes 0 and 7
         assert_eq!(swar_to_byte_mask(0x80_00_00_00_00_00_00_80), 0x81);
+    }
+
+    // =========================================================================
+    // Standalone checksum
+    // =========================================================================
+
+    #[test]
+    fn checksum_standalone() {
+        assert_eq!(checksum(b""), 0);
+        assert_eq!(checksum(b"\x01"), 1);
+        let msg = b"8=FIX.4.4\x0135=D\x01";
+        let expected: u8 = msg.iter().map(|&b| b as u32).sum::<u32>() as u8;
+        assert_eq!(checksum(msg), expected);
+    }
+
+    // =========================================================================
+    // find_tag
+    // =========================================================================
+
+    #[test]
+    fn find_tag_present() {
+        let msg = b"8=FIX.4.4\x0135=D\x0149=SENDER\x01";
+        let span = find_tag(msg, 0, 35).unwrap();
+        assert_eq!(span.slice(msg), b"D");
+    }
+
+    #[test]
+    fn find_tag_absent() {
+        let msg = b"8=FIX.4.4\x0135=D\x01";
+        assert!(find_tag(msg, 0, 99).is_none());
+    }
+
+    #[test]
+    fn find_tag_with_offset() {
+        let msg = b"8=FIX.4.4\x0135=D\x0149=SENDER\x01";
+        assert!(find_tag(msg, 10, 8).is_none());
+        let span = find_tag(msg, 10, 35).unwrap();
+        assert_eq!(span.slice(msg), b"D");
+    }
+
+    #[test]
+    fn find_tag_first_match() {
+        let msg = b"58=first\x0158=second\x01";
+        let span = find_tag(msg, 0, 58).unwrap();
+        assert_eq!(span.slice(msg), b"first");
+    }
+
+    // =========================================================================
+    // validate_checksum
+    // =========================================================================
+
+    #[test]
+    fn validate_checksum_valid() {
+        let body = b"8=FIX.4.4\x0135=D\x0149=SENDER\x01";
+        let sum = checksum(body);
+        let msg = format!("8=FIX.4.4\x0135=D\x0149=SENDER\x0110={:03}\x01", sum);
+        assert!(validate_checksum(msg.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn validate_checksum_invalid() {
+        let msg = b"8=FIX.4.4\x0135=D\x0149=SENDER\x0110=000\x01";
+        let result = validate_checksum(msg);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert_eq!(err.expected, 0);
+        assert_ne!(err.computed, 0);
+    }
+
+    #[test]
+    fn validate_checksum_no_tag10() {
+        let msg = b"8=FIX.4.4\x0135=D\x01";
+        assert!(validate_checksum(msg).is_ok());
+    }
+
+    #[test]
+    fn validate_checksum_realistic() {
+        // Build a message, compute correct checksum, then validate
+        let body = b"8=FIX.4.4\x019=65\x0135=D\x0149=SENDER\x0156=TARGET\x01";
+        let sum = checksum(body);
+        let mut msg = body.to_vec();
+        msg.extend_from_slice(format!("10={:03}\x01", sum).as_bytes());
+        assert!(validate_checksum(&msg).is_ok());
     }
 }

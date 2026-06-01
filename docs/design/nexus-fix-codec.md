@@ -273,10 +273,10 @@ single-threaded (FIX decoders are not shared across threads). The
 scanner state is an implementation detail — `Cell` hides it behind
 a clean `&self` API.
 
-### Encoder Primitives
+### Writer Primitives
 
 Encoding is simpler than decoding — the caller knows what fields
-they're writing. The core library provides:
+they're writing. The core library provides field-level primitives:
 
 ```rust
 /// Write a tag=value\x01 field into `buf` at `pos`.
@@ -284,9 +284,32 @@ they're writing. The core library provides:
 pub fn encode_field(buf: &mut [u8], pos: usize, tag: u32,
                     value: &[u8]) -> usize;
 
-/// Write the FIX header (8=, 9=) and compute/write trailer (10=).
-pub fn frame_message(buf: &mut [u8], body_start: usize,
-                     body_end: usize, begin_string: &[u8]) -> usize;
+/// Format checksum as 3 zero-padded ASCII digits for tag 10.
+pub fn format_checksum(sum: u8) -> [u8; 3];
+
+/// Compute FIX checksum: byte sum mod 256.
+pub fn checksum(data: &[u8]) -> u8;
+```
+
+`FieldWriter` wraps `&mut [u8]` with a position cursor, symmetric
+with `FieldReader` on the read side.
+
+**Framing (tags 8, 9, 10) is NOT in the codec.** Message framing
+lives in the generated encoder layer, which has dictionary knowledge
+of which tags are header/trailer. The codec provides the building
+blocks; codegen orchestrates them:
+
+```rust
+// Generated encoder usage with WriteBuf (nexus-net):
+//
+// 1. Write body fields into wb.spare() via FieldWriter
+// 2. Compute checksum over body bytes
+// 3. wb.prepend("9=<body_len>\x01")
+// 4. wb.prepend("8=<begin_string>\x01")
+// 5. wb.append("10=<checksum>\x01")  via encode_field + format_checksum
+//
+// Body is written in-place (zero-copy). Header/trailer are
+// prepended/appended — ~25 bytes of copies, negligible.
 ```
 
 Generated encoders use these to build typed builder APIs per
