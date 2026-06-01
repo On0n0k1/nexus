@@ -94,5 +94,40 @@ mod tests {
             DecodeError::MissingSeparator.to_string(),
             "missing '=' separator in field"
         );
+        assert_eq!(DecodeError::InvalidTag.to_string(), "invalid tag number");
+        assert_eq!(
+            DecodeError::MissingBeginString.to_string(),
+            "missing or misplaced BeginString (tag 8)"
+        );
+        assert_eq!(
+            DecodeError::MissingBodyLength.to_string(),
+            "missing or misplaced BodyLength (tag 9)"
+        );
+        let ce = ChecksumError {
+            expected: 178,
+            computed: 42,
+        };
+        assert_eq!(
+            DecodeError::Checksum(ce).to_string(),
+            "checksum: expected 178, computed 042"
+        );
+    }
+
+    #[test]
+    fn decode_error_source_chain() {
+        use std::error::Error;
+
+        assert!(DecodeError::Truncated.source().is_none());
+        assert!(DecodeError::MissingSeparator.source().is_none());
+        assert!(DecodeError::InvalidTag.source().is_none());
+
+        let ce = ChecksumError {
+            expected: 1,
+            computed: 2,
+        };
+        let de = DecodeError::Checksum(ce);
+        let src = de.source().unwrap();
+        let downcasted = src.downcast_ref::<ChecksumError>().unwrap();
+        assert_eq!(*downcasted, ce);
     }
 }

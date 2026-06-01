@@ -327,6 +327,42 @@ mod tests {
     }
 
     #[test]
+    fn long_value() {
+        let value = "X".repeat(200);
+        let mut buf = [0u8; 256];
+        let end = encode_field(&mut buf, 0, 1, value.as_bytes());
+        let expected = format!("1={}\x01", value);
+        assert_eq!(&buf[..end], expected.as_bytes());
+    }
+
+    #[test]
+    fn tag_zero() {
+        let mut buf = [0u8; 16];
+        let end = encode_field(&mut buf, 0, 0, b"v");
+        assert_eq!(&buf[..end], b"0=v\x01");
+    }
+
+    #[test]
+    fn roundtrip_with_checksum_validation() {
+        let mut buf = [0u8; 128];
+        let body_end;
+        {
+            let mut w = FieldWriter::wrap(&mut buf);
+            w.field(8, b"FIX.4.4");
+            w.field(9, b"42");
+            w.field(35, b"D");
+            w.field(49, b"SENDER");
+            w.field(56, b"TARGET");
+            body_end = w.pos();
+        }
+
+        let sum = crate::checksum(&buf[..body_end]);
+        let msg_end = encode_field(&mut buf, body_end, 10, &crate::writer::format_checksum(sum));
+
+        assert!(crate::validate_checksum(&buf[..msg_end]).is_ok());
+    }
+
+    #[test]
     fn writer_with_checksum() {
         let mut buf = [0u8; 128];
         let body_end;

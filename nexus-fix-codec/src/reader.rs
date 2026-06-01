@@ -762,4 +762,36 @@ mod tests {
         msg.extend_from_slice(format!("10={:03}\x01", sum).as_bytes());
         assert!(validate_checksum(&msg).is_ok());
     }
+
+    #[test]
+    fn binary_value() {
+        let msg = b"96=\x00\xFF\x80\x7F\x01";
+        let mut parser = FieldReader::new(msg, 0);
+        let field = parser.next_field().unwrap();
+        assert_eq!(field.tag, 96);
+        assert_eq!(field.value.slice(msg), b"\x00\xFF\x80\x7F");
+        assert!(parser.next_field().is_none());
+
+        let expected: u8 = msg.iter().map(|&b| b as u32).sum::<u32>() as u8;
+        assert_eq!(parser.checksum(), expected);
+    }
+
+    #[test]
+    fn checksum_excludes_tag_10_mid_message() {
+        let msg = b"35=D\x0110=099\x0149=SENDER\x01";
+        let mut parser = FieldReader::new(msg, 0);
+        let fields: Vec<_> = parser.by_ref().collect();
+        assert_eq!(fields.len(), 3);
+
+        let body_sum: u32 = b"35=D\x0149=SENDER\x01".iter().map(|&b| b as u32).sum();
+        assert_eq!(parser.checksum(), (body_sum & 0xFF) as u8);
+    }
+
+    #[test]
+    fn validate_checksum_malformed_tag10() {
+        let msg = b"35=D\x0110=XYZ\x01";
+        let result = validate_checksum(msg);
+        // parse_checksum_bytes on non-digits wraps around, producing a mismatch
+        assert!(result.is_err());
+    }
 }
