@@ -422,14 +422,12 @@ mod tests {
 
     #[test]
     fn soh_iter_empty() {
-        let positions: Vec<usize> = soh_iter(b"", 0).collect();
-        assert!(positions.is_empty());
+        assert!(soh_iter(b"", 0).next().is_none());
     }
 
     #[test]
     fn soh_iter_no_match() {
-        let positions: Vec<usize> = soh_iter(b"hello world", 0).collect();
-        assert!(positions.is_empty());
+        assert!(soh_iter(b"hello world", 0).next().is_none());
     }
 
     #[test]
