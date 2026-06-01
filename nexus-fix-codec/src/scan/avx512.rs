@@ -6,12 +6,12 @@
 #[cfg(target_arch = "x86_64")]
 use core::arch::x86_64::*;
 
-use super::avx2;
+use super::sse2;
 
 /// Find the next occurrence of `needle` at or after `pos`.
 ///
 /// Uses `_mm512_cmpeq_epi8_mask` to compare 64 bytes per iteration
-/// with a native mask register result. Cascades to AVX2 for the tail.
+/// with a native mask register result. Cascades to SSE2 for the tail.
 #[inline]
 #[cfg(target_arch = "x86_64")]
 pub fn find_byte(buf: &[u8], pos: usize, needle: u8) -> Option<usize> {
@@ -38,7 +38,7 @@ pub fn find_byte(buf: &[u8], pos: usize, needle: u8) -> Option<usize> {
     }
 
     if i < bytes.len() {
-        return avx2::find_byte(buf, pos + i, needle);
+        return sse2::find_byte(buf, pos + i, needle);
     }
 
     None

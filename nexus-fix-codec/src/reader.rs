@@ -160,9 +160,13 @@ pub fn parse_tag(buf: &[u8]) -> (u32, usize) {
 ///
 /// Simple scalar sum — useful for encoder checksum computation
 /// and anywhere a standalone checksum is needed without a full parse.
+///
+/// Uses `wrapping_add` because only the low 8 bits matter (the
+/// result is mod 256), so intermediate overflow is harmless and
+/// the function accepts any input length without debug panics.
 #[inline]
 pub fn checksum(data: &[u8]) -> u8 {
-    data.iter().map(|&b| b as u32).sum::<u32>() as u8
+    data.iter().fold(0u32, |acc, &b| acc.wrapping_add(b as u32)) as u8
 }
 
 /// Find the first field with a specific tag number.
@@ -211,7 +215,11 @@ pub fn validate_checksum(msg: &[u8]) -> Result<(), ChecksumError> {
 fn parse_checksum_bytes(bytes: &[u8]) -> u8 {
     let mut val = 0u32;
     for &b in bytes {
-        val = val * 10 + (b - b'0') as u32;
+        let digit = b.wrapping_sub(b'0');
+        if digit > 9 {
+            return 0;
+        }
+        val = val * 10 + digit as u32;
     }
     (val & 0xFF) as u8
 }

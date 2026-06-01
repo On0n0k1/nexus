@@ -23,6 +23,9 @@ impl FieldSpan {
         self.len > 0
     }
 
+    /// # Panics
+    ///
+    /// Panics if the span extends past the end of `buf`.
     #[inline]
     pub fn slice<'a>(&self, buf: &'a [u8]) -> &'a [u8] {
         &buf[self.offset as usize..][..self.len as usize]
