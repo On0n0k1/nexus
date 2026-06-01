@@ -9,7 +9,9 @@
 
 mod span;
 
+pub mod parser;
 pub mod scan;
 
+pub use parser::{FieldParser, RawField, parse_tag};
 pub use scan::DelimiterScanner;
 pub use span::FieldSpan;

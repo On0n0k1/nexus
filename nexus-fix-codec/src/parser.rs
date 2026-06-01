@@ -1,0 +1,586 @@
+//! Fused FIX field parser with SIMD-accelerated SOH scanning and checksum.
+//!
+//! Combines SOH delimiter scanning, tag=value parsing, and byte-sum
+//! checksum accumulation in a single pass. Each SIMD chunk load
+//! performs both `cmpeq` (SOH detection) and `PSADBW` (checksum
+//! accumulation), avoiding a second pass over the data.
+//!
+//! Dispatch cascade (widest first, remainder flows down):
+//!
+//! - AVX-512: 64 bytes/iter (`target_feature = "avx512bw"`)
+//! - AVX2: 32 bytes/iter (`target_feature = "avx2"`)
+//! - SSE2: 16 bytes/iter (baseline x86_64)
+//! - SWAR: 8 bytes/iter (all platforms)
+//! - Scalar: byte-by-byte tail
+
+use crate::FieldSpan;
+
+#[cfg(target_arch = "x86_64")]
+use core::arch::x86_64::*;
+
+const HI: u64 = 0x8080_8080_8080_8080;
+const LO: u64 = 0x0101_0101_0101_0101;
+
+/// A parsed FIX field: tag number and value span.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct RawField {
+    pub tag: u32,
+    pub value: FieldSpan,
+}
+
+/// Fused FIX field parser with checksum accumulation.
+///
+/// Iterates over `tag=value\x01` fields, yielding [`RawField`] pairs.
+/// Accumulates a running byte-sum checksum via SIMD PSADBW alongside
+/// the SOH scan — no second pass needed.
+///
+/// The checksum is only meaningful after a complete scan of the
+/// message body. Partial iteration produces a partial sum.
+///
+/// # Example
+///
+/// ```
+/// use nexus_fix_codec::parser::FieldParser;
+///
+/// let msg = b"8=FIX.4.4\x0135=D\x0149=SENDER\x01";
+/// let mut parser = FieldParser::new(msg, 0);
+///
+/// while let Some(field) = parser.next_field() {
+///     // field.tag, field.value
+/// }
+///
+/// let _checksum = parser.checksum();
+/// ```
+pub struct FieldParser<'a> {
+    buf: &'a [u8],
+    scan_pos: usize,
+    field_start: usize,
+    checksum: u32,
+    soh_mask: u64,
+    mask_base: usize,
+}
+
+impl<'a> FieldParser<'a> {
+    #[inline]
+    pub fn new(buf: &'a [u8], start: usize) -> Self {
+        Self {
+            buf,
+            scan_pos: start,
+            field_start: start,
+            checksum: 0,
+            soh_mask: 0,
+            mask_base: 0,
+        }
+    }
+
+    /// FIX checksum: byte sum mod 256 of all scanned bytes, excluding
+    /// the checksum field itself (`10=XXX\x01`).
+    ///
+    /// Only meaningful after a complete scan of the message body.
+    /// Tag 10 bytes are automatically excluded when encountered
+    /// during parsing.
+    #[inline]
+    pub fn checksum(&self) -> u8 {
+        (self.checksum & 0xFF) as u8
+    }
+
+    /// Where the next field would start (after the last SOH + 1).
+    #[inline]
+    pub fn pos(&self) -> usize {
+        self.field_start
+    }
+
+    /// Parse the next `tag=value\x01` field.
+    ///
+    /// Returns `None` at end of buffer or if the remaining bytes
+    /// contain no valid `tag=value\x01` structure.
+    #[inline]
+    pub fn next_field(&mut self) -> Option<RawField> {
+        let field_start = self.field_start;
+        let soh_pos = self.find_next_soh()?;
+        self.field_start = soh_pos + 1;
+
+        let field_bytes = self.buf.get(field_start..soh_pos)?;
+        let (tag, tag_len) = parse_tag(field_bytes);
+
+        if tag_len == 0 || tag_len >= field_bytes.len() || field_bytes[tag_len] != b'=' {
+            return None;
+        }
+
+        if tag == 10 {
+            for &b in &self.buf[field_start..=soh_pos] {
+                self.checksum = self.checksum.wrapping_sub(b as u32);
+            }
+        }
+
+        let value_start = field_start + tag_len + 1;
+        let value_len = soh_pos - value_start;
+
+        Some(RawField {
+            tag,
+            value: FieldSpan::new(value_start as u32, value_len as u32),
+        })
+    }
+}
+
+impl Iterator for FieldParser<'_> {
+    type Item = RawField;
+
+    #[inline]
+    fn next(&mut self) -> Option<RawField> {
+        self.next_field()
+    }
+}
+
+// =============================================================================
+// Tag number parsing
+// =============================================================================
+
+/// Parse a FIX tag number from ASCII digits.
+///
+/// Reads sequential digits from the start of `buf` until a non-digit
+/// byte or end of buffer. Returns `(tag_number, digits_consumed)`.
+#[inline]
+pub fn parse_tag(buf: &[u8]) -> (u32, usize) {
+    let mut tag = 0u32;
+    let mut i = 0;
+    while i < buf.len() && buf[i] >= b'0' && buf[i] <= b'9' {
+        tag = tag * 10 + (buf[i] - b'0') as u32;
+        i += 1;
+    }
+    (tag, i)
+}
+
+// =============================================================================
+// SOH scanning with fused checksum accumulation
+// =============================================================================
+
+impl FieldParser<'_> {
+    #[inline(always)]
+    fn emit_soh_mask(&mut self, mask: u64, chunk_offset: usize, chunk_size: usize) -> usize {
+        self.mask_base = self.scan_pos + chunk_offset;
+        self.scan_pos = self.scan_pos + chunk_offset + chunk_size;
+        self.soh_mask = mask;
+        let bit = self.soh_mask.trailing_zeros() as usize;
+        self.soh_mask &= self.soh_mask - 1;
+        self.mask_base + bit
+    }
+
+    fn find_next_soh(&mut self) -> Option<usize> {
+        if self.soh_mask != 0 {
+            let bit = self.soh_mask.trailing_zeros() as usize;
+            self.soh_mask &= self.soh_mask - 1;
+            return Some(self.mask_base + bit);
+        }
+
+        let bytes = self.buf.get(self.scan_pos..)?;
+        if bytes.is_empty() {
+            return None;
+        }
+
+        let mut i = 0;
+
+        // ---- x86_64 SIMD tiers (widest first) ----
+        #[cfg(target_arch = "x86_64")]
+        {
+            // SAFETY: target_feature cfgs guarantee SIMD instruction availability.
+            // All pointer arithmetic is bounds-checked by the while conditions.
+            unsafe {
+                #[cfg(target_feature = "avx512bw")]
+                {
+                    let soh = _mm512_set1_epi8(0x01_i8);
+                    let zero = _mm512_setzero_si512();
+                    while i + 64 <= bytes.len() {
+                        let chunk = _mm512_loadu_si512(bytes.as_ptr().add(i).cast());
+                        let sad = _mm512_sad_epu8(chunk, zero);
+                        self.checksum += Self::hsum_sad_512(sad);
+                        let m = _mm512_cmpeq_epi8_mask(chunk, soh);
+                        if m != 0 {
+                            return Some(self.emit_soh_mask(m, i, 64));
+                        }
+                        i += 64;
+                    }
+                }
+
+                #[cfg(target_feature = "avx2")]
+                {
+                    let soh = _mm256_set1_epi8(0x01_i8);
+                    let zero = _mm256_setzero_si256();
+                    while i + 32 <= bytes.len() {
+                        let chunk = _mm256_loadu_si256(bytes.as_ptr().add(i).cast());
+                        let sad = _mm256_sad_epu8(chunk, zero);
+                        self.checksum += Self::hsum_sad_256(sad);
+                        let cmp = _mm256_cmpeq_epi8(chunk, soh);
+                        let m = _mm256_movemask_epi8(cmp) as u32 as u64;
+                        if m != 0 {
+                            return Some(self.emit_soh_mask(m, i, 32));
+                        }
+                        i += 32;
+                    }
+                }
+
+                // SSE2 — baseline on x86_64
+                {
+                    let soh = _mm_set1_epi8(0x01_i8);
+                    let zero = _mm_setzero_si128();
+                    while i + 16 <= bytes.len() {
+                        let chunk = _mm_loadu_si128(bytes.as_ptr().add(i).cast());
+                        let sad = _mm_sad_epu8(chunk, zero);
+                        self.checksum += Self::hsum_sad_128(sad);
+                        let cmp = _mm_cmpeq_epi8(chunk, soh);
+                        let m = _mm_movemask_epi8(cmp) as u32 as u64;
+                        if m != 0 {
+                            return Some(self.emit_soh_mask(m, i, 16));
+                        }
+                        i += 16;
+                    }
+                }
+            }
+        }
+
+        // ---- SWAR (8 bytes at a time) ----
+        {
+            let splat = LO;
+            while i + 8 <= bytes.len() {
+                // SAFETY: bounds checked by the while condition
+                let chunk: [u8; 8] =
+                    unsafe { bytes.as_ptr().add(i).cast::<[u8; 8]>().read_unaligned() };
+                for &b in &chunk {
+                    self.checksum += b as u32;
+                }
+                let word = u64::from_ne_bytes(chunk);
+                let xored = word ^ splat;
+                let swar_mask = xored.wrapping_sub(LO) & !xored & HI;
+                if swar_mask != 0 {
+                    let packed = swar_to_byte_mask(swar_mask);
+                    return Some(self.emit_soh_mask(packed, i, 8));
+                }
+                i += 8;
+            }
+        }
+
+        // ---- Scalar tail (< 8 bytes) ----
+        while i < bytes.len() {
+            self.checksum += bytes[i] as u32;
+            if bytes[i] == 0x01 {
+                let result = self.scan_pos + i;
+                self.scan_pos = result + 1;
+                return Some(result);
+            }
+            i += 1;
+        }
+
+        self.scan_pos = self.buf.len();
+        None
+    }
+}
+
+// =============================================================================
+// SIMD horizontal sum helpers
+// =============================================================================
+
+#[cfg(target_arch = "x86_64")]
+impl FieldParser<'_> {
+    #[inline(always)]
+    fn hsum_sad_128(v: __m128i) -> u32 {
+        // SAFETY: SSE2 is baseline on x86_64. Pure SIMD arithmetic.
+        unsafe {
+            let hi = _mm_srli_si128(v, 8);
+            let sum = _mm_add_epi64(v, hi);
+            _mm_cvtsi128_si32(sum) as u32
+        }
+    }
+
+    #[cfg(target_feature = "avx2")]
+    #[inline(always)]
+    fn hsum_sad_256(v: __m256i) -> u32 {
+        // SAFETY: AVX2 guaranteed by cfg. Pure SIMD arithmetic.
+        unsafe {
+            let lo = _mm256_castsi256_si128(v);
+            let hi = _mm256_extracti128_si256(v, 1);
+            let sum = _mm_add_epi64(lo, hi);
+            Self::hsum_sad_128(sum)
+        }
+    }
+
+    #[cfg(target_feature = "avx512bw")]
+    #[inline(always)]
+    fn hsum_sad_512(v: __m512i) -> u32 {
+        // SAFETY: AVX-512BW guaranteed by cfg. Pure SIMD arithmetic.
+        unsafe {
+            let lo = _mm512_castsi512_si256(v);
+            let hi = _mm512_extracti64x4_epi64(v, 1);
+            let sum = _mm256_add_epi64(lo, hi);
+            Self::hsum_sad_256(sum)
+        }
+    }
+}
+
+// =============================================================================
+// SWAR mask conversion
+// =============================================================================
+
+/// Convert SWAR match mask to bit-per-byte mask.
+///
+/// SWAR sets the high bit of each matching byte (bits 7, 15, 23, ...).
+/// This converts to one-bit-per-byte (bits 0, 1, 2, ...) for uniform
+/// handling via `emit_soh_mask`.
+#[inline]
+fn swar_to_byte_mask(swar_mask: u64) -> u64 {
+    let mut packed = 0u64;
+    let mut m = swar_mask;
+    while m != 0 {
+        let bit = m.trailing_zeros();
+        packed |= 1u64 << (bit / 8);
+        m &= m - 1;
+    }
+    packed
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_buffer() {
+        let mut parser = FieldParser::new(b"", 0);
+        assert!(parser.next_field().is_none());
+    }
+
+    #[test]
+    fn single_field() {
+        let msg = b"35=D\x01";
+        let mut parser = FieldParser::new(msg, 0);
+        let field = parser.next_field().unwrap();
+        assert_eq!(field.tag, 35);
+        assert_eq!(field.value.slice(msg), b"D");
+        assert!(parser.next_field().is_none());
+    }
+
+    #[test]
+    fn multiple_fields() {
+        let msg = b"8=FIX.4.4\x0135=D\x0149=SENDER\x01";
+        let mut parser = FieldParser::new(msg, 0);
+
+        let f1 = parser.next_field().unwrap();
+        assert_eq!(f1.tag, 8);
+        assert_eq!(f1.value.slice(msg), b"FIX.4.4");
+
+        let f2 = parser.next_field().unwrap();
+        assert_eq!(f2.tag, 35);
+        assert_eq!(f2.value.slice(msg), b"D");
+
+        let f3 = parser.next_field().unwrap();
+        assert_eq!(f3.tag, 49);
+        assert_eq!(f3.value.slice(msg), b"SENDER");
+
+        assert!(parser.next_field().is_none());
+    }
+
+    #[test]
+    fn from_offset() {
+        let msg = b"8=FIX.4.4\x0135=D\x01";
+        let mut parser = FieldParser::new(msg, 10);
+        let field = parser.next_field().unwrap();
+        assert_eq!(field.tag, 35);
+        assert_eq!(field.value.slice(msg), b"D");
+        assert!(parser.next_field().is_none());
+    }
+
+    #[test]
+    fn tag_numbers() {
+        let msg = b"8=v\x0135=v\x01150=v\x015592=v\x01";
+        let tags: Vec<u32> = FieldParser::new(msg, 0).map(|f| f.tag).collect();
+        assert_eq!(tags, vec![8, 35, 150, 5592]);
+    }
+
+    #[test]
+    fn value_spans() {
+        let msg = b"44=50000.00\x0155=BTC-USD\x01";
+        let mut parser = FieldParser::new(msg, 0);
+
+        let f1 = parser.next_field().unwrap();
+        assert_eq!(f1.value.slice(msg), b"50000.00");
+
+        let f2 = parser.next_field().unwrap();
+        assert_eq!(f2.value.slice(msg), b"BTC-USD");
+    }
+
+    #[test]
+    fn checksum_matches_byte_sum() {
+        let msg = b"8=FIX.4.4\x0135=D\x0149=SENDER\x01";
+        let mut parser = FieldParser::new(msg, 0);
+        while parser.next_field().is_some() {}
+
+        let expected: u8 = msg.iter().map(|&b| b as u32).sum::<u32>() as u8;
+        assert_eq!(parser.checksum(), expected);
+    }
+
+    #[test]
+    fn checksum_from_offset() {
+        let msg = b"8=FIX.4.4\x0135=D\x01";
+        let mut parser = FieldParser::new(msg, 10);
+        while parser.next_field().is_some() {}
+
+        let expected: u8 = msg[10..].iter().map(|&b| b as u32).sum::<u32>() as u8;
+        assert_eq!(parser.checksum(), expected);
+    }
+
+    #[test]
+    fn checksum_various_lengths() {
+        for len in 1..=200 {
+            let value = "X".repeat(len);
+            let msg = format!("1={}\x01", value);
+            let msg = msg.as_bytes();
+
+            let expected: u8 = msg.iter().map(|&b| b as u32).sum::<u32>() as u8;
+            let mut parser = FieldParser::new(msg, 0);
+            while parser.next_field().is_some() {}
+            assert_eq!(parser.checksum(), expected, "len={}", len);
+        }
+    }
+
+    #[test]
+    fn malformed_no_equals() {
+        let msg = b"garbage\x01";
+        let mut parser = FieldParser::new(msg, 0);
+        assert!(parser.next_field().is_none());
+    }
+
+    #[test]
+    fn iterator_count() {
+        let msg = b"8=FIX.4.4\x019=65\x0135=D\x0149=SENDER\x0156=TARGET\x01\
+                     34=1\x0152=20260530-12:00:00\x0111=order1\x0155=BTC-USD\x01\
+                     54=1\x0138=100\x0140=2\x0144=50000.00\x0110=123\x01";
+        let count = FieldParser::new(msg, 0).count();
+        assert_eq!(count, 14);
+    }
+
+    #[test]
+    fn realistic_fix_message() {
+        let msg = b"8=FIX.4.4\x019=120\x0135=D\x0149=SENDER\x0156=TARGET\x01\
+                     34=42\x0152=20260530-12:00:00.000\x0111=order-001\x01\
+                     55=BTC-USD\x0154=1\x0138=1.50000000\x0140=2\x01\
+                     44=67500.00\x0159=0\x0110=178\x01";
+
+        let mut parser = FieldParser::new(msg, 0);
+        let mut fields = Vec::new();
+        while let Some(field) = parser.next_field() {
+            fields.push(field);
+        }
+
+        assert_eq!(fields.len(), 15);
+        assert_eq!(fields[0].tag, 8);
+        assert_eq!(fields[0].value.slice(msg), b"FIX.4.4");
+        assert_eq!(fields[2].tag, 35);
+        assert_eq!(fields[2].value.slice(msg), b"D");
+        assert_eq!(fields[14].tag, 10);
+        assert_eq!(fields[14].value.slice(msg), b"178");
+
+        // Checksum excludes the tag 10 field
+        let tag10_field = b"10=178\x01";
+        let body_sum: u32 = msg.iter().map(|&b| b as u32).sum::<u32>()
+            - tag10_field.iter().map(|&b| b as u32).sum::<u32>();
+        assert_eq!(parser.checksum(), (body_sum & 0xFF) as u8);
+    }
+
+    #[test]
+    fn checksum_excludes_tag_10() {
+        let msg = b"35=D\x0149=SENDER\x0110=099\x01";
+        let mut parser = FieldParser::new(msg, 0);
+        while parser.next_field().is_some() {}
+
+        let body = b"35=D\x0149=SENDER\x01";
+        let expected: u8 = body.iter().map(|&b| b as u32).sum::<u32>() as u8;
+        assert_eq!(parser.checksum(), expected);
+    }
+
+    #[test]
+    fn long_value_exercises_simd() {
+        let value = "X".repeat(300);
+        let msg = format!("1={}\x01", value);
+        let msg = msg.as_bytes();
+
+        let mut parser = FieldParser::new(msg, 0);
+        let field = parser.next_field().unwrap();
+        assert_eq!(field.tag, 1);
+        assert_eq!(field.value.len, 300);
+        assert!(parser.next_field().is_none());
+
+        let expected: u8 = msg.iter().map(|&b| b as u32).sum::<u32>() as u8;
+        assert_eq!(parser.checksum(), expected);
+    }
+
+    #[test]
+    fn many_short_fields() {
+        let mut msg = Vec::new();
+        for i in 1..=50 {
+            msg.extend_from_slice(format!("{}=v\x01", i).as_bytes());
+        }
+
+        let mut parser = FieldParser::new(&msg, 0);
+        let mut count = 0;
+        while parser.next_field().is_some() {
+            count += 1;
+        }
+        assert_eq!(count, 50);
+
+        let tag10_field = b"10=v\x01";
+        let expected: u8 = (msg.iter().map(|&b| b as u32).sum::<u32>()
+            - tag10_field.iter().map(|&b| b as u32).sum::<u32>()) as u8;
+        assert_eq!(parser.checksum(), expected);
+    }
+
+    #[test]
+    fn dense_soh_in_swar_chunk() {
+        // Multiple SOH bytes within a single 8-byte window
+        let msg = b"1=A\x012=B\x013=C\x01";
+        let fields: Vec<(u32, &[u8])> = FieldParser::new(msg, 0)
+            .map(|f| (f.tag, f.value.slice(msg)))
+            .collect();
+        assert_eq!(
+            fields,
+            vec![(1, b"A" as &[u8]), (2, b"B" as &[u8]), (3, b"C" as &[u8])]
+        );
+    }
+
+    #[test]
+    fn pos_advances() {
+        let msg = b"8=FIX.4.4\x0135=D\x01";
+        let mut parser = FieldParser::new(msg, 0);
+        assert_eq!(parser.pos(), 0);
+        parser.next_field();
+        assert_eq!(parser.pos(), 10);
+        parser.next_field();
+        assert_eq!(parser.pos(), 15);
+    }
+
+    #[test]
+    fn parse_tag_standalone() {
+        assert_eq!(parse_tag(b"8=FIX"), (8, 1));
+        assert_eq!(parse_tag(b"35=D"), (35, 2));
+        assert_eq!(parse_tag(b"150=2"), (150, 3));
+        assert_eq!(parse_tag(b"5592=CUSTOM"), (5592, 4));
+        assert_eq!(parse_tag(b"10000=X"), (10000, 5));
+    }
+
+    #[test]
+    fn parse_tag_empty() {
+        assert_eq!(parse_tag(b""), (0, 0));
+        assert_eq!(parse_tag(b"=value"), (0, 0));
+    }
+
+    #[test]
+    fn swar_mask_conversion() {
+        // Single match at byte 0: bit 7 set
+        assert_eq!(swar_to_byte_mask(0x80), 0x01);
+        // Single match at byte 3: bit 31 set
+        assert_eq!(swar_to_byte_mask(0x80_00_00_00), 0x08);
+        // Matches at bytes 0 and 7
+        assert_eq!(swar_to_byte_mask(0x80_00_00_00_00_00_00_80), 0x81);
+    }
+}
