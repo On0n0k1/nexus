@@ -802,4 +802,166 @@ mod tests {
         // parse_checksum_bytes on non-digits wraps around, producing a mismatch
         assert!(result.is_err());
     }
+
+    // =========================================================================
+    // Repeating group pattern (simulates codegen usage)
+    // =========================================================================
+
+    #[test]
+    fn repeating_group_walk() {
+        // MarketDataSnapshot with NoMDEntries (tag 268) = 3 entries.
+        // Delimiter tag is 269 (MDEntryType). Entries have varying field counts.
+        let msg = b"35=W\x01\
+                     268=3\x01\
+                     269=0\x01270=50000.00\x01271=1.5\x01\
+                     269=1\x01270=49999.00\x01\
+                     269=2\x01270=50001.00\x01271=0.8\x01272=XBTO\x01\
+                     10=999\x01";
+
+        let delimiter_tag = 269u32;
+        let mut reader = FieldReader::new(msg, 0);
+
+        // Walk to the count tag (268), simulating what the scanner does.
+        let mut group_count = 0u16;
+        let mut group_offset = 0u32;
+        while let Some(field) = reader.next_field() {
+            if field.tag == 268 {
+                let count_bytes = field.value.slice(msg);
+                group_count = core::str::from_utf8(count_bytes).unwrap().parse().unwrap();
+                group_offset = reader.pos() as u32;
+                break;
+            }
+        }
+
+        let group = crate::GroupSpan::new(group_offset, group_count);
+        assert_eq!(group.count, 3);
+
+        // Now read the group: iterate from group.offset, using dictionary
+        // knowledge of which tags belong to the group to detect boundaries.
+        let group_tags: &[u32] = &[269, 270, 271, 272];
+        let mut group_reader = FieldReader::new(msg, group.offset as usize);
+        let mut entries: Vec<Vec<RawField>> = Vec::new();
+        let mut current_entry: Vec<RawField> = Vec::new();
+
+        while let Some(field) = group_reader.next_field() {
+            if !group_tags.contains(&field.tag) {
+                break;
+            }
+            if field.tag == delimiter_tag && !current_entry.is_empty() {
+                entries.push(core::mem::take(&mut current_entry));
+            }
+            current_entry.push(field);
+        }
+        if !current_entry.is_empty() {
+            entries.push(current_entry);
+        }
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].len(), 3); // 269, 270, 271
+        assert_eq!(entries[1].len(), 2); // 269, 270
+        assert_eq!(entries[2].len(), 4); // 269, 270, 271, 272
+
+        assert_eq!(entries[0][0].value.slice(msg), b"0");
+        assert_eq!(entries[0][1].value.slice(msg), b"50000.00");
+        assert_eq!(entries[1][0].value.slice(msg), b"1");
+        assert_eq!(entries[2][3].value.slice(msg), b"XBTO");
+    }
+
+    #[test]
+    fn repeating_group_single_entry() {
+        let msg = b"35=W\x01268=1\x01269=0\x01270=50000\x0110=999\x01";
+
+        let group_tags: &[u32] = &[269, 270];
+        let mut reader = FieldReader::new(msg, 0);
+        while let Some(f) = reader.next_field() {
+            if f.tag == 268 {
+                break;
+            }
+        }
+        let group = crate::GroupSpan::new(reader.pos() as u32, 1);
+
+        let mut group_reader = FieldReader::new(msg, group.offset as usize);
+        let mut entries: Vec<Vec<RawField>> = Vec::new();
+        let mut current: Vec<RawField> = Vec::new();
+        while let Some(f) = group_reader.next_field() {
+            if !group_tags.contains(&f.tag) {
+                break;
+            }
+            if f.tag == 269 && !current.is_empty() {
+                entries.push(core::mem::take(&mut current));
+            }
+            current.push(f);
+        }
+        if !current.is_empty() {
+            entries.push(current);
+        }
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].len(), 2);
+        assert_eq!(entries[0][0].value.slice(msg), b"0");
+        assert_eq!(entries[0][1].value.slice(msg), b"50000");
+    }
+
+    #[test]
+    fn repeating_group_minimal_entries() {
+        // Entries with only the delimiter tag (all optional fields absent).
+        let msg = b"268=3\x01269=0\x01269=1\x01269=2\x0110=999\x01";
+
+        let group_tags: &[u32] = &[269, 270, 271];
+        let mut reader = FieldReader::new(msg, 0);
+        reader.next_field(); // skip 268
+        let group = crate::GroupSpan::new(reader.pos() as u32, 3);
+
+        let mut group_reader = FieldReader::new(msg, group.offset as usize);
+        let mut entries: Vec<Vec<RawField>> = Vec::new();
+        let mut current: Vec<RawField> = Vec::new();
+        while let Some(f) = group_reader.next_field() {
+            if !group_tags.contains(&f.tag) {
+                break;
+            }
+            if f.tag == 269 && !current.is_empty() {
+                entries.push(core::mem::take(&mut current));
+            }
+            current.push(f);
+        }
+        if !current.is_empty() {
+            entries.push(current);
+        }
+
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].len(), 1);
+        assert_eq!(entries[1].len(), 1);
+        assert_eq!(entries[2].len(), 1);
+    }
+
+    #[test]
+    fn repeating_group_at_end_of_message() {
+        // Group is the last thing in the buffer — no trailing non-group tag.
+        let msg = b"268=2\x01269=0\x01270=100\x01269=1\x01270=200\x01";
+
+        let group_tags: &[u32] = &[269, 270];
+        let mut reader = FieldReader::new(msg, 0);
+        reader.next_field(); // skip 268
+        let group = crate::GroupSpan::new(reader.pos() as u32, 2);
+
+        let mut group_reader = FieldReader::new(msg, group.offset as usize);
+        let mut entries: Vec<Vec<RawField>> = Vec::new();
+        let mut current: Vec<RawField> = Vec::new();
+        while let Some(f) = group_reader.next_field() {
+            if !group_tags.contains(&f.tag) {
+                break;
+            }
+            if f.tag == 269 && !current.is_empty() {
+                entries.push(core::mem::take(&mut current));
+            }
+            current.push(f);
+        }
+        if !current.is_empty() {
+            entries.push(current);
+        }
+
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0][1].value.slice(msg), b"100");
+        assert_eq!(entries[1][1].value.slice(msg), b"200");
+    }
 }
