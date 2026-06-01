@@ -23,6 +23,11 @@ best available instruction set at compile time:
 | SWAR | 8 bytes/iter | All platforms |
 | Scalar | 1 byte/iter | Tail bytes |
 
+Dispatch is compile-time only (no `is_x86_feature_detected!`). A
+default `cargo build` gets SSE2 + SWAR. Build with
+`RUSTFLAGS="-C target-cpu=native"` to enable AVX2/AVX-512 on
+capable hardware.
+
 Two API styles:
 
 - `find_soh(buf, pos)` / `find_eq(buf, pos)` — single-result lookup
