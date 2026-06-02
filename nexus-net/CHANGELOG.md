@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [1.0.0] — 2026-06-02
+
 ### Breaking
 
 - **`ws`, `http`, `rest` modules extracted to `nexus-web` 0.8.0.**

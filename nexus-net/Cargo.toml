@@ -1,6 +1,6 @@
 [package]
 name = "nexus-net"
-version = "0.8.0"
+version = "1.0.0"
 description = "Low-latency networking primitives: buffers, TLS codec, wire abstractions."
 readme = "README.md"
 edition.workspace = true

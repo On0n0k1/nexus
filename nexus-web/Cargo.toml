@@ -21,7 +21,7 @@ bytes = ["dep:bytes", "nexus-net/bytes"]
 all-features = true
 
 [dependencies]
-nexus-net = { version = "0.8.0", path = "../nexus-net" }
+nexus-net = { version = "1.0.0", path = "../nexus-net" }
 httparse = "1"
 sha1 = "0.10"
 simdutf8 = "0.1"
