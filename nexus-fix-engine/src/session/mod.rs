@@ -4,8 +4,8 @@ mod ring;
 use std::time::{Duration, Instant};
 
 use nexus_fix_codec::{
-    FieldReader, FieldSpan, FieldWriter, checksum, encode_field, format_checksum, format_uint,
-    parse_fix_uint,
+    FieldReader, FieldSpan, FieldWriter, checksum, encode_field, encode_fix_seqnum,
+    encode_fix_uint, format_checksum, parse_fix_uint,
 };
 
 pub use event::{DisconnectReason, Event, State};
@@ -253,7 +253,7 @@ impl<'a> Session<'a> {
             self.disconnect(DisconnectReason::CompIdMismatch);
             return;
         }
-        let Some(seq) = parse_fix_uint(f.seq_num.slice(msg)) else {
+        let Ok(seq) = parse_fix_uint(f.seq_num.slice(msg)) else {
             return;
         };
 
@@ -381,7 +381,7 @@ impl<'a> Session<'a> {
                 self.next_outbound = 1;
             }
         }
-        if let Some(hb) = parse_fix_uint(f.heart_bt_int.slice(msg)) {
+        if let Ok(hb) = parse_fix_uint(f.heart_bt_int.slice(msg)) {
             self.hb = Duration::from_secs(u64::from(hb));
         }
         if reply {
@@ -410,7 +410,7 @@ impl<'a> Session<'a> {
     fn on_session_message(&mut self, mt: &[u8], seq: u32, f: &Fields, msg: &[u8]) {
         if mt == b"4" && f.gap_fill.slice(msg) != b"Y" {
             // SequenceReset-Reset disregards MsgSeqNum entirely.
-            if let Some(new_seq) = parse_fix_uint(f.new_seq_no.slice(msg)) {
+            if let Ok(new_seq) = parse_fix_uint(f.new_seq_no.slice(msg)) {
                 self.next_inbound = new_seq;
                 self.events.push(Event::SequenceReset { new_seq });
                 self.check_resend_done();
@@ -467,7 +467,7 @@ impl<'a> Session<'a> {
                 self.events.push(Event::RejectReceived { ref_seq_num });
             }
             b"4" => {
-                if let Some(new_seq) = parse_fix_uint(f.new_seq_no.slice(msg)) {
+                if let Ok(new_seq) = parse_fix_uint(f.new_seq_no.slice(msg)) {
                     if new_seq > self.next_inbound {
                         self.next_inbound = new_seq;
                     }
@@ -524,7 +524,8 @@ impl<'a> Session<'a> {
             w.field(TAG_MSG_TYPE, msg_type_of(p));
             w.field(TAG_SENDER_COMP_ID, self.cfg.sender_comp_id);
             w.field(TAG_TARGET_COMP_ID, self.cfg.target_comp_id);
-            w.field(TAG_MSG_SEQ_NUM, format_uint(&mut num, u64::from(seq)));
+            let n = encode_fix_uint(seq, &mut num);
+            w.field(TAG_MSG_SEQ_NUM, &num[..n]);
             if poss_dup {
                 w.field(TAG_POSS_DUP_FLAG, b"Y");
             }
@@ -532,12 +533,14 @@ impl<'a> Session<'a> {
             match p {
                 Pending::Logon => {
                     w.field(TAG_ENCRYPT_METHOD, b"0");
-                    w.field(TAG_HEART_BT_INT, format_uint(&mut num, self.hb.as_secs()));
+                    let n = encode_fix_uint(self.hb.as_secs() as u32, &mut num);
+                    w.field(TAG_HEART_BT_INT, &num[..n]);
                 }
                 Pending::Logout => {}
                 Pending::SequenceReset { new_seq, .. } => {
                     w.field(TAG_GAP_FILL_FLAG, b"Y");
-                    w.field(TAG_NEW_SEQ_NO, format_uint(&mut num, u64::from(*new_seq)));
+                    let n = encode_fix_uint(*new_seq, &mut num);
+                    w.field(TAG_NEW_SEQ_NO, &num[..n]);
                 }
                 Pending::Heartbeat { id, id_len } => {
                     if *id_len > 0 {
@@ -545,10 +548,12 @@ impl<'a> Session<'a> {
                     }
                 }
                 Pending::TestRequest { id } => {
-                    w.field(TAG_TEST_REQ_ID, format_uint(&mut num, *id));
+                    let n = encode_fix_seqnum(*id, &mut num);
+                    w.field(TAG_TEST_REQ_ID, &num[..n]);
                 }
                 Pending::ResendRequest { begin } => {
-                    w.field(TAG_BEGIN_SEQ_NO, format_uint(&mut num, u64::from(*begin)));
+                    let n = encode_fix_uint(*begin, &mut num);
+                    w.field(TAG_BEGIN_SEQ_NO, &num[..n]);
                     w.field(TAG_END_SEQ_NO, b"0");
                 }
             }
@@ -556,12 +561,8 @@ impl<'a> Session<'a> {
         };
         let body_len = body_end - reserve;
         let mut pos = encode_field(buf, 0, TAG_BEGIN_STRING, self.cfg.begin_string);
-        pos = encode_field(
-            buf,
-            pos,
-            TAG_BODY_LENGTH,
-            format_uint(&mut num, body_len as u64),
-        );
+        let n = encode_fix_seqnum(body_len as u64, &mut num);
+        pos = encode_field(buf, pos, TAG_BODY_LENGTH, &num[..n]);
         buf.copy_within(reserve..body_end, pos);
         let end = pos + body_len;
         let ck = format_checksum(checksum(&buf[..end]));
