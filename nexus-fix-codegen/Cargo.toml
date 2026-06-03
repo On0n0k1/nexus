@@ -1,0 +1,31 @@
+[package]
+name = "nexus-fix-codegen"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Dictionary-driven FIX codec generator for nexus-fix-codec"
+readme = "README.md"
+repository.workspace = true
+keywords = ["fix", "codegen", "trading", "protocol", "low-latency"]
+categories = ["development-tools", "encoding", "parser-implementations"]
+
+[lints]
+workspace = true
+
+[lib]
+name = "nexus_fix_codegen"
+
+[[bin]]
+name = "nexus-fix-codegen"
+path = "src/main.rs"
+required-features = ["cli"]
+
+[features]
+cli = ["dep:clap"]
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"], optional = true }
+quick-xml = "0.37"
+
+[dev-dependencies]

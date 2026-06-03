@@ -14,6 +14,7 @@ categories = ["parsing", "network-programming"]
 workspace = true
 
 [dependencies]
+nexus-ascii = { path = "../nexus-ascii" }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }

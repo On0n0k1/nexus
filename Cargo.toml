@@ -34,6 +34,8 @@ members = [
 	"nexus-async-rt",
 	"nexus-inference",
 	"nexus-fix-codec",
+	"nexus-fix-codegen",
+	"nexus-fix-codegen-tests",
 ]
 
 [workspace.package]

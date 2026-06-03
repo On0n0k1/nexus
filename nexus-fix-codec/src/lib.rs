@@ -10,6 +10,7 @@
 //!
 //! Generated FIX codecs (from `nexus-fix-codegen`) depend on these primitives.
 
+mod convert;
 mod error;
 mod span;
 
@@ -17,7 +18,9 @@ pub mod reader;
 pub mod scan;
 pub mod writer;
 
+pub use convert::{format_uint, parse_fix_bool, parse_fix_int, parse_fix_uint};
 pub use error::{ChecksumError, DecodeError};
+pub use nexus_ascii::AsciiTextStr;
 pub use reader::{FieldReader, RawField, checksum, find_tag, parse_tag, validate_checksum};
 pub use scan::DelimiterScanner;
 pub use span::{FieldSpan, GroupSpan};

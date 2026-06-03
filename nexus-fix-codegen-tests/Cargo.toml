@@ -1,0 +1,16 @@
+[package]
+name = "nexus-fix-codegen-tests"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+nexus-fix-codec = { path = "../nexus-fix-codec" }
+
+[build-dependencies]
+nexus-fix-codegen = { path = "../nexus-fix-codegen" }
