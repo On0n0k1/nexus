@@ -156,10 +156,127 @@ fn main() {
 
     // -- parse_fix_bool --
 
-    measure("parse_fix_bool  \"Y\"", || {
-        parse_fix_bool(black_box(b"Y"))
+    measure("parse_fix_bool  \"Y\"", || parse_fix_bool(black_box(b"Y")));
+    measure("parse_fix_bool  \"N\"", || parse_fix_bool(black_box(b"N")));
+
+    println!();
+    println!("=== ENCODE ===");
+    println!();
+
+    // -- FixDecimal::encode --
+
+    let dec_int = FixDecimal::parse(b"12345678").unwrap();
+    let dec_4 = FixDecimal::parse(b"99.50").unwrap();
+    let dec_8 = FixDecimal::parse(b"50123.450").unwrap();
+    let dec_12 = FixDecimal::parse(b"50123.45000000").unwrap();
+    let dec_16 = FixDecimal::parse(b"1234567.890123456").unwrap();
+    let dec_neg = FixDecimal::parse(b"-123.456").unwrap();
+
+    measure("FixDecimal::encode  integer  \"12345678\"", || {
+        let mut buf = [0u8; 21];
+        black_box(dec_int).encode(black_box(&mut buf))
     });
-    measure("parse_fix_bool  \"N\"", || {
-        parse_fix_bool(black_box(b"N"))
+    measure("FixDecimal::encode  4-digit  \"99.50\"", || {
+        let mut buf = [0u8; 21];
+        black_box(dec_4).encode(black_box(&mut buf))
     });
+    measure("FixDecimal::encode  8-digit  \"50123.450\"", || {
+        let mut buf = [0u8; 21];
+        black_box(dec_8).encode(black_box(&mut buf))
+    });
+    measure("FixDecimal::encode  12-digit \"50123.45000000\"", || {
+        let mut buf = [0u8; 21];
+        black_box(dec_12).encode(black_box(&mut buf))
+    });
+    measure("FixDecimal::encode  16-digit \"1234567.890123456\"", || {
+        let mut buf = [0u8; 21];
+        black_box(dec_16).encode(black_box(&mut buf))
+    });
+    measure("FixDecimal::encode  negative \"-123.456\"", || {
+        let mut buf = [0u8; 21];
+        black_box(dec_neg).encode(black_box(&mut buf))
+    });
+
+    println!();
+
+    // -- encode_fix_int --
+
+    measure("encode_fix_int  8-digit", || {
+        let mut buf = [0u8; 20];
+        encode_fix_int(black_box(12_345_678), black_box(&mut buf))
+    });
+    measure("encode_fix_int  16-digit", || {
+        let mut buf = [0u8; 20];
+        encode_fix_int(black_box(1_234_567_890_123_456), black_box(&mut buf))
+    });
+    measure("encode_fix_int  negative 8-digit", || {
+        let mut buf = [0u8; 20];
+        encode_fix_int(black_box(-12_345_678), black_box(&mut buf))
+    });
+
+    println!();
+
+    // -- encode_fix_uint / encode_fix_seqnum --
+
+    measure("encode_fix_uint  \"256\"", || {
+        let mut buf = [0u8; 10];
+        encode_fix_uint(black_box(256), black_box(&mut buf))
+    });
+    measure("encode_fix_seqnum  \"1000000\"", || {
+        let mut buf = [0u8; 20];
+        encode_fix_seqnum(black_box(1_000_000), black_box(&mut buf))
+    });
+
+    println!();
+
+    // -- FixTimestamp::encode --
+
+    let ts_no_frac = FixTimestamp::parse(b"20260602-14:30:00").unwrap();
+    let ts_millis = FixTimestamp::parse(b"20260602-14:30:00.123").unwrap();
+    let ts_micros = FixTimestamp::parse(b"20260602-14:30:00.123456").unwrap();
+    let ts_nanos = FixTimestamp::parse(b"20260602-14:30:00.123456789").unwrap();
+
+    measure("FixTimestamp::encode  no_frac", || {
+        let mut buf = [0u8; 27];
+        black_box(ts_no_frac).encode(black_box(&mut buf))
+    });
+    measure("FixTimestamp::encode  millis", || {
+        let mut buf = [0u8; 27];
+        black_box(ts_millis).encode(black_box(&mut buf))
+    });
+    measure("FixTimestamp::encode  micros", || {
+        let mut buf = [0u8; 27];
+        black_box(ts_micros).encode(black_box(&mut buf))
+    });
+    measure("FixTimestamp::encode  nanos", || {
+        let mut buf = [0u8; 27];
+        black_box(ts_nanos).encode(black_box(&mut buf))
+    });
+
+    println!();
+
+    // -- FixDate / FixTime encode --
+
+    let date = FixDate::parse(b"20260602").unwrap();
+    let time_no_frac = FixTime::parse(b"14:30:00").unwrap();
+    let time_micros = FixTime::parse(b"14:30:00.123456").unwrap();
+
+    measure("FixDate::encode  \"20260602\"", || {
+        let mut buf = [0u8; 8];
+        black_box(date).encode(black_box(&mut buf))
+    });
+    measure("FixTime::encode  no_frac \"14:30:00\"", || {
+        let mut buf = [0u8; 18];
+        black_box(time_no_frac).encode(black_box(&mut buf))
+    });
+    measure("FixTime::encode  micros  \"14:30:00.123456\"", || {
+        let mut buf = [0u8; 18];
+        black_box(time_micros).encode(black_box(&mut buf))
+    });
+
+    println!();
+
+    // -- encode_fix_bool --
+
+    measure("encode_fix_bool  true", || encode_fix_bool(black_box(true)));
 }

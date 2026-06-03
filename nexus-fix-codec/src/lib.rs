@@ -24,10 +24,13 @@ pub use reader::{FieldReader, RawField, checksum, find_tag, parse_tag, validate_
 pub use scan::DelimiterScanner;
 pub use span::{FieldSpan, GroupSpan};
 pub use types::{
-    FixDate, FixDecimal, FixTime, FixTimestamp, parse_fix_bool, parse_fix_int, parse_fix_seqnum,
-    parse_fix_uint,
+    FixDate, FixDecimal, FixTime, FixTimestamp, encode_fix_bool, encode_fix_int, encode_fix_seqnum,
+    encode_fix_uint, parse_fix_bool, parse_fix_int, parse_fix_seqnum, parse_fix_uint,
 };
 pub use writer::{FieldWriter, encode_field, format_checksum};
 
 #[cfg(feature = "nexus-decimal")]
 pub use types::DecimalConvError;
+
+#[cfg(feature = "nexus-decimal")]
+pub use types::DecimalToFixError;

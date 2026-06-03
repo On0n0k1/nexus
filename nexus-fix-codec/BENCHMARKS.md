@@ -85,6 +85,117 @@ writes constant-fold away). The rewrite also fixes a latent bug:
 
 ---
 
+## Type parsers (SWAR digit parsing)
+
+Domain type parsers for FIX field values. All numeric parsing uses SWAR
+(SIMD Within A Register) — 8 ASCII digits processed per block in 3
+multiply+shift stages. Measured with `rdtscp`, 100K samples after 10K
+warmup, `taskset -c 0`.
+
+```bash
+cargo build --release --bench perf_parse_cycles -p nexus-fix-codec
+taskset -c 0 ./target/release/deps/perf_parse_cycles-*
+```
+
+### Integer parsing
+
+| Parser | Input | p50 | p99 |
+|--------|-------|----:|----:|
+| `parse_fix_bool` | `"Y"` | 22 | 24 |
+| `parse_fix_int` | 8-digit | 30 | 36 |
+| `parse_fix_int` | 16-digit | 40 | 158 |
+| `parse_fix_int` | 19-digit (i64::MAX) | 40 | 98 |
+| `parse_fix_int` | negative 8-digit | 32 | 36 |
+| `parse_fix_uint` | `"256"` | 44 | 96 |
+| `parse_fix_seqnum` | `"1000000"` | 42 | 88 |
+
+Integer parsing is 30–44 cycles regardless of digit count due to the
+SWAR block structure. The 8→16 digit transition adds one extra block
+(~10 cy overhead).
+
+### Decimal parsing
+
+| Input | p50 | p99 |
+|-------|----:|----:|
+| integer `"12345678"` | 50 | 58 |
+| 12-digit `"50123.45000000"` | 68 | 110 |
+| 4-digit `"99.50"` | 82 | 130 |
+| 16-digit `"1234567.890123456"` | 88 | 98 |
+| negative `"-123.456"` | 88 | 268 |
+| sub-penny `"0.00000001"` | 68 | 72 |
+
+Decimal adds dot-finding + split + recombine on top of the SWAR
+blocks. 50–88 cycles for typical FIX prices.
+
+### Date/time parsing
+
+| Parser | Input | p50 | p99 |
+|--------|-------|----:|----:|
+| `FixDate::parse` | `"20260602"` | 30 | 84 |
+| `FixTime::parse` | `"14:30:00"` | 30 | 102 |
+| `FixTime::parse` | `"14:30:00.123456"` | 40 | 44 |
+| `FixTimestamp::parse` | no fractional | 66 | 70 |
+| `FixTimestamp::parse` | millis | 72 | 178 |
+| `FixTimestamp::parse` | micros | 76 | 190 |
+| `FixTimestamp::parse` | nanos | 78 | 204 |
+
+Timestamps compose date (30 cy) + time (30–40 cy) + Hinnant epoch
+conversion, totaling 66–78 cycles for the full parse.
+
+---
+
+## Type encoders (digit-pair LUT)
+
+Domain type encoders — the inverse of the parsers above. Encoding uses
+a 200-byte digit-pair lookup table (LUT): two ASCII digits per entry for
+`00..99`, extracting digit pairs via `value % 100` / `value / 100`.
+Zero-padded variants for date/time components and fractional parts.
+Same measurement methodology as the parsers.
+
+### Integer encoding
+
+| Encoder | Input | p50 | p99 |
+|---------|-------|----:|----:|
+| `encode_fix_bool` | `true` | TBD | TBD |
+| `encode_fix_int` | 8-digit | TBD | TBD |
+| `encode_fix_int` | 16-digit | TBD | TBD |
+| `encode_fix_int` | negative 8-digit | TBD | TBD |
+| `encode_fix_uint` | `256` | TBD | TBD |
+| `encode_fix_seqnum` | `1000000` | TBD | TBD |
+
+### Decimal encoding
+
+| Input | p50 | p99 |
+|-------|----:|----:|
+| integer `"12345678"` | TBD | TBD |
+| 4-digit `"99.50"` | TBD | TBD |
+| 8-digit `"50123.450"` | TBD | TBD |
+| 16-digit `"1234567.890123456"` | TBD | TBD |
+| negative `"-123.456"` | TBD | TBD |
+
+### Date/time encoding
+
+| Encoder | Input | p50 | p99 |
+|---------|-------|----:|----:|
+| `FixDate::encode` | `"20260602"` | TBD | TBD |
+| `FixTime::encode` | `"14:30:00"` | TBD | TBD |
+| `FixTime::encode` | `"14:30:00.123456"` | TBD | TBD |
+| `FixTimestamp::encode` | no fractional | TBD | TBD |
+| `FixTimestamp::encode` | millis | TBD | TBD |
+| `FixTimestamp::encode` | micros | TBD | TBD |
+| `FixTimestamp::encode` | nanos | TBD | TBD |
+
+Encoding uses the reverse Hinnant algorithm (civil-from-days) for
+`FixTimestamp` decomposition into date + time components, then
+digit-pair LUT writes. `encode_fix_bool` is a single conditional byte.
+
+**Note:** cycle numbers marked TBD — run `perf_parse_cycles` to fill in
+on your hardware. The encode path uses `u64 % 100` / `u64 / 100` chains
+which may show different latency characteristics than the SWAR parse
+path (multiply-shift vs division-modulo).
+
+---
+
 ## What is *not* changed, and why
 
 - **Decode (`FieldReader::next_field`)** — already near-optimal. The
@@ -108,7 +219,7 @@ said no" — are in [PERF_CATALOG.md](./PERF_CATALOG.md#rejected-approaches).
 
 ## Verification
 
-- 86 unit tests + 4 doc-tests pass on both SSE2 and AVX2.
+- 212 unit tests + 9 doc-tests pass on both SSE2 and AVX2.
 - `cargo clippy --lib -- -D warnings`: clean on both tiers.
 - The writer's `unsafe` is miri-clean and was adversarially reviewed
   (full input-grid brute-force + all 2³² tag values).

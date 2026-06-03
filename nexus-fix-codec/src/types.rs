@@ -89,6 +89,38 @@ impl FixDecimal {
 
         Some(Self { mantissa, scale })
     }
+
+    /// Encode this decimal to wire bytes.
+    ///
+    /// Writes the FIX representation (e.g., `"-123.456"`) into `buf` and
+    /// returns the number of bytes written. Buffer must be at least 21 bytes.
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        let mut pos = 0;
+
+        if self.mantissa < 0 {
+            buf[pos] = b'-';
+            pos += 1;
+        }
+
+        let abs = self.mantissa.unsigned_abs();
+
+        if self.scale == 0 {
+            pos += encode_u64(abs, &mut buf[pos..]);
+            return pos;
+        }
+
+        let scale_pow = 10u64.pow(self.scale as u32);
+        let integer = abs / scale_pow;
+        let frac = abs % scale_pow;
+
+        pos += encode_u64(integer, &mut buf[pos..]);
+        buf[pos] = b'.';
+        pos += 1;
+        encode_u64_padded(frac, self.scale as usize, &mut buf[pos..]);
+        pos += self.scale as usize;
+
+        pos
+    }
 }
 
 impl From<FixDecimal> for f64 {
@@ -193,6 +225,34 @@ impl FixTimestamp {
     pub const fn subsec_nanos(self) -> u32 {
         (self.0.unsigned_abs() % Self::NANOS_PER_SEC as u128) as u32
     }
+
+    /// Decompose into date and time-of-day components.
+    pub fn decompose(self) -> (FixDate, FixTime) {
+        let total_secs = self.0.div_euclid(Self::NANOS_PER_SEC);
+        let sub_nanos = self.0.rem_euclid(Self::NANOS_PER_SEC) as u64;
+
+        let epoch_days = total_secs.div_euclid(Self::SECS_PER_DAY) as i32;
+        let secs_in_day = total_secs.rem_euclid(Self::SECS_PER_DAY) as u64;
+
+        let date = FixDate::from_epoch_days(epoch_days);
+        let time = FixTime {
+            nanos_since_midnight: secs_in_day * FixTime::NANOS_PER_SEC + sub_nanos,
+        };
+        (date, time)
+    }
+
+    /// Encode as FIX timestamp wire bytes (`YYYYMMDD-HH:MM:SS[.fractional]`).
+    ///
+    /// Returns the number of bytes written. Buffer must be at least 27 bytes.
+    /// Fractional precision is auto-detected: millis (3), micros (6), or nanos (9).
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        let (date, time) = self.decompose();
+        let mut pos = date.encode(buf);
+        buf[pos] = b'-';
+        pos += 1;
+        pos += time.encode(&mut buf[pos..]);
+        pos
+    }
 }
 
 impl fmt::Display for FixTimestamp {
@@ -255,6 +315,36 @@ impl FixDate {
         let days = era * 146_097 + doe - 719_468;
         Some(days)
     }
+
+    /// Construct a date from days since unix epoch (1970-01-01).
+    ///
+    /// Inverse of [`to_epoch_days`](Self::to_epoch_days). Uses the Hinnant
+    /// civil-from-days algorithm.
+    pub fn from_epoch_days(days: i32) -> Self {
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097) as u32;
+        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+        let y = yoe as i32 + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let d = doy - (153 * mp + 2) / 5 + 1;
+        let m = if mp < 10 { mp + 3 } else { mp - 9 };
+        let y = if m <= 2 { y + 1 } else { y };
+        Self {
+            year: y as u16,
+            month: m as u8,
+            day: d as u8,
+        }
+    }
+
+    /// Encode as `YYYYMMDD` wire bytes. Always writes exactly 8 bytes.
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        encode_4_digits(buf, self.year);
+        encode_2_digits(&mut buf[4..], self.month);
+        encode_2_digits(&mut buf[6..], self.day);
+        8
+    }
 }
 
 impl fmt::Display for FixDate {
@@ -308,6 +398,37 @@ impl FixTime {
     #[inline]
     pub const fn subsec_nanos(&self) -> u32 {
         (self.nanos_since_midnight % Self::NANOS_PER_SEC) as u32
+    }
+
+    /// Encode as `HH:MM:SS[.sss[sss[sss]]]` wire bytes.
+    ///
+    /// Returns the number of bytes written (8, 12, 15, or 18).
+    /// Fractional precision is auto-detected from the value.
+    /// Buffer must be at least 18 bytes.
+    pub fn encode(&self, buf: &mut [u8]) -> usize {
+        encode_2_digits(buf, self.hour());
+        buf[2] = b':';
+        encode_2_digits(&mut buf[3..], self.minute());
+        buf[5] = b':';
+        encode_2_digits(&mut buf[6..], self.second());
+
+        let sub = self.subsec_nanos();
+        if sub == 0 {
+            return 8;
+        }
+
+        buf[8] = b'.';
+
+        if sub.is_multiple_of(1_000_000) {
+            encode_u64_padded(sub as u64 / 1_000_000, 3, &mut buf[9..]);
+            12
+        } else if sub.is_multiple_of(1_000) {
+            encode_u64_padded(sub as u64 / 1_000, 6, &mut buf[9..]);
+            15
+        } else {
+            encode_u64_padded(sub as u64, 9, &mut buf[9..]);
+            18
+        }
     }
 }
 
@@ -408,6 +529,44 @@ pub fn parse_fix_bool(bytes: &[u8]) -> Option<bool> {
 }
 
 // ---------------------------------------------------------------------------
+// Tier 1 encoding helpers (used by generated code)
+// ---------------------------------------------------------------------------
+
+/// Encode a FIX integer field (INT type) to wire bytes.
+///
+/// Writes the decimal representation (with leading `-` for negatives).
+/// Buffer must be at least 20 bytes. Returns the number of bytes written.
+pub fn encode_fix_int(value: i64, buf: &mut [u8]) -> usize {
+    let mut pos = 0;
+    if value < 0 {
+        buf[pos] = b'-';
+        pos += 1;
+    }
+    pos += encode_u64(value.unsigned_abs(), &mut buf[pos..]);
+    pos
+}
+
+/// Encode a FIX unsigned integer (LENGTH, NUMINGROUP) to wire bytes.
+///
+/// Buffer must be at least 10 bytes. Returns the number of bytes written.
+pub fn encode_fix_uint(value: u32, buf: &mut [u8]) -> usize {
+    encode_u64(value as u64, buf)
+}
+
+/// Encode a FIX sequence number (SEQNUM) to wire bytes.
+///
+/// Buffer must be at least 20 bytes. Returns the number of bytes written.
+pub fn encode_fix_seqnum(value: u64, buf: &mut [u8]) -> usize {
+    encode_u64(value, buf)
+}
+
+/// Encode a FIX boolean as a single byte (`Y` or `N`).
+#[inline]
+pub fn encode_fix_bool(value: bool) -> u8 {
+    if value { b'Y' } else { b'N' }
+}
+
+// ---------------------------------------------------------------------------
 // SWAR digit parsing
 // ---------------------------------------------------------------------------
 
@@ -483,6 +642,85 @@ fn parse_unsigned_digits(digits: &[u8]) -> Option<u64> {
     }
     let lo = swar_parse_16(&digits[leading..])?;
     hi.checked_mul(10_000_000_000_000_000)?.checked_add(lo)
+}
+
+// ---------------------------------------------------------------------------
+// Digit encoding helpers
+// ---------------------------------------------------------------------------
+
+const DIGIT_PAIRS: [u8; 200] = {
+    let mut lut = [0u8; 200];
+    let mut i = 0;
+    while i < 100 {
+        lut[i * 2] = b'0' + (i / 10) as u8;
+        lut[i * 2 + 1] = b'0' + (i % 10) as u8;
+        i += 1;
+    }
+    lut
+};
+
+#[inline]
+fn encode_2_digits(buf: &mut [u8], value: u8) {
+    let idx = value as usize * 2;
+    buf[0] = DIGIT_PAIRS[idx];
+    buf[1] = DIGIT_PAIRS[idx + 1];
+}
+
+#[inline]
+fn encode_4_digits(buf: &mut [u8], value: u16) {
+    encode_2_digits(buf, (value / 100) as u8);
+    encode_2_digits(&mut buf[2..], (value % 100) as u8);
+}
+
+/// Encode a u64 as decimal ASCII. Returns the number of bytes written.
+fn encode_u64(value: u64, buf: &mut [u8]) -> usize {
+    if value == 0 {
+        buf[0] = b'0';
+        return 1;
+    }
+
+    let mut tmp = [0u8; 20];
+    let mut pos = 20usize;
+    let mut v = value;
+
+    while v >= 100 {
+        let rem = (v % 100) as usize;
+        v /= 100;
+        pos -= 2;
+        tmp[pos] = DIGIT_PAIRS[rem * 2];
+        tmp[pos + 1] = DIGIT_PAIRS[rem * 2 + 1];
+    }
+
+    if v >= 10 {
+        pos -= 2;
+        tmp[pos] = DIGIT_PAIRS[v as usize * 2];
+        tmp[pos + 1] = DIGIT_PAIRS[v as usize * 2 + 1];
+    } else {
+        pos -= 1;
+        tmp[pos] = b'0' + v as u8;
+    }
+
+    let len = 20 - pos;
+    buf[..len].copy_from_slice(&tmp[pos..]);
+    len
+}
+
+/// Encode a u64 as zero-padded decimal ASCII of exactly `width` digits.
+fn encode_u64_padded(value: u64, width: usize, buf: &mut [u8]) {
+    debug_assert!(width <= 20);
+    let mut tmp = [b'0'; 20];
+    let mut pos = 20usize;
+    let mut v = value;
+
+    while v > 0 {
+        let rem = (v % 100) as usize;
+        v /= 100;
+        pos -= 2;
+        tmp[pos] = DIGIT_PAIRS[rem * 2];
+        tmp[pos + 1] = DIGIT_PAIRS[rem * 2 + 1];
+    }
+
+    buf[..width].copy_from_slice(&tmp[20 - width..]);
 }
 
 // ---------------------------------------------------------------------------
@@ -669,10 +907,66 @@ mod decimal_conv {
             Ok(Self::from_raw(narrow))
         }
     }
+
+    // -- Reverse: Decimal → FixDecimal --
+
+    // i64 backing → FixDecimal: infallible — i64 mantissa maps directly.
+    impl<const D: u8> From<Decimal<i64, D>> for FixDecimal
+    where
+        i64: Backing,
+    {
+        fn from(d: Decimal<i64, D>) -> Self {
+            Self {
+                mantissa: d.to_raw(),
+                scale: D,
+            }
+        }
+    }
+
+    // i32 backing → FixDecimal: infallible — i32 widens to i64.
+    impl<const D: u8> From<Decimal<i32, D>> for FixDecimal
+    where
+        i32: Backing,
+    {
+        fn from(d: Decimal<i32, D>) -> Self {
+            Self {
+                mantissa: d.to_raw() as i64,
+                scale: D,
+            }
+        }
+    }
+
+    /// Error when a decimal mantissa exceeds i64 range for [`FixDecimal`].
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    pub struct DecimalToFixError;
+
+    impl core::fmt::Display for DecimalToFixError {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "decimal mantissa exceeds i64 range for FixDecimal")
+        }
+    }
+
+    impl std::error::Error for DecimalToFixError {}
+
+    // i128 backing → FixDecimal: fallible — i128 may not fit in i64.
+    impl<const D: u8> TryFrom<Decimal<i128, D>> for FixDecimal
+    where
+        i128: Backing,
+    {
+        type Error = DecimalToFixError;
+
+        fn try_from(d: Decimal<i128, D>) -> Result<Self, Self::Error> {
+            let mantissa = i64::try_from(d.to_raw()).map_err(|_| DecimalToFixError)?;
+            Ok(Self { mantissa, scale: D })
+        }
+    }
 }
 
 #[cfg(feature = "nexus-decimal")]
 pub use decimal_conv::DecimalConvError;
+
+#[cfg(feature = "nexus-decimal")]
+pub use decimal_conv::DecimalToFixError;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -1103,6 +1397,363 @@ mod tests {
         }
     }
 
+    // -- Encode: encode_fix_int --
+
+    #[test]
+    fn encode_int_positive() {
+        let mut buf = [0u8; 20];
+        let n = encode_fix_int(12345, &mut buf);
+        assert_eq!(&buf[..n], b"12345");
+    }
+
+    #[test]
+    fn encode_int_negative() {
+        let mut buf = [0u8; 20];
+        let n = encode_fix_int(-42, &mut buf);
+        assert_eq!(&buf[..n], b"-42");
+    }
+
+    #[test]
+    fn encode_int_zero() {
+        let mut buf = [0u8; 20];
+        let n = encode_fix_int(0, &mut buf);
+        assert_eq!(&buf[..n], b"0");
+    }
+
+    #[test]
+    fn encode_int_max() {
+        let mut buf = [0u8; 20];
+        let n = encode_fix_int(i64::MAX, &mut buf);
+        assert_eq!(&buf[..n], b"9223372036854775807");
+    }
+
+    #[test]
+    fn encode_int_min() {
+        let mut buf = [0u8; 20];
+        let n = encode_fix_int(i64::MIN, &mut buf);
+        assert_eq!(&buf[..n], b"-9223372036854775808");
+    }
+
+    // -- Encode: encode_fix_uint --
+
+    #[test]
+    fn encode_uint() {
+        let mut buf = [0u8; 10];
+        let n = encode_fix_uint(256, &mut buf);
+        assert_eq!(&buf[..n], b"256");
+    }
+
+    #[test]
+    fn encode_uint_zero() {
+        let mut buf = [0u8; 10];
+        let n = encode_fix_uint(0, &mut buf);
+        assert_eq!(&buf[..n], b"0");
+    }
+
+    // -- Encode: encode_fix_seqnum --
+
+    #[test]
+    fn encode_seqnum() {
+        let mut buf = [0u8; 20];
+        let n = encode_fix_seqnum(1_000_000, &mut buf);
+        assert_eq!(&buf[..n], b"1000000");
+    }
+
+    // -- Encode: encode_fix_bool --
+
+    #[test]
+    fn encode_bool_true() {
+        assert_eq!(encode_fix_bool(true), b'Y');
+    }
+
+    #[test]
+    fn encode_bool_false() {
+        assert_eq!(encode_fix_bool(false), b'N');
+    }
+
+    // -- Encode: FixDecimal --
+
+    #[test]
+    fn decimal_encode_integer() {
+        let d = FixDecimal {
+            mantissa: 12345,
+            scale: 0,
+        };
+        let mut buf = [0u8; 21];
+        let n = d.encode(&mut buf);
+        assert_eq!(&buf[..n], b"12345");
+    }
+
+    #[test]
+    fn decimal_encode_fractional() {
+        let d = FixDecimal {
+            mantissa: 123_456,
+            scale: 3,
+        };
+        let mut buf = [0u8; 21];
+        let n = d.encode(&mut buf);
+        assert_eq!(&buf[..n], b"123.456");
+    }
+
+    #[test]
+    fn decimal_encode_negative() {
+        let d = FixDecimal {
+            mantissa: -995,
+            scale: 1,
+        };
+        let mut buf = [0u8; 21];
+        let n = d.encode(&mut buf);
+        assert_eq!(&buf[..n], b"-99.5");
+    }
+
+    #[test]
+    fn decimal_encode_leading_frac_zeros() {
+        let d = FixDecimal {
+            mantissa: 1,
+            scale: 3,
+        };
+        let mut buf = [0u8; 21];
+        let n = d.encode(&mut buf);
+        assert_eq!(&buf[..n], b"0.001");
+    }
+
+    #[test]
+    fn decimal_encode_zero() {
+        let d = FixDecimal {
+            mantissa: 0,
+            scale: 0,
+        };
+        let mut buf = [0u8; 21];
+        let n = d.encode(&mut buf);
+        assert_eq!(&buf[..n], b"0");
+    }
+
+    #[test]
+    fn decimal_encode_negative_sub_unit() {
+        let d = FixDecimal {
+            mantissa: -5,
+            scale: 1,
+        };
+        let mut buf = [0u8; 21];
+        let n = d.encode(&mut buf);
+        assert_eq!(&buf[..n], b"-0.5");
+    }
+
+    // -- Encode: FixDate --
+
+    #[test]
+    fn date_encode() {
+        let d = FixDate {
+            year: 2026,
+            month: 6,
+            day: 2,
+        };
+        let mut buf = [0u8; 8];
+        let n = d.encode(&mut buf);
+        assert_eq!(&buf[..n], b"20260602");
+    }
+
+    #[test]
+    fn date_from_epoch_days_epoch() {
+        let d = FixDate::from_epoch_days(0);
+        assert_eq!(
+            d,
+            FixDate {
+                year: 1970,
+                month: 1,
+                day: 1
+            }
+        );
+    }
+
+    #[test]
+    fn date_from_epoch_days_y2k() {
+        let d = FixDate::from_epoch_days(10957);
+        assert_eq!(
+            d,
+            FixDate {
+                year: 2000,
+                month: 1,
+                day: 1
+            }
+        );
+    }
+
+    #[test]
+    fn date_epoch_days_roundtrip() {
+        for days in [0, 1, 365, 10957, 20000, -1, -365] {
+            let date = FixDate::from_epoch_days(days);
+            assert_eq!(date.to_epoch_days(), Some(days), "failed for days={days}");
+        }
+    }
+
+    // -- Encode: FixTime --
+
+    #[test]
+    fn time_encode_no_frac() {
+        let t = FixTime {
+            nanos_since_midnight: 14 * 3_600_000_000_000 + 30 * 60_000_000_000,
+        };
+        let mut buf = [0u8; 18];
+        let n = t.encode(&mut buf);
+        assert_eq!(&buf[..n], b"14:30:00");
+    }
+
+    #[test]
+    fn time_encode_millis() {
+        let t = FixTime {
+            nanos_since_midnight: 9 * 3_600_000_000_000
+                + 5 * 60_000_000_000
+                + 30_000_000_000
+                + 123_000_000,
+        };
+        let mut buf = [0u8; 18];
+        let n = t.encode(&mut buf);
+        assert_eq!(&buf[..n], b"09:05:30.123");
+    }
+
+    #[test]
+    fn time_encode_micros() {
+        let t = FixTime {
+            nanos_since_midnight: 23 * 3_600_000_000_000
+                + 59 * 60_000_000_000
+                + 59_000_000_000
+                + 123_456_000,
+        };
+        let mut buf = [0u8; 18];
+        let n = t.encode(&mut buf);
+        assert_eq!(&buf[..n], b"23:59:59.123456");
+    }
+
+    #[test]
+    fn time_encode_nanos() {
+        let t = FixTime {
+            nanos_since_midnight: 1,
+        };
+        let mut buf = [0u8; 18];
+        let n = t.encode(&mut buf);
+        assert_eq!(&buf[..n], b"00:00:00.000000001");
+    }
+
+    // -- Encode: FixTimestamp --
+
+    #[test]
+    fn timestamp_encode_epoch() {
+        let ts = FixTimestamp(0);
+        let mut buf = [0u8; 27];
+        let n = ts.encode(&mut buf);
+        assert_eq!(&buf[..n], b"19700101-00:00:00");
+    }
+
+    #[test]
+    fn timestamp_encode_with_frac() {
+        let ts = FixTimestamp(1_500_000_000);
+        let mut buf = [0u8; 27];
+        let n = ts.encode(&mut buf);
+        assert_eq!(&buf[..n], b"19700101-00:00:01.500");
+    }
+
+    // -- Roundtrip: parse → encode --
+
+    #[test]
+    fn decimal_roundtrip() {
+        for input in &[
+            &b"12345"[..],
+            &b"123.456"[..],
+            &b"0.001"[..],
+            &b"99.50"[..],
+            &b"12345678"[..],
+            &b"50123.45000000"[..],
+            &b"1234567.890123456"[..],
+        ] {
+            let d = FixDecimal::parse(input).unwrap();
+            let mut buf = [0u8; 21];
+            let n = d.encode(&mut buf);
+            assert_eq!(
+                &buf[..n],
+                *input,
+                "roundtrip failed for {:?}",
+                core::str::from_utf8(input).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn decimal_roundtrip_negative() {
+        let d = FixDecimal::parse(b"-123.456").unwrap();
+        let mut buf = [0u8; 21];
+        let n = d.encode(&mut buf);
+        assert_eq!(&buf[..n], b"-123.456");
+    }
+
+    #[test]
+    fn date_roundtrip() {
+        for input in &[b"20260602", b"19700101", b"20000101", b"19991231"] {
+            let d = FixDate::parse(&input[..]).unwrap();
+            let mut buf = [0u8; 8];
+            let n = d.encode(&mut buf);
+            assert_eq!(
+                &buf[..n],
+                &input[..],
+                "roundtrip failed for {:?}",
+                core::str::from_utf8(&input[..]).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn time_roundtrip() {
+        for input in &[
+            &b"14:30:00"[..],
+            &b"09:05:30.123"[..],
+            &b"23:59:59.123456"[..],
+            &b"00:00:00.000000001"[..],
+        ] {
+            let t = FixTime::parse(input).unwrap();
+            let mut buf = [0u8; 18];
+            let n = t.encode(&mut buf);
+            assert_eq!(
+                &buf[..n],
+                *input,
+                "roundtrip failed for {:?}",
+                core::str::from_utf8(input).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn timestamp_roundtrip() {
+        for input in &[
+            &b"19700101-00:00:00"[..],
+            &b"20260602-14:30:00"[..],
+            &b"20260602-14:30:00.123"[..],
+            &b"20260602-14:30:00.123456"[..],
+            &b"20260602-14:30:00.123456789"[..],
+        ] {
+            let ts = FixTimestamp::parse(input).unwrap();
+            let mut buf = [0u8; 27];
+            let n = ts.encode(&mut buf);
+            assert_eq!(
+                &buf[..n],
+                *input,
+                "roundtrip failed for {:?}",
+                core::str::from_utf8(input).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn int_roundtrip() {
+        for val in [0i64, 1, -1, 42, -42, 12345, -12345, i64::MAX, i64::MIN] {
+            let s = val.to_string();
+            let parsed = parse_fix_int(s.as_bytes()).unwrap();
+            assert_eq!(parsed, val);
+            let mut buf = [0u8; 20];
+            let n = encode_fix_int(parsed, &mut buf);
+            assert_eq!(&buf[..n], s.as_bytes(), "roundtrip failed for {val}");
+        }
+    }
+
     // -- nexus-decimal conversions --
 
     #[cfg(feature = "nexus-decimal")]
@@ -1121,7 +1772,6 @@ mod tests {
         fn to_i128_decimal_narrowing() {
             let d = FixDecimal::parse(b"1.123456789").unwrap();
             let dec: Decimal<i128, 4> = d.into();
-            // Truncates: 1123456789 / 10^5 = 11234
             assert_eq!(dec.to_raw(), 11234);
         }
 
@@ -1154,6 +1804,51 @@ mod tests {
             let d = FixDecimal::parse(b"999999999.99").unwrap();
             let result: Result<Decimal<i32, 4>, _> = d.try_into();
             assert!(result.is_err());
+        }
+
+        // -- Reverse: Decimal → FixDecimal --
+
+        #[test]
+        fn from_i64_decimal() {
+            let dec = Decimal::<i64, 8>::from_raw(9_950_000_000);
+            let d: FixDecimal = dec.into();
+            assert_eq!(d.mantissa, 9_950_000_000);
+            assert_eq!(d.scale, 8);
+        }
+
+        #[test]
+        fn from_i32_decimal() {
+            let dec = Decimal::<i32, 4>::from_raw(12500);
+            let d: FixDecimal = dec.into();
+            assert_eq!(d.mantissa, 12500);
+            assert_eq!(d.scale, 4);
+        }
+
+        #[test]
+        fn from_i128_decimal_ok() {
+            let dec = Decimal::<i128, 8>::from_raw(12_345_000_000);
+            let d: FixDecimal = dec.try_into().unwrap();
+            assert_eq!(d.mantissa, 12_345_000_000);
+            assert_eq!(d.scale, 8);
+        }
+
+        #[test]
+        fn from_i128_decimal_overflow() {
+            let dec = Decimal::<i128, 8>::from_raw(i128::MAX);
+            let result: Result<FixDecimal, _> = dec.try_into();
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn decimal_roundtrip_through_nexus_decimal() {
+            let d = FixDecimal::parse(b"99.50").unwrap();
+            let dec: Decimal<i64, 8> = d.try_into().unwrap();
+            let back: FixDecimal = dec.into();
+            assert_eq!(back.mantissa, 9_950_000_000);
+            assert_eq!(back.scale, 8);
+            let f1: f64 = d.into();
+            let f2: f64 = back.into();
+            assert!((f1 - f2).abs() < 1e-10);
         }
     }
 }
