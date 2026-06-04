@@ -175,10 +175,10 @@ fn emit_entry_accessors(s: &mut String, base: &str, g: &RGroup) {
     let mut seen = HashSet::new();
     for mem in &g.members {
         match mem {
-            RMember::Field(f) if seen.insert(f.number) => emit_value_accessor(s, f),
+            RMember::Field(f) if seen.insert(f.number) => emit_value_accessor(s, f, "self.buf"),
             RMember::Group(inner) if seen.insert(inner.number) => {
                 let iter = format!("{}Iter", group_type(base, &inner.name));
-                emit_group_accessor(s, &snake(&inner.name), &iter);
+                emit_group_accessor(s, &snake(&inner.name), &iter, "self.buf");
             }
             _ => {}
         }

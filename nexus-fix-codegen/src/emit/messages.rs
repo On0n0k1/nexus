@@ -47,14 +47,19 @@ fn emit_message(s: &mut String, m: &RMessage) {
 
     emit_struct(s, &ty, &tops);
     let _ = writeln!(s, "impl<'buf> {ty}<'buf> {{");
-    emit_decode(s, &tops, &data_handled, &data_after);
+    emit_wrap(s, &ty, &tops, &data_handled, &data_after);
+    emit_decode(s);
     emit_is_complete(s, &tops);
+    emit_header_delegates(s);
     emit_accessors(s, &tops, &m.name);
     s.push_str("}\n\n");
 }
 
 fn emit_struct(s: &mut String, ty: &str, tops: &[Top]) {
-    let _ = writeln!(s, "pub struct {ty}<'buf> {{\n    buf: &'buf [u8],");
+    let _ = writeln!(
+        s,
+        "pub struct {ty}<'buf> {{\n    header: super::header::HeaderDecoder<'buf>,"
+    );
     let mut seen = HashSet::new();
     for t in tops {
         match t {
@@ -67,17 +72,21 @@ fn emit_struct(s: &mut String, ty: &str, tops: &[Top]) {
             _ => {}
         }
     }
+    s.push_str("    checksum: nexus_fix_codec::FieldSpan,\n");
     s.push_str("}\n\n");
 }
 
-fn emit_decode(
+fn emit_wrap(
     s: &mut String,
+    _ty: &str,
     tops: &[Top],
     data_handled: &HashSet<u32>,
     data_after: &HashMap<u32, &RField>,
 ) {
-    s.push_str("    pub fn decode(buf: &'buf [u8]) -> Self {\n");
-    s.push_str("        let mut m = Self {\n            buf,\n");
+    s.push_str(
+        "    pub fn wrap(header: super::header::HeaderDecoder<'buf>) -> Result<Self, nexus_fix_codec::DecodeError> {\n",
+    );
+    s.push_str("        let mut m = Self {\n            header,\n");
     let mut seen = HashSet::new();
     for t in tops {
         match t {
@@ -98,6 +107,7 @@ fn emit_decode(
             _ => {}
         }
     }
+    s.push_str("            checksum: nexus_fix_codec::FieldSpan::EMPTY,\n");
     s.push_str("        };\n");
 
     let mut arms: Vec<(String, String)> = Vec::new();
@@ -126,37 +136,58 @@ fn emit_decode(
         }
     }
 
-    emit_dispatch(s, &arms);
-    s.push_str("        m\n    }\n\n");
+    if !arms.is_empty() {
+        let needs_buf = arms.iter().any(|(_, body)| body.contains("buf"));
+        if needs_buf {
+            s.push_str("        let buf = m.header.reader.buf();\n");
+        }
+        emit_wrap_loop(s, &arms);
+    }
+
+    s.push_str("        if m.checksum.is_present() {\n");
+    s.push_str(
+        "            m.header.reader.verify_checksum(m.checksum).map_err(nexus_fix_codec::DecodeError::Checksum)?;\n",
+    );
+    s.push_str("        }\n");
+    s.push_str("        Ok(m)\n    }\n\n");
 }
 
-fn emit_dispatch(s: &mut String, arms: &[(String, String)]) {
-    if arms.is_empty() {
-        return;
-    }
-    s.push_str("        let mut r = nexus_fix_codec::FieldReader::new(buf, 0);\n");
-    s.push_str("        while let Some(f) = r.next_field() {\n");
-    if let [(tag, body)] = arms {
-        let _ = writeln!(s, "            if f.tag == super::fields::TAG_{tag} {{");
+fn emit_wrap_loop(s: &mut String, arms: &[(String, String)]) {
+    // Drain overflow field from header, then continue the reader
+    s.push_str("        loop {\n");
+    s.push_str("            let f = if let Some(of) = m.header.overflow.take() {\n");
+    s.push_str("                of\n");
+    s.push_str("            } else {\n");
+    s.push_str("                match m.header.reader.next_field() {\n");
+    s.push_str("                    Some(f) => f,\n");
+    s.push_str("                    None => break,\n");
+    s.push_str("                }\n");
+    s.push_str("            };\n");
+
+    s.push_str("            match f.tag {\n");
+    for (tag, body) in arms {
+        let _ = writeln!(s, "                super::fields::TAG_{tag} => {{");
         s.push_str(body);
-        s.push_str("            }\n");
-    } else {
-        s.push_str("            match f.tag {\n");
-        for (tag, body) in arms {
-            let _ = writeln!(s, "                super::fields::TAG_{tag} => {{");
-            s.push_str(body);
-            s.push_str("                }\n");
-        }
-        s.push_str("                _ => {}\n            }\n");
+        s.push_str("                }\n");
     }
+    s.push_str("                10 => m.checksum = f.value,\n");
+    s.push_str("                _ => {}\n            }\n");
     s.push_str("        }\n");
+}
+
+fn emit_decode(s: &mut String) {
+    s.push_str(
+        "    pub fn decode(buf: &'buf [u8]) -> Result<Self, nexus_fix_codec::DecodeError> {\n",
+    );
+    s.push_str("        Self::wrap(super::header::HeaderDecoder::decode(buf))\n");
+    s.push_str("    }\n\n");
 }
 
 fn data_body(len: &RField, data: &RField) -> String {
     let mut b = String::new();
     let _ = writeln!(b, "                m.{} = f.value;", snake(&len.name));
     b.push_str("                let (n, _) = nexus_fix_codec::parse_tag(f.value.slice(buf));\n");
-    b.push_str("                let dstart = r.pos();\n");
+    b.push_str("                let dstart = m.header.reader.pos();\n");
     b.push_str("                let (_, dtl) = nexus_fix_codec::parse_tag(&buf[dstart..]);\n");
     b.push_str("                let vstart = dstart + dtl + 1;\n");
     b.push_str("                let dlen = (n as usize).min(buf.len().saturating_sub(vstart));\n");
@@ -166,7 +197,7 @@ fn data_body(len: &RField, data: &RField) -> String {
         snake(&data.name)
     );
     b.push_str(
-        "                r = nexus_fix_codec::FieldReader::new(buf, (vstart + dlen + 1).min(buf.len()));\n",
+        "                m.header.reader = nexus_fix_codec::FieldReader::new(buf, (vstart + dlen + 1).min(buf.len()));\n",
     );
     b
 }
@@ -181,18 +212,20 @@ fn group_body(g: &RGroup) -> String {
     );
     let _ = writeln!(
         b,
-        "                m.{} = nexus_fix_codec::GroupSpan::new(r.pos() as u32, count.min(u16::MAX as u32) as u16);",
+        "                m.{} = nexus_fix_codec::GroupSpan::new(m.header.reader.pos() as u32, count.min(u16::MAX as u32) as u16);",
         snake(&g.name)
     );
     b.push_str("                loop {\n");
-    b.push_str("                    let mark = r.pos();\n");
-    b.push_str("                    match r.next_field() {\n");
+    b.push_str("                    let mark = m.header.reader.pos();\n");
+    b.push_str("                    match m.header.reader.next_field() {\n");
     let _ = writeln!(
         b,
         "                        Some(gf) if matches!(gf.tag, {pat}) => {{}}"
     );
     b.push_str("                        _ => {\n");
-    b.push_str("                            r = nexus_fix_codec::FieldReader::new(buf, mark);\n");
+    b.push_str(
+        "                            m.header.reader = nexus_fix_codec::FieldReader::new(buf, mark);\n",
+    );
     b.push_str("                            break;\n");
     b.push_str("                        }\n");
     b.push_str("                    }\n                }\n");
@@ -224,15 +257,22 @@ fn emit_is_complete(s: &mut String, tops: &[Top]) {
     );
 }
 
+fn emit_header_delegates(s: &mut String) {
+    s.push_str(
+        "    pub fn header(&self) -> &super::header::HeaderDecoder<'buf> { &self.header }\n\n",
+    );
+}
+
 fn emit_accessors(s: &mut String, tops: &[Top], msg_name: &str) {
     let prefix = pascal(msg_name);
+    let buf_expr = "self.header.reader.buf()";
     let mut seen = HashSet::new();
     for t in tops {
         match t {
-            Top::Field(f) if seen.insert(f.number) => emit_value_accessor(s, f),
+            Top::Field(f) if seen.insert(f.number) => emit_value_accessor(s, f, buf_expr),
             Top::Group(g) if seen.insert(g.number) => {
                 let iter = format!("{}Iter", group_type(&prefix, &g.name));
-                emit_group_accessor(s, &snake(&g.name), &iter);
+                emit_group_accessor(s, &snake(&g.name), &iter, buf_expr);
             }
             _ => {}
         }

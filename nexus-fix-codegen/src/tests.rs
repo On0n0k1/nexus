@@ -38,8 +38,18 @@ fn emits_message_decoder_and_group() {
     let files = emit::generate(&d).unwrap();
     let messages = file(&files, "messages.rs");
     assert!(messages.contains("pub struct NewOrderSingle<'buf>"));
-    assert!(messages.contains("pub fn decode(buf: &'buf [u8]) -> Self"));
+    assert!(messages.contains("pub fn wrap(header: super::header::HeaderDecoder<'buf>) -> Result<Self, nexus_fix_codec::DecodeError>"));
+    assert!(
+        messages.contains(
+            "pub fn decode(buf: &'buf [u8]) -> Result<Self, nexus_fix_codec::DecodeError>"
+        )
+    );
     assert!(messages.contains("pub fn is_complete(&self) -> bool"));
+    assert!(messages.contains("pub fn header(&self) -> &super::header::HeaderDecoder<'buf>"));
+    let header = file(&files, "header.rs");
+    assert!(header.contains("pub struct HeaderDecoder<'buf>"));
+    assert!(header.contains("pub fn decode(buf: &'buf [u8]) -> Self"));
+    assert!(header.contains("pub fn msg_type_enum(&self) -> Option<super::MsgType>"));
     let groups = file(&files, "groups.rs");
     assert!(groups.contains("NewOrderSingleNoPartyIDsEntry"));
     assert!(groups.contains("NewOrderSingleNoPartyIDsNoPartySubIDsEntry"));

@@ -85,10 +85,30 @@ impl<'a> FieldReader<'a> {
         (self.checksum & 0xFF) as u8
     }
 
+    /// The underlying message buffer.
+    #[inline]
+    pub fn buf(&self) -> &'a [u8] {
+        self.buf
+    }
+
     /// Where the next field would start (after the last SOH + 1).
     #[inline]
     pub fn pos(&self) -> usize {
         self.field_start
+    }
+
+    /// Validate the accumulated checksum against a tag 10 field value.
+    ///
+    /// Parses the 3-digit ASCII value from `checksum_span` and compares
+    /// it to the running byte sum. Only meaningful after a complete scan.
+    pub fn verify_checksum(&self, checksum_span: FieldSpan) -> Result<(), ChecksumError> {
+        let expected = parse_checksum_bytes(checksum_span.slice(self.buf));
+        let computed = self.checksum();
+        if expected == computed {
+            Ok(())
+        } else {
+            Err(ChecksumError { expected, computed })
+        }
     }
 
     /// Parse the next `tag=value\x01` field.

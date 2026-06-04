@@ -10,7 +10,19 @@ pub enum FieldType {
     Int,
     SeqNum,
     Bool,
-    Ascii,
+    String,
+    Char,
+    Float,
+    Timestamp,
+    Date,
+    Time,
+    MonthYear,
+    DayOfMonth,
+    TzTime,
+    TzTimestamp,
+    Tenor,
+    MultiChar,
+    MultiString,
 }
 
 impl FieldType {
@@ -22,7 +34,19 @@ impl FieldType {
             "INT" => Self::Int,
             "SEQNUM" => Self::SeqNum,
             "BOOLEAN" => Self::Bool,
-            _ => Self::Ascii,
+            "CHAR" => Self::Char,
+            "FLOAT" | "PRICE" | "QTY" | "AMT" | "PERCENTAGE" | "PRICEOFFSET" => Self::Float,
+            "UTCTIMESTAMP" => Self::Timestamp,
+            "UTCDATEONLY" | "LOCALMKTDATE" => Self::Date,
+            "UTCTIMEONLY" => Self::Time,
+            "MONTHYEAR" => Self::MonthYear,
+            "DAYOFMONTH" => Self::DayOfMonth,
+            "TZTIMEONLY" => Self::TzTime,
+            "TZTIMESTAMP" => Self::TzTimestamp,
+            "TENOR" => Self::Tenor,
+            "MULTIPLECHARVALUE" | "MULTIPLEVALUESTRING" => Self::MultiChar,
+            "MULTIPLESTRINGVALUE" => Self::MultiString,
+            _ => Self::String,
         }
     }
 }

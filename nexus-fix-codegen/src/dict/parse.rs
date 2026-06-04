@@ -109,7 +109,7 @@ fn field_def(e: &BytesStart, values: Vec<EnumValue>) -> Result<FieldDef, ParseEr
     let number = number_str
         .parse::<u32>()
         .map_err(|_| ParseError::BadNumber(number_str))?;
-    let ftype = opt_attr(e, "type")?.map_or(FieldType::Ascii, |t| FieldType::from_str(&t));
+    let ftype = opt_attr(e, "type")?.map_or(FieldType::String, |t| FieldType::from_str(&t));
     Ok(FieldDef {
         number,
         name: req_attr(e, "name")?,
