@@ -629,8 +629,7 @@ fn alpha_group_view_len_and_empty() {
     let view = m.no_party_i_ds();
     assert_eq!(view.len(), 2);
     assert!(!view.is_empty());
-    let parties: Vec<_> = view.collect();
-    assert_eq!(parties.len(), 2);
+    assert_eq!(view.count(), 2);
 }
 
 #[test]
@@ -640,7 +639,7 @@ fn alpha_group_view_absent() {
     let view = m.no_party_i_ds();
     assert_eq!(view.len(), 0);
     assert!(view.is_empty());
-    assert_eq!(view.collect::<Vec<_>>().len(), 0);
+    assert_eq!(view.count(), 0);
 }
 
 #[test]
