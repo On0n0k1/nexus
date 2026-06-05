@@ -1,18 +1,12 @@
 //! Sans-IO FIX session layer.
 //!
-//! [`Session`] is a pure state machine: the caller owns the transport,
-//! the clock, and the encode buffer. Inbound messages go in through
-//! [`Session::handle_message`], time goes in through
-//! [`Session::handle_timeout`], and the session communicates back through
-//! drained [`Event`]s and pending admin messages encoded on demand with
-//! [`Session::encode_pending`].
-//!
-//! The session never allocates after construction. Admin messages
-//! (Logon, Logout, Heartbeat, TestRequest, ResendRequest, SequenceReset,
-//! Reject) are handled internally; application messages surface as
-//! [`Event::App`] and the caller decodes them from its own buffer.
+//! [`SessionState`] is a pure state machine: the caller owns the transport,
+//! the clock, and the wire encoding. Each typed handler (e.g.
+//! [`SessionState::on_logon`], [`SessionState::on_app`]) receives pre-decoded
+//! fields and returns an [`Out`] containing any outbound admin messages and a
+//! session event. The framework layer above encodes those messages and drives
+//! the transport.
 
 mod session;
-mod timestamp;
 
-pub use session::{DisconnectReason, Event, Session, SessionConfig, State};
+pub use session::{AdminMsg, DisconnectReason, Event, Out, SessionState, State};

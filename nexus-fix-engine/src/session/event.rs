@@ -32,7 +32,7 @@ pub enum DisconnectReason {
     ProtocolViolation,
 }
 
-/// Session event drained via [`Session::poll_event`](super::Session::poll_event).
+/// Session event returned in [`Out::event`](super::Out::event).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Event {
     /// Logon exchange completed; the session is live.
