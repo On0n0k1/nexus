@@ -8,7 +8,7 @@ with the project-specific allowance that a minor bump may carry small,
 narrowly-scoped breaking changes when external blast radius is
 contained.
 
-## [3.0.1] — 2026-06-04
+## [Unreleased]
 
 ### Changed
 

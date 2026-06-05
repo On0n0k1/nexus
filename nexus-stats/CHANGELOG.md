@@ -8,6 +8,12 @@ with the project-specific allowance that a minor bump may carry small,
 narrowly-scoped breaking changes when external blast radius is
 contained.
 
+## [Unreleased]
+
+### Changed
+
+- **nexus-stats-core** — Replaced `EventRateF64` with `EventRateU64` / `EventRateI64` using integer timestamps and bit-shift EMA. See core CHANGELOG for details.
+
 ## [6.0.0] — 2026-05-28
 
 Type-variant audit: removed F32, I32, and I128 type variants across all
