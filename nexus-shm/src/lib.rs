@@ -10,6 +10,7 @@ mod journal;
 mod lock;
 mod pod;
 mod region;
+mod seglog;
 mod segment;
 
 pub use error::ShmError;
@@ -20,4 +21,5 @@ pub use journal::{
 pub use lock::Liveness;
 pub use pod::Pod;
 pub use region::MapOptions;
+pub use seglog::{LogOffset, SegmentedLog, SegmentedLogError};
 pub use segment::{Segment, Status};
