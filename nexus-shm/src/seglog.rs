@@ -9,7 +9,6 @@ use crate::segment::Segment;
 
 const FRAME_HDR: usize = 8;
 const ALIGN: usize = 8;
-const TYPE_DATA: u16 = 0;
 
 const fn align_up(n: usize) -> usize {
     (n + ALIGN - 1) & !(ALIGN - 1)
@@ -19,12 +18,18 @@ const fn footprint(body: usize) -> usize {
     FRAME_HDR + align_up(body)
 }
 
-unsafe fn commit_len_at<'a>(ptr: *mut u8) -> &'a AtomicU32 {
-    unsafe { AtomicU32::from_ptr(ptr.cast()) }
+// Returns a `*mut AtomicU32` pointing at the commit_len field of a frame header.
+// Callers must ensure `ptr` is 4-byte aligned and points into a live mmap'd segment.
+fn commit_len_ptr(ptr: *mut u8) -> *mut AtomicU32 {
+    ptr.cast()
 }
 
 /// Opaque position handle returned by [`SegmentedLog::append`], passed to
 /// [`SegmentedLog::read`]. Valid until the slot it references is rotated out.
+///
+/// Encoding: `[63:34]` = generation, `[33:32]` = slot index, `[31:0]` = local offset.
+/// The default value (`u64::MAX`) encodes slot index 3 (no valid slot), so
+/// [`SegmentedLog::read`] always returns `None` for a default offset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LogOffset(u64);
 
@@ -35,16 +40,20 @@ impl Default for LogOffset {
 }
 
 impl LogOffset {
-    fn new(slot: u8, local_off: usize) -> Self {
-        Self((slot as u64) << 32 | local_off as u64)
+    fn new(slot: u8, local_off: usize, epoch: u32) -> Self {
+        Self((epoch as u64) << 34 | (slot as u64) << 32 | local_off as u64)
     }
 
     fn slot(self) -> usize {
-        (self.0 >> 32) as usize
+        ((self.0 >> 32) & 0x3) as usize
     }
 
     fn local_off(self) -> usize {
         (self.0 & 0xFFFF_FFFF) as usize
+    }
+
+    fn epoch(self) -> u32 {
+        (self.0 >> 34) as u32
     }
 }
 
@@ -94,10 +103,11 @@ unsafe impl Send for CleanRequest {}
 
 fn conductor_main(rx: std::sync::mpsc::Receiver<CleanRequest>, ready: &Arc<AtomicBool>) {
     for req in rx {
-        // Zero commit_len at offset 0 — makes the segment appear empty to any
-        // reader that checks before the next writer publishes a record there.
-        unsafe { commit_len_at(req.data).store(0, Ordering::Release) };
-        let _ = req.segment_size; // may expand cleaning here later
+        // SAFETY: `req.data` points to the start of a live mmap'd segment sent by
+        // `rotate()`. The segment remains mapped until the owning `Slot` drops,
+        // which happens only after `ConductorHandle` drops and this thread joins.
+        unsafe { (*commit_len_ptr(req.data)).store(0, Ordering::Release) };
+        let _ = req.segment_size;
         ready.store(true, Ordering::Release);
     }
 }
@@ -141,6 +151,8 @@ pub struct SegmentedLog {
     prev: usize,
     standby: usize,
     cursor: usize,
+    epoch: u32,
+    slot_gen: [u32; 3],
 }
 
 fn slot_path(base: &Path, i: u8) -> PathBuf {
@@ -174,8 +186,15 @@ impl SegmentedLog {
         let s1 = mk(1)?;
         let s2 = mk(2)?;
 
-        // Ensure slot 0 appears empty — the segment file may carry stale data.
-        unsafe { commit_len_at(s0.data).store(0, Ordering::Relaxed) };
+        // SAFETY: each `sN.data` points to the start of a freshly mapped segment
+        // with at least `FRAME_HDR` bytes and 4-byte alignment guaranteed by mmap.
+        // Zeroing commit_len prevents stale data from a prior run being interpreted
+        // as a committed record by `read()`.
+        unsafe {
+            (*commit_len_ptr(s0.data)).store(0, Ordering::Relaxed);
+            (*commit_len_ptr(s1.data)).store(0, Ordering::Relaxed);
+            (*commit_len_ptr(s2.data)).store(0, Ordering::Relaxed);
+        }
 
         let ready = Arc::new(AtomicBool::new(true));
         let (tx, rx) = std::sync::mpsc::sync_channel(1);
@@ -196,6 +215,10 @@ impl SegmentedLog {
             prev: 1,
             standby: 2,
             cursor: 0,
+            epoch: 0,
+            // Slot 0 is current at generation 0. Slots 1 and 2 hold no valid
+            // data yet; u32::MAX will never match an offset encoded in this run.
+            slot_gen: [0, u32::MAX, u32::MAX],
         })
     }
 
@@ -220,21 +243,28 @@ impl SegmentedLog {
         }
         let off = self.cursor;
         let data = self.slots[self.current].data;
+        // SAFETY: `off + foot <= self.segment_size` (checked above or after rotate).
+        // `data` points into a live mmap'd segment that is at least `segment_size`
+        // bytes. Frame header fields are at 4-byte-aligned offsets within the
+        // segment. The sentinel store at `data.add(next)` is bounds-checked before
+        // it is written.
         unsafe {
             let ptr = data.add(off);
-            std::ptr::write_unaligned(ptr.add(4).cast::<u16>(), TYPE_DATA);
-            std::ptr::write_unaligned(ptr.add(6).cast::<u16>(), 0u16);
             std::ptr::copy_nonoverlapping(payload.as_ptr(), ptr.add(FRAME_HDR), body);
             let next = off + foot;
             if next + FRAME_HDR <= self.segment_size {
-                commit_len_at(data.add(next)).store(0, Ordering::Relaxed);
+                (*commit_len_ptr(data.add(next))).store(0, Ordering::Relaxed);
             }
             // Store body+1 so that 0 remains the unambiguous "not committed" sentinel,
             // allowing empty payloads (body=0) to be stored and read back correctly.
-            commit_len_at(ptr).store((body as u32).wrapping_add(1), Ordering::Release);
+            (*commit_len_ptr(ptr)).store((body as u32).wrapping_add(1), Ordering::Release);
         }
         self.cursor += foot;
-        Ok(LogOffset::new(self.current as u8, off))
+        Ok(LogOffset::new(
+            self.current as u8,
+            off,
+            self.slot_gen[self.current],
+        ))
     }
 
     /// Return the payload stored at `offset`, or `None` if the slot has been
@@ -244,11 +274,18 @@ impl SegmentedLog {
         if slot != self.current && slot != self.prev {
             return None;
         }
+        if offset.epoch() != self.slot_gen[slot] {
+            return None;
+        }
         let off = offset.local_off();
         let data = self.slots[slot].data;
+        // SAFETY: `slot` is either `current` or `prev`, both of which hold live
+        // mmap'd segments. `off` is a value previously returned by `append()` for
+        // this slot, so `off < segment_size`. The bounds check on `off + FRAME_HDR
+        // + body` prevents reading past the end of the segment.
         unsafe {
             let ptr = data.add(off);
-            let stored = commit_len_at(ptr).load(Ordering::Acquire);
+            let stored = (*commit_len_ptr(ptr)).load(Ordering::Acquire);
             if stored == 0 {
                 return None;
             }
@@ -269,6 +306,13 @@ impl SegmentedLog {
         self.current = self.standby;
         self.standby = old_prev;
         self.cursor = 0;
+        self.epoch = self.epoch.wrapping_add(1);
+        self.slot_gen[self.current] = self.epoch;
+        // TODO: if the conductor gains fallible work (archival, compression), add
+        // error propagation here — the current `let _ =` would silently swallow
+        // conductor failures. A flush-on-exit signal (distinct from channel close)
+        // will also be needed if we require the final segment to be archived before
+        // dropping.
         self.conductor.ready.store(false, Ordering::Release);
         let _ = self.conductor.tx.as_ref().map(|tx| {
             tx.try_send(CleanRequest {
@@ -368,6 +412,42 @@ mod tests {
         log.append(&[0u8; 1]).unwrap();
         // slot 0 is standby → no longer readable
         assert_eq!(log.read(o0), None);
+        cleanup(&b);
+    }
+
+    #[test]
+    fn stale_offset_after_full_cycle_returns_none() {
+        let b = base("gen");
+        cleanup(&b);
+        // footprint(8) = 16; 4 records per segment; segment_size = 64
+        let mut log = open(&b, 64);
+        // Write to slot 0 (gen 0)
+        let stale = log.append(&[0u8; 8]).unwrap();
+        for _ in 0..3 {
+            log.append(&[0u8; 8]).unwrap();
+        }
+        // Rotation 1: slot 2 → current (gen 1), slot 0 → prev
+        for _ in 0..4 {
+            log.append(&[0u8; 8]).unwrap();
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !log.conductor.ready.load(Ordering::Acquire) {
+            assert!(std::time::Instant::now() < deadline, "conductor timed out");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // Rotation 2: slot 1 → current (gen 2), slot 2 → prev, slot 0 → standby
+        for _ in 0..4 {
+            log.append(&[0u8; 8]).unwrap();
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !log.conductor.ready.load(Ordering::Acquire) {
+            assert!(std::time::Instant::now() < deadline, "conductor timed out");
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        // Rotation 3: slot 0 → current (gen 3), slot 1 → prev, slot 2 → standby.
+        // Slot 0 is current again — same slot index as `stale` — but gen 3 != gen 0.
+        log.append(&[0u8; 8]).unwrap();
+        assert_eq!(log.read(stale), None);
         cleanup(&b);
     }
 
