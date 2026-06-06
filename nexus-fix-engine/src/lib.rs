@@ -7,6 +7,8 @@
 //! session event. The framework layer above encodes those messages and drives
 //! the transport.
 
+mod framework;
 mod session;
 
+pub use framework::{CompId, Session, SessionConfig, SessionError};
 pub use session::{AdminMsg, DisconnectReason, Event, Out, SessionState, State};
