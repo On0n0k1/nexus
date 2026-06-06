@@ -34,10 +34,11 @@ fn session_id_ptr(ptr: *mut u8) -> *mut u32 {
 ///
 /// Provides access to the session tag, global offset, and payload bytes
 /// without copying from the underlying mmap'd segment.
+#[repr(C)]
 pub struct Frame<'buf> {
-    session_id: u32,
-    offset: u64,
     payload: &'buf [u8],
+    offset: u64,
+    session_id: u32,
 }
 
 impl<'buf> Frame<'buf> {
