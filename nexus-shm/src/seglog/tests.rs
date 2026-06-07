@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 use super::frame::footprint;
-use super::{Conductor, ConductorBuilder, LogError, OpenError, SegmentedLog};
+use super::{Conductor, ConductorBuilder, OpenError, SegmentedLog};
 
 struct TempDir(PathBuf);
 
