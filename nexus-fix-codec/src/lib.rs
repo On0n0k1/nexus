@@ -27,7 +27,7 @@ pub mod reader;
 pub mod scan;
 pub mod writer;
 
-pub use dict::{FixDictionary, FixHeader};
+pub use dict::{FixAdminMsg, FixDictionary, FixHeader};
 pub use error::{ChecksumError, DecodeError, EncodeError, FixValueError};
 pub use field::{FieldView, FromFixValue};
 pub use nexus_ascii::{AsciiChar, AsciiText, AsciiTextStr};

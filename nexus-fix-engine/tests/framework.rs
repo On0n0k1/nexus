@@ -1,7 +1,9 @@
 use std::time::{Duration, Instant};
 
-use nexus_fix_codec::{FieldView, FixDictionary, FixHeader, FixTimestamp, find_tag};
-use nexus_fix_engine::{AdminMsg, CompId, Event, Out, Session, SessionConfig, SessionState, State};
+use nexus_fix_codec::{FieldView, FixAdminMsg, FixDictionary, FixHeader, FixTimestamp, find_tag};
+use nexus_fix_engine::{
+    CompId, DisconnectReason, Message, Session, SessionConfig, SessionState, State,
+};
 
 // ── minimal mock dictionary ──────────────────────────────────────────────────
 
@@ -10,9 +12,49 @@ struct MockDict;
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 enum MockMsgType {}
 
+// Minimal find_tag-based admin decoder used for all 7 types in the mock.
+struct AdminDecoder<'buf> {
+    buf: &'buf [u8],
+}
+
+impl<'buf> FixAdminMsg<'buf> for AdminDecoder<'buf> {
+    fn decode(buf: &'buf [u8]) -> Result<Self, nexus_fix_codec::DecodeError> {
+        Ok(Self { buf })
+    }
+}
+
+impl<'buf> AdminDecoder<'buf> {
+    fn heart_bt_int(&self) -> Option<FieldView<'buf, u32>> {
+        find_tag(self.buf, 0, 108).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn test_req_id(&self) -> Option<FieldView<'buf, &'buf nexus_fix_codec::AsciiTextStr>> {
+        find_tag(self.buf, 0, 112).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn begin_seq_no(&self) -> Option<FieldView<'buf, u64>> {
+        find_tag(self.buf, 0, 7).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn end_seq_no(&self) -> Option<FieldView<'buf, u64>> {
+        find_tag(self.buf, 0, 16).and_then(|s| FieldView::new(s, self.buf))
+    }
+
+    fn new_seq_no(&self) -> Option<FieldView<'buf, u64>> {
+        find_tag(self.buf, 0, 36).and_then(|s| FieldView::new(s, self.buf))
+    }
+}
+
 impl FixDictionary for MockDict {
     type MsgType = MockMsgType;
     type Header<'buf> = MockHeader<'buf>;
+    type Logon<'buf> = AdminDecoder<'buf>;
+    type Logout<'buf> = AdminDecoder<'buf>;
+    type Heartbeat<'buf> = AdminDecoder<'buf>;
+    type TestRequest<'buf> = AdminDecoder<'buf>;
+    type ResendRequest<'buf> = AdminDecoder<'buf>;
+    type SequenceReset<'buf> = AdminDecoder<'buf>;
+    type Reject<'buf> = AdminDecoder<'buf>;
     const BEGIN_STRING: &'static [u8] = b"FIX.4.4";
     fn is_admin(_: MockMsgType) -> bool {
         false
@@ -66,11 +108,6 @@ fn session() -> Session<MockDict> {
     Session::new(state, config)
 }
 
-fn admin_msgs(out: Out) -> Vec<AdminMsg> {
-    out.admin_messages().collect()
-}
-
-// Minimal valid Logon buffer — tags needed by Session<MockDict>.on_message.
 // 49=TARGET (their sender = our target), 56=SENDER (their target = our sender).
 fn logon(seq: u32, hbi: u32) -> Vec<u8> {
     let mut v = Vec::new();
@@ -120,19 +157,12 @@ fn app_msg(seq: u32) -> Vec<u8> {
 fn acceptor_logon() {
     let mut s = session();
     let msg = logon(1, 30);
-    let (out, hdr) = s.on_message(&msg, Instant::now()).unwrap();
-    assert!(hdr.is_none());
+    let m = s.on_message(&msg, Instant::now()).unwrap();
+    assert!(matches!(m, Message::LogonRequest { .. }));
     assert_eq!(s.state().state(), State::Active);
-    assert_eq!(out.event(), Some(Event::Established { heart_bt_int_s: 30 }));
-    let admins = admin_msgs(out);
-    assert_eq!(admins.len(), 1);
-    assert!(matches!(
-        admins[0],
-        AdminMsg::Logon {
-            seq: 1,
-            heart_bt_int_s: 30
-        }
-    ));
+    if let Message::LogonRequest { msg } = m {
+        assert_eq!(msg.heart_bt_int().and_then(|v| v.checked().ok()), Some(30));
+    }
 }
 
 #[test]
@@ -143,33 +173,21 @@ fn initiator_logon_reply() {
     assert_eq!(s.state().state(), State::LogonSent);
 
     let msg = logon(1, 30);
-    let (out, hdr) = s.on_message(&msg, now).unwrap();
-    assert!(hdr.is_none());
+    let m = s.on_message(&msg, now).unwrap();
+    assert!(matches!(m, Message::LogonAcknowledged { .. }));
     assert_eq!(s.state().state(), State::Active);
-    assert_eq!(admin_msgs(out).len(), 0);
 }
 
 #[test]
 fn logout_round_trip() {
     let mut s = session();
     let now = Instant::now();
-    let msg = logon(1, 30);
-    s.on_message(&msg, now).unwrap();
+    s.on_message(&logon(1, 30), now).unwrap();
 
     let msg = logout(2);
-    let (out, _) = s.on_message(&msg, now).unwrap();
+    let m = s.on_message(&msg, now).unwrap();
+    assert!(matches!(m, Message::LogoutRequest { .. }));
     assert_eq!(s.state().state(), State::Disconnected);
-    assert_eq!(
-        out.event(),
-        Some(Event::Disconnected {
-            reason: nexus_fix_engine::DisconnectReason::Logout,
-        })
-    );
-    assert!(
-        admin_msgs(out)
-            .iter()
-            .any(|a| matches!(a, AdminMsg::Logout { .. }))
-    );
 }
 
 #[test]
@@ -178,36 +196,32 @@ fn heartbeat_is_handled() {
     let now = Instant::now();
     s.on_message(&logon(1, 30), now).unwrap();
 
-    let msg = heartbeat(2);
-    let (out, hdr) = s.on_message(&msg, now).unwrap();
-    assert!(hdr.is_none());
-    assert_eq!(admin_msgs(out).len(), 0);
+    let hb = heartbeat(2);
+    let m = s.on_message(&hb, now).unwrap();
+    assert!(matches!(m, Message::Heartbeat { .. }));
 }
 
 #[test]
-fn test_request_echoed_as_heartbeat() {
+fn test_request_surfaces_id() {
     let mut s = session();
     let now = Instant::now();
     s.on_message(&logon(1, 30), now).unwrap();
 
     let msg = test_request(2, "PROBE1");
-    let (out, hdr) = s.on_message(&msg, now).unwrap();
-    assert!(hdr.is_none());
-    let admins = admin_msgs(out);
-    assert_eq!(admins.len(), 1);
-    match admins[0] {
-        AdminMsg::Heartbeat {
-            echo: Some((id, len)),
-            ..
-        } => {
-            assert_eq!(&id[..len as usize], b"PROBE1");
-        }
-        _ => panic!("expected Heartbeat with echo"),
+    let m = s.on_message(&msg, now).unwrap();
+    if let Message::TestRequest { msg } = m {
+        let id = msg
+            .test_req_id()
+            .and_then(|v| v.checked().ok())
+            .map(nexus_fix_codec::AsciiTextStr::as_bytes);
+        assert_eq!(id, Some(b"PROBE1".as_ref()));
+    } else {
+        panic!("expected TestRequest");
     }
 }
 
 #[test]
-fn resend_request_triggers_gap_fill() {
+fn resend_request_fields() {
     let mut s = session();
     let now = Instant::now();
     s.on_message(&logon(1, 30), now).unwrap();
@@ -215,16 +229,14 @@ fn resend_request_triggers_gap_fill() {
     s.state_mut().allocate_seq(now); // seq 3
 
     let msg = resend_request(2, 2, 3);
-    let (out, _) = s.on_message(&msg, now).unwrap();
-    assert!(matches!(
-        out.event(),
-        Some(Event::ResendRange { begin: 2, end: 3 })
-    ));
-    assert!(
-        admin_msgs(out)
-            .iter()
-            .any(|a| matches!(a, AdminMsg::SequenceReset { .. }))
-    );
+    let m = s.on_message(&msg, now).unwrap();
+    if let Message::ResendRequest { msg } = m {
+        assert_eq!(msg.begin_seq_no().and_then(|v| v.checked().ok()), Some(2));
+        assert_eq!(msg.end_seq_no().and_then(|v| v.checked().ok()), Some(3));
+    } else {
+        panic!("expected ResendRequest");
+    }
+    assert_eq!(s.state().state(), State::Active);
 }
 
 #[test]
@@ -234,15 +246,18 @@ fn sequence_reset_gap_fill() {
     s.on_message(&logon(1, 30), now).unwrap();
 
     // trigger a gap
-    let msg = app_msg(5);
-    s.on_message(&msg, now).unwrap();
+    s.on_message(&app_msg(5), now).unwrap();
     assert_eq!(s.state().state(), State::Resending);
 
     let msg = sequence_reset(2, 6, true);
-    let (out, _) = s.on_message(&msg, now).unwrap();
+    let m = s.on_message(&msg, now).unwrap();
+    if let Message::SequenceReset { msg } = m {
+        assert_eq!(msg.new_seq_no().and_then(|v| v.checked().ok()), Some(6));
+    } else {
+        panic!("expected SequenceReset");
+    }
     assert_eq!(s.state().next_inbound_seq(), 6);
     assert_eq!(s.state().state(), State::Active);
-    assert_eq!(out.event(), Some(Event::SequenceReset { new_seq: 6 }));
 }
 
 #[test]
@@ -252,15 +267,8 @@ fn app_message_surfaces_header() {
     s.on_message(&logon(1, 30), now).unwrap();
 
     let msg = app_msg(2);
-    let (out, hdr) = s.on_message(&msg, now).unwrap();
-    assert!(hdr.is_some());
-    assert_eq!(
-        out.event(),
-        Some(Event::App {
-            seq_num: 2,
-            poss_dup: false
-        })
-    );
+    let m = s.on_message(&msg, now).unwrap();
+    assert!(matches!(m, Message::Application { .. }));
 }
 
 #[test]
@@ -269,14 +277,13 @@ fn comp_id_mismatch_disconnects() {
     let now = Instant::now();
     s.on_message(&logon(1, 30), now).unwrap();
 
-    // Wrong SenderCompID
     let msg = b"34=2\x0135=0\x0149=WRONG\x0156=SENDER\x01";
-    let (out, _) = s.on_message(msg, now).unwrap();
-    assert_eq!(s.state().state(), State::Disconnected);
+    let m = s.on_message(msg, now).unwrap();
     assert!(matches!(
-        out.event(),
-        Some(Event::Disconnected {
-            reason: nexus_fix_engine::DisconnectReason::CompIdMismatch
-        })
+        m,
+        Message::Disconnected {
+            reason: DisconnectReason::CompIdMismatch
+        }
     ));
+    assert_eq!(s.state().state(), State::Disconnected);
 }

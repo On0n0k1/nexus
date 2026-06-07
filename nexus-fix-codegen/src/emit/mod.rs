@@ -1,3 +1,4 @@
+mod admin;
 mod encoders;
 mod fields;
 mod groups;
@@ -114,6 +115,10 @@ pub fn generate(dict: &Dictionary) -> Result<Vec<GeneratedFile>, EmitError> {
         GeneratedFile {
             name: "encoders.rs".to_string(),
             source: encoders::emit(&messages, &header_fields),
+        },
+        GeneratedFile {
+            name: "admin.rs".to_string(),
+            source: admin::emit(&messages),
         },
         GeneratedFile {
             name: "mod.rs".to_string(),
@@ -373,7 +378,8 @@ fn emit_mod(messages: &[RMessage], major: &str, minor: &str) -> String {
     s.push_str("pub mod header { include!(\"header.rs\"); }\n");
     s.push_str("pub mod messages { include!(\"messages.rs\"); }\n");
     s.push_str("pub mod groups { include!(\"groups.rs\"); }\n");
-    s.push_str("pub mod encoders { include!(\"encoders.rs\"); }\n\n");
+    s.push_str("pub mod encoders { include!(\"encoders.rs\"); }\n");
+    s.push_str("pub mod admin { include!(\"admin.rs\"); }\n\n");
 
     let begin_string = if !major.is_empty() && !minor.is_empty() {
         format!("FIX.{major}.{minor}")
@@ -418,6 +424,7 @@ fn emit_mod(messages: &[RMessage], major: &str, minor: &str) -> String {
     s.push_str("impl nexus_fix_codec::FixDictionary for Dict {\n");
     s.push_str("    type MsgType = MsgType;\n");
     s.push_str("    type Header<'buf> = header::HeaderDecoder<'buf>;\n");
+    admin::emit_dict_assoc_types(&mut s);
     let _ = writeln!(
         s,
         "    const BEGIN_STRING: &'static [u8] = {};",
