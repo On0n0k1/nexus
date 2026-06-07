@@ -258,7 +258,10 @@ fn emit_encoder(s: &mut String, m: &RMessage) {
         s,
         "pub struct {enc}<'buf> {{\n    frame: nexus_fix_codec::FrameFormatter<'buf>,\n}}\n\n"
     );
-    let _ = writeln!(s, "#[allow(clippy::elidable_lifetime_names)]\nimpl<'buf> {enc}<'buf> {{");
+    let _ = writeln!(
+        s,
+        "#[allow(clippy::elidable_lifetime_names)]\nimpl<'buf> {enc}<'buf> {{"
+    );
     let _ = write!(
         s,
         "    /// Begin encoding into `buf` (writes `8=`, reserves `9=`, writes `35=`).\n    \
@@ -290,7 +293,10 @@ fn emit_encoder(s: &mut String, m: &RMessage) {
          fn from_formatter(frame: nexus_fix_codec::FrameFormatter<'buf>) -> Self {{\n        \
          Self {{ frame }}\n    }}\n}}\n\n"
     );
-    let _ = writeln!(s, "#[allow(clippy::elidable_lifetime_names)]\nimpl<'buf> {body}<'buf> {{");
+    let _ = writeln!(
+        s,
+        "#[allow(clippy::elidable_lifetime_names)]\nimpl<'buf> {body}<'buf> {{"
+    );
 
     let prefix = pascal(&m.name);
     let mut seen = HashSet::new();
@@ -509,7 +515,10 @@ fn emit_group_encoder_set(
     s.push_str("}\n\n");
 
     // --- GroupEnc impl ---
-    let _ = writeln!(s, "#[allow(clippy::elidable_lifetime_names)]\nimpl<'buf> {group_enc}<'buf> {{");
+    let _ = writeln!(
+        s,
+        "#[allow(clippy::elidable_lifetime_names)]\nimpl<'buf> {group_enc}<'buf> {{"
+    );
 
     // entry()
     let _ = write!(
@@ -579,7 +588,10 @@ fn emit_group_encoder_set(
     s.push_str("}\n\n");
 
     // --- EntryEnc impl ---
-    let _ = writeln!(s, "#[allow(clippy::elidable_lifetime_names)]\nimpl<'buf> {entry_enc}<'buf> {{");
+    let _ = writeln!(
+        s,
+        "#[allow(clippy::elidable_lifetime_names)]\nimpl<'buf> {entry_enc}<'buf> {{"
+    );
 
     let mut seen = HashSet::new();
     for mem in &g.members {

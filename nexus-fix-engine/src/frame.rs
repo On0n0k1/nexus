@@ -263,7 +263,10 @@ impl FrameReader {
         };
 
         let body_start = soh2 + 1;
-        let Some(message_end) = body_start.checked_add(body_len).and_then(|n| n.checked_add(CHECKSUM_LEN)) else {
+        let Some(message_end) = body_start
+            .checked_add(body_len)
+            .and_then(|n| n.checked_add(CHECKSUM_LEN))
+        else {
             return ParseResult::Garbage;
         };
 

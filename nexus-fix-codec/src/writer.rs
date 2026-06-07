@@ -626,10 +626,7 @@ mod tests {
         let mut f = FrameFormatter::new(&mut buf, b"FIX.4.4", b"D");
         f.field(11, b"A");
         let (start, len) = f.finish().unwrap();
-        assert!(
-            start > 0,
-            "right-aligned prefix should start past offset 0"
-        );
+        assert!(start > 0, "right-aligned prefix should start past offset 0");
         let msg = &buf[start..start + len];
         assert!(crate::validate_checksum(msg).is_ok());
         assert!(msg.starts_with(b"8=FIX.4.4\x019="));

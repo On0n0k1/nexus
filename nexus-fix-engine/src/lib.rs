@@ -11,6 +11,8 @@ mod frame;
 mod framework;
 mod session;
 
-pub use frame::{FrameError, FrameReader, FrameReaderBuilder, FrameWriter, FrameWriterBuilder, ReadError};
+pub use frame::{
+    FrameError, FrameReader, FrameReaderBuilder, FrameWriter, FrameWriterBuilder, ReadError,
+};
 pub use framework::{CompId, Session, SessionConfig, SessionError};
 pub use session::{AdminMsg, DisconnectReason, Event, Out, SessionState, State};
