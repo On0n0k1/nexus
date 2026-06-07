@@ -16,8 +16,6 @@ fn wrlck() -> libc::flock {
 }
 
 /// Acquire an exclusive OFD lock on `file`, blocking until available.
-///
-/// Used for serializing session ID counter access across processes.
 pub(crate) fn lock_exclusive_blocking(file: &File) -> Result<(), std::io::Error> {
     fcntl(file.as_fd(), FcntlArg::F_OFD_SETLKW(&wrlck())).map_err(std::io::Error::from)?;
     Ok(())
@@ -26,23 +24,11 @@ pub(crate) fn lock_exclusive_blocking(file: &File) -> Result<(), std::io::Error>
 /// Try to acquire an exclusive OFD lock without blocking.
 ///
 /// Returns `Ok(true)` if the lock was acquired, `Ok(false)` if another
-/// process/fd already holds it.
+/// file description already holds it.
 pub(crate) fn try_lock_exclusive(file: &File) -> Result<bool, std::io::Error> {
     match fcntl(file.as_fd(), FcntlArg::F_OFD_SETLK(&wrlck())) {
         Ok(_) => Ok(true),
         Err(Errno::EAGAIN | Errno::EACCES) => Ok(false),
         Err(e) => Err(std::io::Error::from(e)),
     }
-}
-
-/// Release an exclusive OFD lock.
-pub(crate) fn unlock(file: &File) -> Result<(), std::io::Error> {
-    // SAFETY: same as `wrlck()` — plain C struct, all-zero valid.
-    let mut lk: libc::flock = unsafe { std::mem::zeroed() };
-    lk.l_type = libc::F_UNLCK as libc::c_short;
-    lk.l_whence = libc::SEEK_SET as libc::c_short;
-    lk.l_start = 0;
-    lk.l_len = 0;
-    fcntl(file.as_fd(), FcntlArg::F_OFD_SETLK(&lk)).map_err(std::io::Error::from)?;
-    Ok(())
 }

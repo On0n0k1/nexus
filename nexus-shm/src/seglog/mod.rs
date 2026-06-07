@@ -6,7 +6,6 @@ mod platform;
 #[cfg(test)]
 mod tests;
 
-use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,7 +27,7 @@ const SESSION_LOCK_FILE: &str = "session.lock";
 struct SessionResources {
     tx: std::sync::mpsc::SyncSender<CleanRequest>,
     ready: Arc<AtomicBool>,
-    session_lock: File,
+    session_lock: platform::FileLock,
 }
 
 struct Slot {
@@ -58,7 +57,7 @@ impl<'a> SegmentedLogBuilder<'a> {
     pub(crate) fn new(conductor: &'a mut Conductor) -> Self {
         Self {
             conductor,
-            segment_size: 64 * 1024 * 1024,
+            segment_size: 4 * 1024 * 1024,
             session_id: None,
             name: None,
             pretouch: false,
@@ -127,15 +126,8 @@ impl<'a> SegmentedLogBuilder<'a> {
         let session_dir = self.conductor.dir().join(id.to_string());
         std::fs::create_dir_all(&session_dir)?;
 
-        let session_lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(session_dir.join(SESSION_LOCK_FILE))?;
-        if !platform::try_lock_exclusive(&session_lock)? {
-            return Err(SegmentedLogError::SessionInUse { session_id: id });
-        }
+        let session_lock = platform::FileLock::try_lock(session_dir.join(SESSION_LOCK_FILE))?
+            .ok_or(SegmentedLogError::SessionInUse { session_id: id })?;
 
         let map = self.map_options();
         let size = align_up(self.segment_size.max(FRAME_HDR * 8));
@@ -207,7 +199,7 @@ pub struct SegmentedLog {
     manifest: Manifest,
     tx: std::sync::mpsc::SyncSender<CleanRequest>,
     ready: Arc<AtomicBool>,
-    _session_lock: File,
+    _session_lock: platform::FileLock,
     segment_size: usize,
     session_id: u32,
     current: usize,

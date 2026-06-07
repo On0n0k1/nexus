@@ -1,4 +1,3 @@
-use std::fs::{File, OpenOptions};
 use std::io::{Read as _, Seek, SeekFrom, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -49,22 +48,13 @@ fn conductor_main(rx: std::sync::mpsc::Receiver<CleanRequest>) {
 
 const LOCK_FILE: &str = "conductor.lock";
 
-fn open_lock_file(dir: &Path) -> Result<File, super::SegmentedLogError> {
-    Ok(OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(dir.join(LOCK_FILE))?)
-}
-
-fn read_counter(file: &mut File) -> u32 {
+fn read_counter(file: &mut std::fs::File) -> u32 {
     let mut buf = String::new();
     let _ = file.read_to_string(&mut buf);
     buf.trim().parse().unwrap_or(0)
 }
 
-fn write_counter(file: &mut File, val: u32) {
+fn write_counter(file: &mut std::fs::File, val: u32) {
     let _ = file.seek(SeekFrom::Start(0));
     let _ = file.set_len(0);
     let _ = write!(file, "{val}");
@@ -72,33 +62,26 @@ fn write_counter(file: &mut File, val: u32) {
 
 /// Atomically claim the next session ID using a lock file.
 ///
-/// Opens `{dir}/conductor.lock`, takes an exclusive OFD lock, reads the
-/// current counter, increments it, writes back, and unlocks. The counter
-/// file is a plain ASCII integer for easy inspection.
+/// Acquires an exclusive lock on `{dir}/conductor.lock`, reads the
+/// current counter, increments it, and writes back. The lock is released
+/// when the `FileLock` drops. The counter file is a plain ASCII integer
+/// for easy inspection.
 fn claim_next_session_id(dir: &Path) -> Result<u32, super::SegmentedLogError> {
-    let mut file = open_lock_file(dir)?;
-    platform::lock_exclusive_blocking(&file)?;
-
-    let current = read_counter(&mut file);
+    let mut lock = platform::FileLock::blocking(dir.join(LOCK_FILE))?;
+    let current = read_counter(lock.file());
     let next = current + 1;
-    write_counter(&mut file, next);
-
-    platform::unlock(&file)?;
+    write_counter(lock.file(), next);
     Ok(next)
 }
 
 /// Ensure the counter is at least `id` so future auto-assignments won't
 /// collide with explicitly chosen IDs.
 fn ensure_counter_at_least(dir: &Path, id: u32) -> Result<(), super::SegmentedLogError> {
-    let mut file = open_lock_file(dir)?;
-    platform::lock_exclusive_blocking(&file)?;
-
-    let current = read_counter(&mut file);
+    let mut lock = platform::FileLock::blocking(dir.join(LOCK_FILE))?;
+    let current = read_counter(lock.file());
     if id > current {
-        write_counter(&mut file, id);
+        write_counter(lock.file(), id);
     }
-
-    platform::unlock(&file)?;
     Ok(())
 }
 
