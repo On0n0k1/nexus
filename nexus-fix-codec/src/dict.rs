@@ -10,7 +10,7 @@ use nexus_ascii::AsciiTextStr;
 /// typed accessor methods to read fields.
 pub trait FixAdminMsg<'buf>: Sized {
     /// Construct the decoder from a raw FIX message buffer.
-    fn decode(buf: &'buf [u8]) -> Self;
+    fn decode(buf: &'buf [u8]) -> Result<Self, crate::DecodeError>;
 }
 
 /// Dictionary-level knowledge for a specific FIX version.

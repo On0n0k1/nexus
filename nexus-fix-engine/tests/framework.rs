@@ -18,8 +18,8 @@ struct AdminDecoder<'buf> {
 }
 
 impl<'buf> FixAdminMsg<'buf> for AdminDecoder<'buf> {
-    fn decode(buf: &'buf [u8]) -> Self {
-        Self { buf }
+    fn decode(buf: &'buf [u8]) -> Result<Self, nexus_fix_codec::DecodeError> {
+        Ok(Self { buf })
     }
 }
 

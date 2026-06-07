@@ -54,6 +54,8 @@ pub enum SessionError {
     MissingField { tag: u32 },
     /// A field is present but fails to parse.
     MalformedField { tag: u32 },
+    /// Admin message decoder failed.
+    MalformedMessage,
 }
 
 impl core::fmt::Display for SessionError {
@@ -63,6 +65,7 @@ impl core::fmt::Display for SessionError {
             Self::MissingMsgSeqNum => write!(f, "tag 34 (MsgSeqNum) missing"),
             Self::MissingField { tag } => write!(f, "required tag {tag} missing"),
             Self::MalformedField { tag } => write!(f, "tag {tag} malformed"),
+            Self::MalformedMessage => write!(f, "admin message malformed"),
         }
     }
 }
@@ -178,7 +181,8 @@ impl<D: FixDictionary> Session<D> {
                 let send_reply = !was_logon_sent;
                 self.state
                     .on_logon(seq, heart_bt_int, reset, send_reply, now);
-                let msg = D::Logon::decode(buf);
+                let msg = D::Logon::decode(buf)
+                    .map_err(|_| SessionError::MalformedMessage)?;
                 Ok(if was_logon_sent {
                     Message::LogonAcknowledged { msg }
                 } else {
@@ -188,7 +192,8 @@ impl<D: FixDictionary> Session<D> {
             Some(b"5") => {
                 let was_logout_pending = self.state.state() == State::LogoutPending;
                 self.state.on_logout(seq, poss_dup, now);
-                let msg = D::Logout::decode(buf);
+                let msg = D::Logout::decode(buf)
+                    .map_err(|_| SessionError::MalformedMessage)?;
                 Ok(if was_logout_pending {
                     Message::LogoutAcknowledged { msg }
                 } else {
@@ -198,7 +203,8 @@ impl<D: FixDictionary> Session<D> {
             Some(b"0") => {
                 self.state.on_heartbeat(seq, poss_dup, now);
                 Ok(Message::Heartbeat {
-                    msg: D::Heartbeat::decode(buf),
+                    msg: D::Heartbeat::decode(buf)
+                        .map_err(|_| SessionError::MalformedMessage)?,
                 })
             }
             Some(b"1") => {
@@ -206,7 +212,8 @@ impl<D: FixDictionary> Session<D> {
                     find_tag(buf, 0, 112).map_or_else(|| b"".as_ref(), |s| s.slice(buf));
                 self.state.on_test_request(seq, poss_dup, test_req_id, now);
                 Ok(Message::TestRequest {
-                    msg: D::TestRequest::decode(buf),
+                    msg: D::TestRequest::decode(buf)
+                        .map_err(|_| SessionError::MalformedMessage)?,
                 })
             }
             Some(b"2") => {
@@ -220,7 +227,8 @@ impl<D: FixDictionary> Session<D> {
                     as u32;
                 self.state.on_resend_request(seq, poss_dup, begin, end, now);
                 Ok(Message::ResendRequest {
-                    msg: D::ResendRequest::decode(buf),
+                    msg: D::ResendRequest::decode(buf)
+                        .map_err(|_| SessionError::MalformedMessage)?,
                 })
             }
             Some(b"4") => {
@@ -233,7 +241,8 @@ impl<D: FixDictionary> Session<D> {
                     .unwrap_or(false);
                 self.state.on_sequence_reset(seq, new_seq, gap_fill, now);
                 Ok(Message::SequenceReset {
-                    msg: D::SequenceReset::decode(buf),
+                    msg: D::SequenceReset::decode(buf)
+                        .map_err(|_| SessionError::MalformedMessage)?,
                 })
             }
             Some(b"3") => {
@@ -243,7 +252,8 @@ impl<D: FixDictionary> Session<D> {
                     as u32;
                 self.state.on_reject(seq, poss_dup, ref_seq, now);
                 Ok(Message::Reject {
-                    msg: D::Reject::decode(buf),
+                    msg: D::Reject::decode(buf)
+                        .map_err(|_| SessionError::MalformedMessage)?,
                 })
             }
             Some(_) => {
