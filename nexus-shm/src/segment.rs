@@ -116,7 +116,7 @@ impl Drop for Segment {
 }
 
 fn flags(opts: MapOptions) -> u16 {
-    u16::from(opts.populate) | (u16::from(opts.huge_pages) << 1)
+    u16::from(opts.pretouch) | (u16::from(opts.huge_pages) << 1)
 }
 
 #[cfg(test)]

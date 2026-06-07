@@ -1,20 +1,26 @@
 mod conductor;
 mod error;
 mod frame;
+mod manifest;
 #[cfg(test)]
 mod tests;
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::region::MapOptions;
 use crate::segment::Segment;
 
-use conductor::{CleanRequest, ConductorHandle};
+use conductor::CleanRequest;
 use frame::{ALIGN, FRAME_HDR, align_up, commit_len_ptr, footprint, session_id_ptr};
+use manifest::Manifest;
 
+pub use conductor::Conductor;
 pub use error::SegmentedLogError;
 pub use frame::{Frame, LogOffset};
+
+const MANIFEST_FILE: &str = "journal.manifest";
 
 struct Slot {
     _segment: Segment,
@@ -26,6 +32,122 @@ struct Slot {
 // Concurrent access is governed by the frame-level atomics.
 unsafe impl Send for Slot {}
 
+/// Builder for configuring and opening a [`SegmentedLog`].
+///
+/// Obtained via [`Conductor::builder()`]. The conductor tracks session
+/// ownership and provides the background cleanup thread.
+pub struct SegmentedLogBuilder<'a> {
+    conductor: &'a mut Conductor,
+    segment_size: usize,
+    session_id: Option<u32>,
+    name: Option<String>,
+    pretouch: bool,
+    huge_pages: bool,
+}
+
+impl<'a> SegmentedLogBuilder<'a> {
+    pub(crate) fn new(conductor: &'a mut Conductor) -> Self {
+        Self {
+            conductor,
+            segment_size: 64 * 1024 * 1024,
+            session_id: None,
+            name: None,
+            pretouch: false,
+            huge_pages: false,
+        }
+    }
+
+    pub fn segment_size(mut self, size: usize) -> Self {
+        self.segment_size = size;
+        self
+    }
+
+    pub fn session_id(mut self, id: u32) -> Self {
+        self.session_id = Some(id);
+        self
+    }
+
+    /// Optional display name for the session (max 64 bytes, truncated).
+    pub fn name(mut self, name: &str) -> Self {
+        self.name = Some(name.to_owned());
+        self
+    }
+
+    /// Fault all pages into memory on creation (MAP_POPULATE).
+    pub fn pretouch(mut self, enable: bool) -> Self {
+        self.pretouch = enable;
+        self
+    }
+
+    pub fn huge_pages(mut self, enable: bool) -> Self {
+        self.huge_pages = enable;
+        self
+    }
+
+    fn map_options(&self) -> MapOptions {
+        MapOptions {
+            pretouch: self.pretouch,
+            huge_pages: self.huge_pages,
+        }
+    }
+
+    /// Open or recover a session log.
+    ///
+    /// If the session directory contains an existing manifest, its structural
+    /// config (segment size) takes precedence over the builder's settings.
+    /// Use [`open_strict`](Self::open_strict) to error on mismatch instead.
+    pub fn open(self) -> Result<SegmentedLog, SegmentedLogError> {
+        self.open_inner(false)
+    }
+
+    /// Open or recover a session log, erroring if the manifest's structural
+    /// config does not match the builder's settings.
+    pub fn open_strict(self) -> Result<SegmentedLog, SegmentedLogError> {
+        self.open_inner(true)
+    }
+
+    fn open_inner(self, strict: bool) -> Result<SegmentedLog, SegmentedLogError> {
+        let id = match self.session_id {
+            Some(id) => {
+                self.conductor.register_explicit_id(id)?;
+                id
+            }
+            None => self.conductor.next_session_id()?,
+        };
+
+        if self.conductor.is_active(id) {
+            return Err(SegmentedLogError::SessionInUse { session_id: id });
+        }
+
+        let session_dir = self.conductor.dir().join(id.to_string());
+        std::fs::create_dir_all(&session_dir)?;
+
+        let map = self.map_options();
+        let size = align_up(self.segment_size.max(FRAME_HDR * 8));
+        let name_bytes = self.name.as_deref().unwrap_or("").as_bytes();
+        let tx = self.conductor.sender();
+        let ready = Arc::new(AtomicBool::new(true));
+
+        let mpath = manifest_path(&session_dir);
+        let log = if mpath.exists() {
+            SegmentedLog::recover(&session_dir, size, map, strict, id, tx, Arc::clone(&ready))?
+        } else {
+            SegmentedLog::create_fresh(
+                &session_dir,
+                size,
+                map,
+                id,
+                name_bytes,
+                tx,
+                Arc::clone(&ready),
+            )?
+        };
+
+        self.conductor.mark_active(id);
+        Ok(log)
+    }
+}
+
 /// Three-segment bounded append log with background segment rotation.
 ///
 /// Maintains three fixed mmap'd segments: one active for appends, one
@@ -34,6 +156,18 @@ unsafe impl Send for Slot {}
 /// active becomes readable, clean standby becomes active. The hot-path append
 /// never blocks on cleaning; the conductor must finish before the *next*
 /// rotation (size segments with enough headroom for the expected message rate).
+///
+/// # Directory layout
+///
+/// Each session lives in its own subdirectory under the conductor's root:
+///
+/// ```text
+/// {conductor_dir}/{session_id}/
+///   journal.manifest   <- structural config + epoch + session metadata
+///   seg0.dat           <- rotation slot 0
+///   seg1.dat           <- rotation slot 1
+///   seg2.dat           <- rotation slot 2
+/// ```
 ///
 /// # Global offset addressing
 ///
@@ -61,10 +195,12 @@ unsafe impl Send for Slot {}
 /// segments are readable. Older segments have been handed to the conductor
 /// for cleaning.
 pub struct SegmentedLog {
-    // conductor is dropped first (joins thread), then slots (unmaps memory).
-    conductor: ConductorHandle,
     slots: [Slot; 3],
+    manifest: Manifest,
+    tx: std::sync::mpsc::SyncSender<CleanRequest>,
+    ready: Arc<AtomicBool>,
     segment_size: usize,
+    session_id: u32,
     current: usize,
     prev: usize,
     standby: usize,
@@ -73,26 +209,28 @@ pub struct SegmentedLog {
     slot_gen: [u32; 3],
 }
 
-fn slot_path(base: &Path, i: u8) -> PathBuf {
-    let mut s = base.as_os_str().to_owned();
-    s.push(format!(".seg{i}"));
-    PathBuf::from(s)
+fn seg_path(dir: &Path, i: u8) -> PathBuf {
+    dir.join(format!("seg{i}.dat"))
+}
+
+fn manifest_path(dir: &Path) -> PathBuf {
+    dir.join(MANIFEST_FILE)
 }
 
 impl SegmentedLog {
-    /// Open (or recreate) a three-segment log rooted at `base`.
-    ///
-    /// Segment files are `{base}.seg0`, `{base}.seg1`, `{base}.seg2`.
-    /// `segment_size` is rounded up to an 8-byte boundary.
-    pub fn open(
-        base: &Path,
-        segment_size: usize,
+    fn create_fresh(
+        dir: &Path,
+        size: usize,
         map: MapOptions,
+        session_id: u32,
+        name: &[u8],
+        tx: std::sync::mpsc::SyncSender<CleanRequest>,
+        ready: Arc<AtomicBool>,
     ) -> Result<Self, SegmentedLogError> {
-        let size = align_up(segment_size.max(FRAME_HDR * 8));
+        let manifest = Manifest::create(&manifest_path(dir), size as u64, session_id, name)?;
 
         let mk = |i: u8| -> Result<Slot, SegmentedLogError> {
-            let seg = Segment::create(&slot_path(base, i), size, map)?;
+            let seg = Segment::create(&seg_path(dir, i), size, map)?;
             let data = seg.data();
             Ok(Slot {
                 _segment: seg,
@@ -104,10 +242,8 @@ impl SegmentedLog {
         let s1 = mk(1)?;
         let s2 = mk(2)?;
 
-        // SAFETY: each `sN.data` points to the start of a freshly mapped segment
-        // with at least `FRAME_HDR` bytes and 4-byte alignment guaranteed by mmap.
-        // Zeroing commit_len prevents stale data from a prior run being interpreted
-        // as a committed record by `read()`.
+        // SAFETY: each slot data pointer is the start of a freshly mapped segment
+        // with at least FRAME_HDR bytes and 4-byte alignment from mmap.
         unsafe {
             (*commit_len_ptr(s0.data)).store(0, Ordering::Relaxed);
             (*commit_len_ptr(s1.data)).store(0, Ordering::Relaxed);
@@ -115,9 +251,12 @@ impl SegmentedLog {
         }
 
         Ok(Self {
-            conductor: ConductorHandle::spawn(),
             slots: [s0, s1, s2],
+            manifest,
+            tx,
+            ready,
             segment_size: size,
+            session_id,
             current: 0,
             prev: 2,
             standby: 1,
@@ -127,19 +266,113 @@ impl SegmentedLog {
         })
     }
 
+    fn recover(
+        dir: &Path,
+        requested_size: usize,
+        map: MapOptions,
+        strict: bool,
+        expected_session_id: u32,
+        tx: std::sync::mpsc::SyncSender<CleanRequest>,
+        ready: Arc<AtomicBool>,
+    ) -> Result<Self, SegmentedLogError> {
+        let manifest = Manifest::open(&manifest_path(dir))?;
+        let manifest_size = manifest.segment_size() as usize;
+        let session_id = manifest.session_id();
+
+        if session_id != expected_session_id {
+            return Err(SegmentedLogError::ConfigMismatch {
+                field: "session_id",
+                expected: expected_session_id as u64,
+                found: session_id as u64,
+            });
+        }
+
+        if strict && manifest_size != requested_size {
+            return Err(SegmentedLogError::ConfigMismatch {
+                field: "segment_size",
+                expected: requested_size as u64,
+                found: manifest_size as u64,
+            });
+        }
+
+        let size = manifest_size;
+        let epoch = manifest.epoch();
+
+        let (current, prev, standby) = match epoch {
+            0 => (0, 2, 1),
+            1 => (1, 0, 2),
+            _ => {
+                let c = (epoch % 3) as usize;
+                let p = ((epoch - 1) % 3) as usize;
+                let s = 3 - c - p;
+                (c, p, s)
+            }
+        };
+
+        let mk = |i: u8| -> Result<Slot, SegmentedLogError> {
+            let path = seg_path(dir, i);
+            let seg = if path.exists() {
+                Segment::attach(&path, map)?
+            } else {
+                Segment::create(&path, size, map)?
+            };
+            let data = seg.data();
+            Ok(Slot {
+                _segment: seg,
+                data,
+            })
+        };
+
+        let s0 = mk(0)?;
+        let s1 = mk(1)?;
+        let s2 = mk(2)?;
+        let slots = [s0, s1, s2];
+
+        let cursor = recover_tail(slots[current].data, size);
+
+        let mut slot_gen = [u32::MAX; 3];
+        slot_gen[current] = epoch as u32;
+        if epoch > 0 {
+            slot_gen[prev] = (epoch - 1) as u32;
+        }
+
+        Ok(Self {
+            slots,
+            manifest,
+            tx,
+            ready,
+            segment_size: size,
+            session_id,
+            current,
+            prev,
+            standby,
+            cursor,
+            epoch,
+            slot_gen,
+        })
+    }
+
     pub fn segment_size(&self) -> usize {
         self.segment_size
     }
 
-    /// Append `payload` to the active segment, tagged with `session_id`.
+    pub fn session_id(&self) -> u32 {
+        self.session_id
+    }
+
+    pub fn session_name(&self) -> &str {
+        let bytes = self.manifest.name();
+        std::str::from_utf8(bytes).unwrap_or("")
+    }
+
+    /// Append `payload` to the active segment.
+    ///
+    /// The session ID is set by the conductor at open time and written into
+    /// every frame header automatically.
     ///
     /// Returns a [`LogOffset`] valid for reads until the slot is rotated out
     /// (two rotations after this write).
-    pub fn append(
-        &mut self,
-        session_id: u32,
-        payload: &[u8],
-    ) -> Result<LogOffset, SegmentedLogError> {
+    pub fn append(&mut self, payload: &[u8]) -> Result<LogOffset, SegmentedLogError> {
         let body = payload.len();
         let foot = footprint(body);
         if foot > self.segment_size {
@@ -160,13 +393,11 @@ impl SegmentedLog {
         unsafe {
             let ptr = data.add(off);
             std::ptr::copy_nonoverlapping(payload.as_ptr(), ptr.add(FRAME_HDR), body);
-            *session_id_ptr(ptr) = session_id;
+            *session_id_ptr(ptr) = self.session_id;
             let next = off + foot;
             if next + FRAME_HDR <= self.segment_size {
                 (*commit_len_ptr(data.add(next))).store(0, Ordering::Relaxed);
             }
-            // Store body+1 so that 0 remains the unambiguous "not committed" sentinel,
-            // allowing empty payloads (body=0) to be stored and read back correctly.
             (*commit_len_ptr(ptr)).store((body as u32).wrapping_add(1), Ordering::Release);
         }
         self.cursor += foot;
@@ -289,7 +520,7 @@ impl SegmentedLog {
     }
 
     fn rotate(&mut self) -> Result<(), SegmentedLogError> {
-        if !self.conductor.ready.load(Ordering::Acquire) {
+        if !self.ready.load(Ordering::Acquire) {
             return Err(SegmentedLogError::StandbyNotReady);
         }
         let old_prev = self.prev;
@@ -299,13 +530,48 @@ impl SegmentedLog {
         self.cursor = 0;
         self.epoch += 1;
         self.slot_gen[self.current] = self.epoch as u32;
-        self.conductor.ready.store(false, Ordering::Release);
-        let _ = self.conductor.tx.as_ref().map(|tx| {
-            tx.try_send(CleanRequest {
-                data: self.slots[old_prev].data,
-                segment_size: self.segment_size,
-            })
+
+        self.manifest.set_epoch(self.epoch);
+
+        self.ready.store(false, Ordering::Release);
+        let _ = self.tx.try_send(CleanRequest {
+            data: self.slots[old_prev].data,
+            segment_size: self.segment_size,
+            ready: Arc::clone(&self.ready),
         });
         Ok(())
     }
+}
+
+impl Drop for SegmentedLog {
+    fn drop(&mut self) {
+        // Wait for any in-flight clean request to finish before unmapping
+        // segments. The conductor thread holds a raw pointer into our mmap'd
+        // data — if we unmap first, it would touch freed memory.
+        while !self.ready.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+    }
+}
+
+/// Scan from the start of a segment to find the write tail.
+///
+/// Walks committed frames (non-zero `commit_len`) and stops at the first
+/// uncommitted slot. Returns the byte offset of the tail.
+fn recover_tail(data: *mut u8, segment_size: usize) -> usize {
+    let mut cur = 0;
+    while cur + FRAME_HDR <= segment_size {
+        // SAFETY: `cur` is an 8-aligned offset within the mapped data region.
+        let stored = unsafe { (*commit_len_ptr(data.add(cur))).load(Ordering::Acquire) };
+        if stored == 0 {
+            break;
+        }
+        let body = (stored - 1) as usize;
+        let foot = footprint(body);
+        if cur + foot > segment_size {
+            break;
+        }
+        cur += foot;
+    }
+    cur
 }
