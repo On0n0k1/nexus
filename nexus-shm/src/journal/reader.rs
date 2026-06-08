@@ -57,8 +57,9 @@ impl<H: RecordHeader> Reader<H> {
             // SAFETY: the committed frame is within the mapping which outlives `&mut self`.
             let data = self.segments[self.seg_idx].data();
             let header = unsafe { self.segments[self.seg_idx].read_at::<H>(off + FRAME_HEADER) };
-            let payload =
-                unsafe { std::slice::from_raw_parts(data.add(off + FRAME_HEADER + hsize), body - hsize) };
+            let payload = unsafe {
+                std::slice::from_raw_parts(data.add(off + FRAME_HEADER + hsize), body - hsize)
+            };
             self.cursor = off + footprint(body);
             return Ok(Some(ReadRecord { header, payload }));
         }
