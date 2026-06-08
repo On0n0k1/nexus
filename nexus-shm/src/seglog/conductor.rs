@@ -236,6 +236,7 @@ fn ensure_counter_at_least(dir: &Path, id: u32) -> Result<(), super::OpenError> 
 }
 
 fn read_counter(file: &mut std::fs::File) -> Result<u32, std::io::Error> {
+    file.seek(SeekFrom::Start(0))?;
     let mut buf = String::new();
     file.read_to_string(&mut buf)?;
     Ok(buf.trim().parse().unwrap_or(0))
