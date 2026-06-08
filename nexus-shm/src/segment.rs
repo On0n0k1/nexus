@@ -153,7 +153,7 @@ impl Segment {
     /// The range must be within `data_len()`, exclusively reserved for this
     /// write, and the segment must outlive the slice.
     #[inline]
-    pub(crate) unsafe fn slice_mut_at(&self, offset: usize, len: usize) -> &mut [u8] {
+    pub(crate) unsafe fn slice_mut_at(&mut self, offset: usize, len: usize) -> &mut [u8] {
         unsafe { std::slice::from_raw_parts_mut(self.data().add(offset), len) }
     }
 
@@ -200,7 +200,7 @@ mod tests {
         let path = temp_path("roundtrip");
         let _ = std::fs::remove_file(&path);
 
-        let seg = Segment::create(&path, 4096, MapOptions::default()).unwrap();
+        let mut seg = Segment::create(&path, 4096, MapOptions::default()).unwrap();
         assert_eq!(seg.data_len(), 4096);
         assert_eq!(seg.status(), Status::Alive);
 
