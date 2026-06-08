@@ -552,7 +552,9 @@ mod tests {
     fn encode_close_code_round_trip() {
         use crate::ws::{CloseCode, FrameReader, Message};
         let mut writer = FrameWriter::new(Role::Server, 65_536);
-        writer.encode_close_code(CloseCode::Normal, "goodbye").unwrap();
+        writer
+            .encode_close_code(CloseCode::Normal, "goodbye")
+            .unwrap();
 
         let mut reader = FrameReader::builder().role(Role::Client).build();
         reader.read(writer.data()).unwrap();

@@ -428,11 +428,7 @@ impl ClientBuilder {
 
     /// Accept an incoming WebSocket connection (server-side).
     pub fn accept<S: Read + Write>(self, stream: S) -> Result<Client<S>, Error> {
-        Client::accept_impl(
-            stream,
-            self.reader_builder,
-            self.write_buf_capacity,
-        )
+        Client::accept_impl(stream, self.reader_builder, self.write_buf_capacity)
     }
 
     fn apply_socket_opts(&self, tcp: &std::net::TcpStream) -> Result<(), Error> {
@@ -519,11 +515,7 @@ impl<S> Client<S> {
     }
 
     /// Internal constructor. Used by Connecting::finish().
-    pub(crate) fn from_parts_internal(
-        stream: S,
-        reader: FrameReader,
-        writer: FrameWriter,
-    ) -> Self {
+    pub(crate) fn from_parts_internal(stream: S, reader: FrameReader, writer: FrameWriter) -> Self {
         Self {
             stream,
             reader,
