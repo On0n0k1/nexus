@@ -25,7 +25,8 @@ impl MappedFile {
     /// as [`Sharing::Shared`] with [`Protection::ReadWrite`].
     ///
     /// This is the common case for IPC segments. The file is created if it
-    /// does not exist, and is **not** truncated if it does.
+    /// does not exist. If the file already exists, it is resized to `len`
+    /// (extending or truncating as needed).
     pub fn create(path: &Path, len: NonZeroUsize, opts: MapOptions) -> Result<Self, MapError> {
         let file = OpenOptions::new()
             .read(true)
@@ -57,6 +58,9 @@ impl MappedFile {
     ///
     /// `offset` must be page-aligned (typically 4096 on Linux). The kernel
     /// will return an error if it is not.
+    ///
+    /// Returns [`MapError::OutOfBounds`] if `offset + len` exceeds the
+    /// file size.
     pub fn from_file(
         file: File,
         len: NonZeroUsize,
@@ -65,6 +69,13 @@ impl MappedFile {
         sharing: Sharing,
         opts: MapOptions,
     ) -> Result<Self, MapError> {
+        let file_len = file.metadata()?.len();
+        let end = offset
+            .checked_add(len.get() as u64)
+            .ok_or(MapError::OutOfBounds)?;
+        if end > file_len {
+            return Err(MapError::OutOfBounds);
+        }
         let fd = OwnedFd::from(file);
         let mapping = Mapping::new(fd, len, offset, prot, sharing, opts)?;
         Ok(Self { mapping })
@@ -106,7 +117,7 @@ mod tests {
         assert_eq!(m.len(), 4096);
         assert!(m.is_writable());
 
-        m.write_at(0, &[0xDE, 0xAD, 0xBE, 0xEF]);
+        m.write_at(0, &[0xDE, 0xAD, 0xBE, 0xEF]).unwrap();
         let mut buf = [0u8; 4];
         assert_eq!(m.read_at(0, &mut buf), 4);
         assert_eq!(buf, [0xDE, 0xAD, 0xBE, 0xEF]);
@@ -125,7 +136,7 @@ mod tests {
             MapOptions::default(),
         )
         .unwrap();
-        m.write_at(10, b"hello");
+        m.write_at(10, b"hello").unwrap();
         drop(m);
 
         let m2 = MappedFile::open(&path, MapOptions::default()).unwrap();
@@ -147,7 +158,7 @@ mod tests {
             MapOptions::default(),
         )
         .unwrap();
-        m.write_at(0, b"data");
+        m.write_at(0, b"data").unwrap();
         drop(m);
 
         let m2 = MappedFile::open_readonly(&path, MapOptions::default()).unwrap();
@@ -164,7 +175,7 @@ mod tests {
 
         let m = MappedFile::create(&path, NonZeroUsize::new(64).unwrap(), MapOptions::default())
             .unwrap();
-        m.write_at(0, &[1, 2, 3, 4]);
+        m.write_at(0, &[1, 2, 3, 4]).unwrap();
         assert_eq!(&m.as_slice()[..4], &[1, 2, 3, 4]);
 
         std::fs::remove_file(&path).unwrap();
@@ -191,7 +202,7 @@ mod tests {
 
         let m = MappedFile::create(&path, NonZeroUsize::new(8).unwrap(), MapOptions::default())
             .unwrap();
-        let n = m.write_at(6, &[1, 2, 3, 4]);
+        let n = m.write_at(6, &[1, 2, 3, 4]).unwrap();
         assert_eq!(n, 2);
         assert_eq!(&m.as_slice()[6..8], &[1, 2]);
 
@@ -234,7 +245,7 @@ mod tests {
             MapOptions::default(),
         )
         .unwrap();
-        m.write_at(0, b"durable");
+        m.write_at(0, b"durable").unwrap();
         m.sync().unwrap();
 
         std::fs::remove_file(&path).unwrap();
@@ -282,7 +293,7 @@ mod tests {
             MapOptions::default(),
         )
         .unwrap();
-        full.write_at(4096, b"offset-test");
+        full.write_at(4096, b"offset-test").unwrap();
         drop(full);
 
         let file = OpenOptions::new()
@@ -305,6 +316,69 @@ mod tests {
     }
 
     #[test]
+    fn write_readonly_returns_error() {
+        let path = temp_path("write-ro");
+        let _ = std::fs::remove_file(&path);
+
+        let m = MappedFile::create(
+            &path,
+            NonZeroUsize::new(128).unwrap(),
+            MapOptions::default(),
+        )
+        .unwrap();
+        m.write_at(0, b"setup").unwrap();
+        drop(m);
+
+        let m2 = MappedFile::open_readonly(&path, MapOptions::default()).unwrap();
+        let err = m2.write_at(0, b"nope").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::PermissionDenied);
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn from_file_rejects_out_of_bounds() {
+        let path = temp_path("oob");
+        let _ = std::fs::remove_file(&path);
+
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .unwrap();
+        file.set_len(4096).unwrap();
+
+        let result = MappedFile::from_file(
+            file,
+            NonZeroUsize::new(8192).unwrap(),
+            0,
+            Protection::ReadWrite,
+            Sharing::Shared,
+            MapOptions::default(),
+        );
+        assert!(matches!(result, Err(MapError::OutOfBounds)));
+
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
+        let result = MappedFile::from_file(
+            file,
+            NonZeroUsize::new(4096).unwrap(),
+            4096,
+            Protection::ReadWrite,
+            Sharing::Shared,
+            MapOptions::default(),
+        );
+        assert!(matches!(result, Err(MapError::OutOfBounds)));
+
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
     fn two_mappings_see_same_data() {
         let path = temp_path("shared");
         let _ = std::fs::remove_file(&path);
@@ -317,7 +391,7 @@ mod tests {
         .unwrap();
         let m2 = MappedFile::open(&path, MapOptions::default()).unwrap();
 
-        m1.write_at(0, b"visible");
+        m1.write_at(0, b"visible").unwrap();
         let mut buf = [0u8; 7];
         m2.read_at(0, &mut buf);
         assert_eq!(&buf, b"visible");

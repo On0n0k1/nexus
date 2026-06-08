@@ -206,9 +206,15 @@ impl Mapping {
     /// Returns the number of bytes written (may be less than `data.len()`
     /// if `offset + data.len()` exceeds the mapping length).
     ///
+    /// Returns [`std::io::ErrorKind::PermissionDenied`] if the mapping was
+    /// created with [`Protection::ReadOnly`].
+    ///
     /// For shared mappings, concurrent writers are not coordinated by this
     /// method — the caller must synchronize.
-    pub fn write_at(&self, offset: usize, data: &[u8]) -> usize {
+    pub fn write_at(&self, offset: usize, data: &[u8]) -> Result<usize, std::io::Error> {
+        if !self.writable {
+            return Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        }
         let avail = self.len.get().saturating_sub(offset);
         let n = data.len().min(avail);
         if n > 0 {
@@ -219,7 +225,7 @@ impl Mapping {
                 std::ptr::copy_nonoverlapping(data.as_ptr(), self.ptr.as_ptr().add(offset), n);
             }
         }
-        n
+        Ok(n)
     }
 
     /// Flush dirty pages in the mapping to the backing store.

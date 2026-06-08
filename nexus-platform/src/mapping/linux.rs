@@ -31,20 +31,17 @@ pub(super) fn map(
         map_flags |= MapFlags::MAP_HUGETLB;
     }
 
+    let offset: nix::libc::off_t = offset.try_into().map_err(|_| {
+        MapError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "offset exceeds off_t range",
+        ))
+    })?;
+
     // SAFETY: `len` is non-zero; the kernel chooses the address (`None`).
     // `fd` is a valid open file descriptor, and the caller is responsible
     // for ensuring the backing store is large enough for `offset + len`.
-    let ptr = unsafe {
-        mman::mmap(
-            None,
-            len,
-            prot_flags,
-            map_flags,
-            fd,
-            offset as nix::libc::off_t,
-        )
-    }
-    .map_err(|e| {
+    let ptr = unsafe { mman::mmap(None, len, prot_flags, map_flags, fd, offset) }.map_err(|e| {
         if opts.huge_pages && e == Errno::ENOMEM {
             MapError::HugePagesUnavailable(e.into())
         } else {
