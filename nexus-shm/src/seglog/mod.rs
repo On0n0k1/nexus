@@ -2,13 +2,14 @@ mod conductor;
 mod error;
 mod frame;
 mod manifest;
-mod platform;
 #[cfg(test)]
 mod tests;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+use nexus_platform::FileLock;
 
 use crate::region::MapOptions;
 use crate::segment::Segment;
@@ -32,7 +33,7 @@ const EPOCH_MASK: u32 = 0x3FFF_FFFF;
 struct SessionResources {
     tx: std::sync::mpsc::SyncSender<CleanRequest>,
     ready: Arc<AtomicBool>,
-    session_lock: platform::FileLock,
+    session_lock: FileLock,
 }
 
 struct Slot {
@@ -128,7 +129,7 @@ impl<'a> SegmentedLogBuilder<'a> {
         let session_dir = self.conductor.dir().join(id.to_string());
         std::fs::create_dir_all(&session_dir)?;
 
-        let session_lock = platform::FileLock::try_lock(session_dir.join(SESSION_LOCK_FILE))?
+        let session_lock = FileLock::try_lock(session_dir.join(SESSION_LOCK_FILE))?
             .ok_or(OpenError::SessionInUse { session_id: id })?;
 
         let map = self.map_options();
@@ -218,7 +219,7 @@ pub struct SegmentedLog {
     manifest: Manifest,
     tx: std::sync::mpsc::SyncSender<CleanRequest>,
     ready: Arc<AtomicBool>,
-    _session_lock: platform::FileLock,
+    _session_lock: FileLock,
     segment_size: usize,
     session_id: u32,
     current: usize,

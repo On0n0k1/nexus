@@ -37,6 +37,7 @@ members = [
 	"nexus-fix-codegen",
 	"nexus-fix-codegen-tests",
 	"nexus-fix-engine",
+	"nexus-platform",
 ]
 
 [workspace.package]

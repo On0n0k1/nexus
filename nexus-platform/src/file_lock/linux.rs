@@ -16,7 +16,7 @@ fn wrlck() -> libc::flock {
 }
 
 /// Acquire an exclusive OFD lock on `file`, blocking until available.
-pub(crate) fn lock_exclusive_blocking(file: &File) -> Result<(), std::io::Error> {
+pub(super) fn lock_exclusive_blocking(file: &File) -> Result<(), std::io::Error> {
     fcntl(file.as_fd(), FcntlArg::F_OFD_SETLKW(&wrlck())).map_err(std::io::Error::from)?;
     Ok(())
 }
@@ -25,7 +25,7 @@ pub(crate) fn lock_exclusive_blocking(file: &File) -> Result<(), std::io::Error>
 ///
 /// Returns `Ok(true)` if the lock was acquired, `Ok(false)` if another
 /// file description already holds it.
-pub(crate) fn try_lock_exclusive(file: &File) -> Result<bool, std::io::Error> {
+pub(super) fn try_lock_exclusive(file: &File) -> Result<bool, std::io::Error> {
     match fcntl(file.as_fd(), FcntlArg::F_OFD_SETLK(&wrlck())) {
         Ok(_) => Ok(true),
         Err(Errno::EAGAIN | Errno::EACCES) => Ok(false),

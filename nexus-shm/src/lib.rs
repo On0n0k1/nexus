@@ -7,7 +7,6 @@
 pub(crate) mod control;
 mod error;
 mod journal;
-mod lock;
 mod pod;
 mod region;
 mod seglog;
@@ -18,7 +17,7 @@ pub use journal::{
     FixHeader, Journal, JournalConfig, JournalError, ReadRange, ReadRecord, Reader, RecordHeader,
     SeqHeader, WriteClaim, Writer,
 };
-pub use lock::Liveness;
+pub use nexus_platform::Liveness;
 pub use pod::Pod;
 pub use region::MapOptions;
 pub use seglog::{

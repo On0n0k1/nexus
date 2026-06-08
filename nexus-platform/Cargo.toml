@@ -1,0 +1,17 @@
+[package]
+name = "nexus-platform"
+version = "0.1.0"
+description = "Platform-specific OS primitives behind a portable Rust API"
+readme = "README.md"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+keywords = ["platform", "os", "file-lock", "liveness", "low-latency"]
+categories = ["os::unix-apis"]
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.30", features = ["fs"] }

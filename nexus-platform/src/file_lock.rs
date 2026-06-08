@@ -10,7 +10,7 @@ use linux as imp;
 
 #[cfg(not(target_os = "linux"))]
 compile_error!(
-    "seglog file locking requires OFD locks (Linux). \
+    "nexus-platform file locking requires OFD locks (Linux). \
      macOS/Windows support is not yet implemented."
 );
 
@@ -23,19 +23,30 @@ fn open_lock_file(path: impl AsRef<Path>) -> Result<File, io::Error> {
         .open(path)
 }
 
-/// RAII exclusive file lock backed by platform-specific advisory locks.
+/// RAII exclusive file lock for mutual exclusion.
 ///
-/// On Linux this uses OFD locks (`F_OFD_SETLK`), which are per-file-description
-/// rather than per-process — they correctly serialize both cross-process and
-/// in-process access when different file descriptors are used. The lock is
-/// released when the file descriptor closes (i.e., when this struct drops).
-pub(crate) struct FileLock {
+/// Acquires an exclusive advisory lock on a file at the given path,
+/// creating it if necessary. The lock is released when this struct drops
+/// (the kernel releases the lock when the file descriptor closes).
+///
+/// On Linux this uses OFD locks (`F_OFD_SETLK`), which are
+/// per-file-description — they correctly serialize both cross-process
+/// and in-process access when different file descriptors are used.
+///
+/// # Examples
+///
+/// ```no_run
+/// # use nexus_platform::FileLock;
+/// let mut lock = FileLock::lock("/tmp/my.lock").unwrap();
+/// // lock is held until `lock` is dropped
+/// ```
+pub struct FileLock {
     file: File,
 }
 
 impl FileLock {
     /// Acquire an exclusive lock, blocking until available.
-    pub(crate) fn blocking(path: impl AsRef<Path>) -> Result<Self, io::Error> {
+    pub fn lock(path: impl AsRef<Path>) -> Result<Self, io::Error> {
         let file = open_lock_file(path)?;
         imp::lock_exclusive_blocking(&file)?;
         Ok(Self { file })
@@ -44,7 +55,7 @@ impl FileLock {
     /// Try to acquire an exclusive lock without blocking.
     ///
     /// Returns `Ok(None)` if another file description already holds it.
-    pub(crate) fn try_lock(path: impl AsRef<Path>) -> Result<Option<Self>, io::Error> {
+    pub fn try_lock(path: impl AsRef<Path>) -> Result<Option<Self>, io::Error> {
         let file = open_lock_file(path)?;
         if imp::try_lock_exclusive(&file)? {
             Ok(Some(Self { file }))
@@ -54,7 +65,7 @@ impl FileLock {
     }
 
     /// Access the underlying file for read/write operations.
-    pub(crate) fn file(&mut self) -> &mut File {
+    pub fn file(&mut self) -> &mut File {
         &mut self.file
     }
 }

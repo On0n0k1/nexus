@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- OFD lock primitives (`FileLock`, `ProcessLease`, `Liveness`) extracted
+  to `nexus-platform`. nexus-shm re-exports `Liveness` from nexus-platform.
+
 ### Added
 
 - Foundation layer: `Pod` trait, segment control block, mmap-backed
