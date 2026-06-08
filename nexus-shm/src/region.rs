@@ -11,7 +11,7 @@ use crate::error::ShmError;
 
 #[derive(Clone, Copy, Default)]
 pub struct MapOptions {
-    pub populate: bool,
+    pub pretouch: bool,
     pub huge_pages: bool,
 }
 
@@ -46,7 +46,7 @@ impl Mapping {
 
     fn map(file: File, len: NonZeroUsize, opts: MapOptions) -> Result<Self, ShmError> {
         let mut flags = MapFlags::MAP_SHARED;
-        if opts.populate {
+        if opts.pretouch {
             flags |= MapFlags::MAP_POPULATE;
         }
         if opts.huge_pages {

@@ -21,5 +21,8 @@ pub use journal::{
 pub use lock::Liveness;
 pub use pod::Pod;
 pub use region::MapOptions;
-pub use seglog::{Frame, LogOffset, SegmentedLog, SegmentedLogError};
+pub use seglog::{
+    Conductor, ConductorBuilder, Frame, LogError, LogOffset, OpenError, SegmentedLog,
+    SegmentedLogBuilder,
+};
 pub use segment::{Segment, Status};
