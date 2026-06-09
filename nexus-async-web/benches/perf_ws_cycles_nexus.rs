@@ -16,7 +16,6 @@ use std::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 use nexus_async_rt::{AsyncRead, AsyncWrite};
 use nexus_async_web::NexusAsyncReadAdapter;
 use nexus_async_web::ws::{WsReader, WsWriter};
-use nexus_net::buf::WriteBuf;
 use nexus_web::ws::{FrameReader, FrameWriter, Role};
 
 // =============================================================================
@@ -207,7 +206,7 @@ fn make_parts(
         .build();
     (
         WsReader::from_raw_parts(reader, usize::MAX),
-        WsWriter::from_raw_parts(FrameWriter::new(Role::Client), WriteBuf::new(65_536, 14)),
+        WsWriter::from_raw_parts(FrameWriter::new(Role::Client, 65_536)),
         mock,
     )
 }

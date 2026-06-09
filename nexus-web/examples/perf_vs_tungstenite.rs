@@ -265,7 +265,7 @@ fn main() {
 fn bench_nexus_write(label: &str, payload: &[u8], binary: bool) {
     use nexus_web::ws::{FrameWriter, Role};
 
-    let mut writer = FrameWriter::new(Role::Client); // Client = masked (harder case)
+    let mut writer = FrameWriter::new(Role::Client, payload.len() + 14); // Client = masked (harder case)
     let mut dst = vec![0u8; writer.max_encoded_len(payload.len())];
     let mut samples = vec![0u64; SAMPLES];
 
@@ -273,9 +273,9 @@ fn bench_nexus_write(label: &str, payload: &[u8], binary: bool) {
         let t0 = rdtsc_start();
         for _ in 0..BATCH {
             let n = if binary {
-                writer.encode_binary(payload, &mut dst)
+                writer.encode_binary_raw(payload, &mut dst)
             } else {
-                writer.encode_text(payload, &mut dst)
+                writer.encode_text_raw(payload, &mut dst)
             };
             black_box(n);
         }
@@ -286,16 +286,16 @@ fn bench_nexus_write(label: &str, payload: &[u8], binary: bool) {
     print_row(&format!("nexus-web  {label} (masked)"), &mut samples);
 
     // Also server (unmasked) — the market data relay path
-    let mut writer = FrameWriter::new(Role::Server);
+    let mut writer = FrameWriter::new(Role::Server, payload.len() + 14);
     let mut dst = vec![0u8; writer.max_encoded_len(payload.len())];
 
     for s in &mut samples {
         let t0 = rdtsc_start();
         for _ in 0..BATCH {
             let n = if binary {
-                writer.encode_binary(payload, &mut dst)
+                writer.encode_binary_raw(payload, &mut dst)
             } else {
-                writer.encode_text(payload, &mut dst)
+                writer.encode_text_raw(payload, &mut dst)
             };
             black_box(n);
         }

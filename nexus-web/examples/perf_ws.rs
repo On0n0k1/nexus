@@ -6,7 +6,6 @@
 //!   cargo build --release -p nexus-web --example perf_ws
 //!   taskset -c 0 ./target/release/examples/perf_ws
 
-use nexus_web::buf::WriteBuf;
 use nexus_web::ws::{FrameReader, FrameWriter, Role, apply_mask};
 use std::hint::black_box;
 
@@ -207,25 +206,25 @@ fn bench_simdutf8_cycles(samples: &mut [u64], size: usize) {
 }
 
 fn bench_encode_cycles(samples: &mut [u64], size: usize, role: Role) {
-    let mut writer = FrameWriter::new(role);
+    let mut writer = FrameWriter::new(role, size + 14);
     let payload = vec![b'x'; size];
     let mut dst = vec![0u8; writer.max_encoded_len(size)];
 
     for _ in 0..10_000 {
-        writer.encode_text(&payload, &mut dst);
+        writer.encode_text_raw(&payload, &mut dst);
     }
 
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            let n = writer.encode_text(&payload, &mut dst);
+            let n = writer.encode_text_raw(&payload, &mut dst);
             black_box(n);
         }
         let end = rdtsc_end();
         *s = (end - start) / BATCH;
     }
     let label = format!(
-        "encode_text ({size}B, {})",
+        "encode_text_raw ({size}B, {})",
         if role == Role::Server {
             "server"
         } else {
@@ -236,24 +235,23 @@ fn bench_encode_cycles(samples: &mut [u64], size: usize, role: Role) {
 }
 
 fn bench_encode_into_cycles(samples: &mut [u64], size: usize) {
-    let mut writer = FrameWriter::new(Role::Server);
+    let mut writer = FrameWriter::new(Role::Server, size + 14);
     let payload = vec![b'x'; size];
-    let mut wbuf = WriteBuf::new(size + 14, 14);
 
     for _ in 0..10_000 {
-        writer.encode_text_into(&payload, &mut wbuf);
+        writer.encode_text(&payload);
     }
 
     for s in samples.iter_mut() {
         let start = rdtsc_start();
         for _ in 0..BATCH {
-            writer.encode_text_into(&payload, &mut wbuf);
-            black_box(wbuf.data());
+            writer.encode_text(&payload);
+            black_box(writer.data());
         }
         let end = rdtsc_end();
         *s = (end - start) / BATCH;
     }
-    print_row(&format!("encode_text_into ({size}B, server)"), samples);
+    print_row(&format!("encode_text ({size}B, server)"), samples);
 }
 
 fn bench_throughput_cycles(samples: &mut [u64], msg_count: usize) {
@@ -358,7 +356,7 @@ fn main() {
         bench_encode_cycles(&mut buf, size, Role::Client);
     }
 
-    section("FrameWriter — encode_into (WriteBuf)");
+    section("FrameWriter — encode (internal buf)");
     for size in [128, 512, 2048] {
         bench_encode_into_cycles(&mut buf, size);
     }

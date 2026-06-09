@@ -7,8 +7,6 @@ use super::frame_reader::{FrameReader, FrameReaderBuilder};
 use super::frame_writer::FrameWriter;
 use super::handshake::{self, HandshakeError};
 use super::stream::{Client, ClientBuilder, Error, parse_ws_url};
-use nexus_net::buf::WriteBuf;
-
 #[cfg(feature = "tls")]
 use nexus_net::tls::{TlsCodec, TlsError};
 
@@ -48,7 +46,6 @@ pub struct Connecting<S> {
     tls: Option<TlsCodec>,
     reader_builder: FrameReaderBuilder,
     write_buf_capacity: usize,
-    write_buf_headroom: usize,
     // Handshake data
     ws_key: [u8; 24],
     req_buf: Vec<u8>,
@@ -125,7 +122,6 @@ impl ClientBuilder {
             tls,
             reader_builder: self.reader_builder,
             write_buf_capacity: self.write_buf_capacity,
-            write_buf_headroom: self.write_buf_headroom,
             ws_key,
             req_buf: Vec::new(),
             req_offset: 0,
@@ -391,8 +387,7 @@ impl<S: Read + Write> Connecting<S> {
         Ok(Client::from_parts_internal(
             stream,
             reader,
-            FrameWriter::new(Role::Client),
-            WriteBuf::new(self.write_buf_capacity, self.write_buf_headroom),
+            FrameWriter::new(Role::Client, self.write_buf_capacity),
         ))
     }
 

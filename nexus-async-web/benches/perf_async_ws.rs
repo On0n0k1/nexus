@@ -349,7 +349,6 @@ fn bench_deser_only<T: for<'de> Deserialize<'de>>(json: &str, msg_count: u64) ->
 async fn bench_stream_nexus(wire: &[u8], msg_count: u64) -> (Duration, u64) {
     use futures_util::StreamExt;
     use nexus_async_web::ws::{WsReader, WsStream, WsWriter};
-    use nexus_net::buf::WriteBuf;
     use nexus_web::ws::{FrameReader, FrameWriter, Role};
 
     let conn = AsyncReadAdapter::new(MockAsyncReader { data: wire, pos: 0 });
@@ -360,8 +359,7 @@ async fn bench_stream_nexus(wire: &[u8], msg_count: u64) -> (Duration, u64) {
             .build(),
         usize::MAX,
     );
-    let writer =
-        WsWriter::from_raw_parts(FrameWriter::new(Role::Client), WriteBuf::new(65_536, 14));
+    let writer = WsWriter::from_raw_parts(FrameWriter::new(Role::Client, 65_536));
     let mut ws = WsStream::from_parts(reader, writer, conn);
 
     let start = Instant::now();
@@ -987,7 +985,7 @@ fn bench_blocking_nexus(wire: &[u8], msg_count: u64) -> (Duration, u64) {
         .role(Role::Client)
         .buffer_capacity(64 * 1024)
         .build();
-    let mut ws = Client::from_parts(cursor, reader, FrameWriter::new(Role::Client));
+    let mut ws = Client::from_parts(cursor, reader, FrameWriter::new(Role::Client, 65_536));
 
     let start = Instant::now();
     let mut received = 0u64;

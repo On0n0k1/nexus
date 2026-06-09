@@ -7,7 +7,6 @@ use super::frame::Role;
 use super::frame_reader::{FrameReader, FrameReaderBuilder};
 use super::frame_writer::FrameWriter;
 use super::message::{CloseCode, Message};
-use nexus_net::buf::WriteBuf;
 
 use super::handshake;
 use super::handshake::HandshakeError;
@@ -215,7 +214,6 @@ impl From<TlsError> for Error {
 pub struct ClientBuilder {
     pub(crate) reader_builder: FrameReaderBuilder,
     pub(crate) write_buf_capacity: usize,
-    pub(crate) write_buf_headroom: usize,
     #[cfg(feature = "tls")]
     pub(crate) tls_config: Option<TlsConfig>,
     pub(crate) tcp_nodelay: bool,
@@ -234,7 +232,6 @@ impl ClientBuilder {
         Self {
             reader_builder: FrameReader::builder(),
             write_buf_capacity: 65_536,
-            write_buf_headroom: 14,
             #[cfg(feature = "tls")]
             tls_config: None,
             tcp_nodelay: false,
@@ -374,7 +371,6 @@ impl ClientBuilder {
             parsed.path,
             self.reader_builder,
             self.write_buf_capacity,
-            self.write_buf_headroom,
         )
     }
 
@@ -410,7 +406,6 @@ impl ClientBuilder {
             parsed.path,
             self.reader_builder,
             self.write_buf_capacity,
-            self.write_buf_headroom,
         )
     }
 
@@ -428,18 +423,12 @@ impl ClientBuilder {
             parsed.path,
             self.reader_builder,
             self.write_buf_capacity,
-            self.write_buf_headroom,
         )
     }
 
     /// Accept an incoming WebSocket connection (server-side).
     pub fn accept<S: Read + Write>(self, stream: S) -> Result<Client<S>, Error> {
-        Client::accept_impl(
-            stream,
-            self.reader_builder,
-            self.write_buf_capacity,
-            self.write_buf_headroom,
-        )
+        Client::accept_impl(stream, self.reader_builder, self.write_buf_capacity)
     }
 
     fn apply_socket_opts(&self, tcp: &std::net::TcpStream) -> Result<(), Error> {
@@ -501,7 +490,6 @@ pub struct Client<S> {
     pub(crate) stream: S,
     pub(crate) reader: FrameReader,
     pub(crate) writer: FrameWriter,
-    pub(crate) write_buf: WriteBuf,
     pub(crate) poisoned: bool,
 }
 
@@ -522,23 +510,16 @@ impl<S> Client<S> {
             stream,
             reader,
             writer,
-            write_buf: WriteBuf::new(65_536, 14),
             poisoned: false,
         }
     }
 
-    /// Internal constructor with all fields. Used by Connecting::finish().
-    pub(crate) fn from_parts_internal(
-        stream: S,
-        reader: FrameReader,
-        writer: FrameWriter,
-        write_buf: WriteBuf,
-    ) -> Self {
+    /// Internal constructor. Used by Connecting::finish().
+    pub(crate) fn from_parts_internal(stream: S, reader: FrameReader, writer: FrameWriter) -> Self {
         Self {
             stream,
             reader,
             writer,
-            write_buf,
             poisoned: false,
         }
     }
@@ -606,47 +587,38 @@ impl<S: Read + Write> Client<S> {
 
     /// Send a text message.
     pub fn send_text(&mut self, text: &str) -> Result<(), Error> {
-        self.writer
-            .encode_text_into(text.as_bytes(), &mut self.write_buf);
+        self.writer.encode_text(text.as_bytes());
         self.flush_write_buf_or_poison()
     }
 
     /// Send a binary message.
     pub fn send_binary(&mut self, data: &[u8]) -> Result<(), Error> {
-        self.writer.encode_binary_into(data, &mut self.write_buf);
+        self.writer.encode_binary(data);
         self.flush_write_buf_or_poison()
     }
 
     /// Send a ping.
     pub fn send_ping(&mut self, data: &[u8]) -> Result<(), Error> {
-        self.writer
-            .encode_ping_into(data, &mut self.write_buf)
-            .map_err(Error::Encode)?;
+        self.writer.encode_ping(data).map_err(Error::Encode)?;
         self.flush_write_buf_or_poison()
     }
 
     /// Send a pong.
     pub fn send_pong(&mut self, data: &[u8]) -> Result<(), Error> {
-        self.writer
-            .encode_pong_into(data, &mut self.write_buf)
-            .map_err(Error::Encode)?;
+        self.writer.encode_pong(data).map_err(Error::Encode)?;
         self.flush_write_buf_or_poison()
     }
 
     /// Initiate close handshake.
     pub fn close(&mut self, code: CloseCode, reason: &str) -> Result<(), Error> {
         if code == CloseCode::NoStatus {
-            let mut dst = [0u8; 14];
-            let n = self.writer.encode_empty_close(&mut dst);
-            self.write_raw(&dst[..n]).inspect_err(|_| {
-                self.poisoned = true;
-            })
+            self.writer.encode_empty_close();
         } else {
             self.writer
-                .encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf)
+                .encode_close(code.as_u16(), reason.as_bytes())
                 .map_err(Error::Encode)?;
-            self.flush_write_buf_or_poison()
         }
+        self.flush_write_buf_or_poison()
     }
 
     // =========================================================================
@@ -668,15 +640,8 @@ impl<S: Read + Write> Client<S> {
         })
     }
 
-    /// Flush the write_buf to the socket.
     fn flush_write_buf(&mut self) -> Result<(), Error> {
-        self.stream.write_all(self.write_buf.data())?;
-        Ok(())
-    }
-
-    /// Write raw bytes to the socket.
-    fn write_raw(&mut self, data: &[u8]) -> Result<(), Error> {
-        self.stream.write_all(data)?;
+        self.stream.write_all(self.writer.data())?;
         Ok(())
     }
 
@@ -692,7 +657,6 @@ impl<S: Read + Write> Client<S> {
         path: &str,
         reader_builder: FrameReaderBuilder,
         write_cap: usize,
-        write_headroom: usize,
     ) -> Result<Self, Error> {
         let key = handshake::generate_key();
         let key_str = std::str::from_utf8(&key).expect("base64 output is valid ASCII");
@@ -757,8 +721,7 @@ impl<S: Read + Write> Client<S> {
                     return Ok(Self {
                         stream,
                         reader,
-                        writer: FrameWriter::new(Role::Client),
-                        write_buf: WriteBuf::new(write_cap, write_headroom),
+                        writer: FrameWriter::new(Role::Client, write_cap),
                         poisoned: false,
                     });
                 }
@@ -772,7 +735,6 @@ impl<S: Read + Write> Client<S> {
         mut stream: S,
         reader_builder: FrameReaderBuilder,
         write_cap: usize,
-        write_headroom: usize,
     ) -> Result<Self, Error> {
         let mut req_reader = crate::http::RequestReader::new(4096);
         let mut tmp = [0u8; 4096];
@@ -846,8 +808,7 @@ impl<S: Read + Write> Client<S> {
         Ok(Self {
             stream,
             reader,
-            writer: FrameWriter::new(Role::Server),
-            write_buf: WriteBuf::new(write_cap, write_headroom),
+            writer: FrameWriter::new(Role::Server, write_cap),
             poisoned: false,
         })
     }
@@ -856,16 +817,23 @@ impl<S: Read + Write> Client<S> {
 /// Create a matched FrameReader + FrameWriter pair.
 ///
 /// Prevents mismatched roles between reader and writer.
-pub fn pair(role: Role) -> (FrameReader, FrameWriter) {
+pub fn pair(role: Role, write_capacity: usize) -> (FrameReader, FrameWriter) {
     (
         FrameReader::builder().role(role).build(),
-        FrameWriter::new(role),
+        FrameWriter::new(role, write_capacity),
     )
 }
 
 /// Create a pair with a configured FrameReader.
-pub fn pair_with(role: Role, reader_builder: FrameReaderBuilder) -> (FrameReader, FrameWriter) {
-    (reader_builder.role(role).build(), FrameWriter::new(role))
+pub fn pair_with(
+    role: Role,
+    reader_builder: FrameReaderBuilder,
+    write_capacity: usize,
+) -> (FrameReader, FrameWriter) {
+    (
+        reader_builder.role(role).build(),
+        FrameWriter::new(role, write_capacity),
+    )
 }
 
 fn contains_ignore_case(haystack: &str, needle: &str) -> bool {
@@ -932,7 +900,7 @@ mod tests {
 
         #[test]
         fn pair_creates_matching_roles() {
-            let (mut reader, _writer) = pair(Role::Client);
+            let (mut reader, _writer) = pair(Role::Client, 65_536);
             let frame = make_frame(true, 0x1, b"test");
             reader.read(&frame).unwrap();
             let msg = reader.next().unwrap().unwrap();
@@ -990,7 +958,7 @@ mod tests {
         fn ws_from_bytes(data: Vec<u8>) -> Client<ByteAtATimeStream> {
             let mock = ByteAtATimeStream::new(data);
             let reader = FrameReader::builder().role(Role::Client).build();
-            let writer = FrameWriter::new(Role::Client);
+            let writer = FrameWriter::new(Role::Client, 65_536);
             Client::from_parts(mock, reader, writer)
         }
 
@@ -1081,7 +1049,7 @@ mod tests {
             }
 
             let reader = FrameReader::builder().role(Role::Client).build();
-            let writer = FrameWriter::new(Role::Client);
+            let writer = FrameWriter::new(Role::Client, 65_536);
             let mut ws = Client::from_parts(WouldBlockStream, reader, writer);
             assert!(ws.recv().unwrap().is_none());
         }

@@ -233,7 +233,7 @@ fn bench_blocking(wire: &[u8], msg_count: u64) -> (Duration, u64) {
         .role(Role::Client)
         .buffer_capacity(64 * 1024)
         .build();
-    let mut ws = Client::from_parts(cursor, reader, FrameWriter::new(Role::Client));
+    let mut ws = Client::from_parts(cursor, reader, FrameWriter::new(Role::Client, 65_536));
 
     let start = Instant::now();
     let mut received = 0u64;

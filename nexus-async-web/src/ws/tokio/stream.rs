@@ -6,7 +6,6 @@
 use std::pin::Pin;
 
 use nexus_net::WireStream;
-use nexus_net::buf::WriteBuf;
 #[cfg(feature = "tls")]
 use nexus_net::tls::TlsConfig;
 use nexus_web::http::HTTP_HANDSHAKE_BUFFER;
@@ -102,8 +101,7 @@ async fn connect_handshake<S: WireStream + Unpin>(
                         max_read_size,
                     },
                     WsWriter {
-                        writer: FrameWriter::new(Role::Client),
-                        write_buf: WriteBuf::new(write_cap, 14),
+                        writer: FrameWriter::new(Role::Client, write_cap),
                     },
                     stream,
                 ));
@@ -198,8 +196,7 @@ async fn accept_handshake<S: WireStream + Unpin>(
             max_read_size,
         },
         WsWriter {
-            writer: FrameWriter::new(Role::Server),
-            write_buf: WriteBuf::new(write_cap, 14),
+            writer: FrameWriter::new(Role::Server, write_cap),
         },
         stream,
     ))
@@ -231,7 +228,6 @@ pub struct WsStream<S> {
     stream: S,
     reader: FrameReader,
     writer: FrameWriter,
-    write_buf: WriteBuf,
     max_read_size: usize,
 }
 
@@ -245,7 +241,6 @@ impl<S> WsStream<S> {
             max_read_size: reader.max_read_size,
             reader: reader.reader,
             writer: writer.writer,
-            write_buf: writer.write_buf,
         }
     }
 
@@ -258,7 +253,6 @@ impl<S> WsStream<S> {
             },
             WsWriter {
                 writer: self.writer,
-                write_buf: self.write_buf,
             },
             self.stream,
         )
@@ -273,7 +267,6 @@ impl<S> WsStream<S> {
             stream,
             reader,
             writer,
-            write_buf: WriteBuf::new(65_536, 14),
             max_read_size: usize::MAX,
         }
     }
@@ -640,35 +633,23 @@ impl<S: WireStream + Unpin> Sink<OwnedMessage> for WsStream<S> {
         let this = self.get_mut();
         match &item {
             OwnedMessage::Text(s) => {
-                this.writer
-                    .encode_text_into(s.as_bytes(), &mut this.write_buf);
+                this.writer.encode_text(s.as_bytes());
             }
             OwnedMessage::Binary(b) => {
-                this.writer.encode_binary_into(b, &mut this.write_buf);
+                this.writer.encode_binary(b);
             }
             OwnedMessage::Ping(b) => {
-                this.writer
-                    .encode_ping_into(b, &mut this.write_buf)
-                    .map_err(WsError::Encode)?;
+                this.writer.encode_ping(b).map_err(WsError::Encode)?;
             }
             OwnedMessage::Pong(b) => {
-                this.writer
-                    .encode_pong_into(b, &mut this.write_buf)
-                    .map_err(WsError::Encode)?;
+                this.writer.encode_pong(b).map_err(WsError::Encode)?;
             }
             OwnedMessage::Close(cf) => {
                 if cf.code == CloseCode::NoStatus {
-                    let mut dst = [0u8; 14];
-                    let n = this.writer.encode_empty_close(&mut dst);
-                    this.write_buf.clear();
-                    this.write_buf.append(&dst[..n]);
+                    this.writer.encode_empty_close();
                 } else {
                     this.writer
-                        .encode_close_into(
-                            cf.code.as_u16(),
-                            cf.reason.as_bytes(),
-                            &mut this.write_buf,
-                        )
+                        .encode_close(cf.code.as_u16(), cf.reason.as_bytes())
                         .map_err(WsError::Encode)?;
                 }
             }
@@ -678,8 +659,8 @@ impl<S: WireStream + Unpin> Sink<OwnedMessage> for WsStream<S> {
 
     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         let this = self.get_mut();
-        while !this.write_buf.is_empty() {
-            let data = this.write_buf.data();
+        while !this.writer.data().is_empty() {
+            let data = this.writer.data();
             match Pin::new(&mut this.stream).poll_write(cx, data) {
                 Poll::Ready(Ok(0)) => {
                     return Poll::Ready(Err(WsError::Io(std::io::Error::new(
@@ -688,7 +669,7 @@ impl<S: WireStream + Unpin> Sink<OwnedMessage> for WsStream<S> {
                     ))));
                 }
                 Poll::Ready(Ok(n)) => {
-                    this.write_buf.advance(n);
+                    this.writer.advance(n);
                 }
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e.into())),
                 Poll::Pending => return Poll::Pending,
@@ -776,7 +757,7 @@ mod tests {
     fn parts_from_bytes(data: Vec<u8>) -> (WsReader, WsWriter, AsyncReadAdapter<MockStream>) {
         let mock = AsyncReadAdapter::new(MockStream(Cursor::new(data)));
         let reader = FrameReader::builder().role(Role::Client).build();
-        let writer = FrameWriter::new(Role::Client);
+        let writer = FrameWriter::new(Role::Client, 65_536);
         let ws = WsStream::from_raw_parts(mock, reader, writer);
         ws.into_parts()
     }
@@ -1035,7 +1016,7 @@ mod tests {
     async fn send_on_broken_stream_returns_error() {
         let mock = AsyncReadAdapter::new(BrokenWriteStream(Cursor::new(Vec::new())));
         let reader = FrameReader::builder().role(Role::Client).build();
-        let writer = FrameWriter::new(Role::Client);
+        let writer = FrameWriter::new(Role::Client, 65_536);
         let (_, mut ws_writer, mut conn) =
             WsStream::from_raw_parts(mock, reader, writer).into_parts();
 

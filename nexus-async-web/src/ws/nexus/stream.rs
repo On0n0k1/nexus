@@ -8,7 +8,6 @@ use std::net::ToSocketAddrs;
 
 use nexus_async_rt::TcpStream;
 use nexus_net::WireStream;
-use nexus_net::buf::WriteBuf;
 #[cfg(feature = "tls")]
 use nexus_net::tls::TlsConfig;
 use nexus_web::http::HTTP_HANDSHAKE_BUFFER;
@@ -103,8 +102,7 @@ async fn connect_handshake<S: WireStream + Unpin>(
                         max_read_size,
                     },
                     WsWriter {
-                        writer: FrameWriter::new(Role::Client),
-                        write_buf: WriteBuf::new(write_cap, 14),
+                        writer: FrameWriter::new(Role::Client, write_cap),
                     },
                     stream,
                 ));
@@ -199,8 +197,7 @@ async fn accept_handshake<S: WireStream + Unpin>(
             max_read_size,
         },
         WsWriter {
-            writer: FrameWriter::new(Role::Server),
-            write_buf: WriteBuf::new(write_cap, 14),
+            writer: FrameWriter::new(Role::Server, write_cap),
         },
         stream,
     ))
@@ -624,15 +621,13 @@ mod tests {
     fn parts_from_bytes(data: Vec<u8>) -> (WsReader, WsWriter, NexusAsyncReadAdapter<MockStream>) {
         let mock = NexusAsyncReadAdapter::new(MockStream::from_bytes(data));
         let reader = FrameReader::builder().role(Role::Client).build();
-        let writer = FrameWriter::new(Role::Client);
         (
             WsReader {
                 reader,
                 max_read_size: usize::MAX,
             },
             WsWriter {
-                writer,
-                write_buf: WriteBuf::new(65_536, 14),
+                writer: FrameWriter::new(Role::Client, 65_536),
             },
             mock,
         )
@@ -846,8 +841,7 @@ mod tests {
     fn send_on_broken_stream_returns_error() {
         let mock = NexusAsyncReadAdapter::new(BrokenWriteStream(Cursor::new(Vec::new())));
         let mut writer = WsWriter {
-            writer: FrameWriter::new(Role::Client),
-            write_buf: WriteBuf::new(65_536, 14),
+            writer: FrameWriter::new(Role::Client, 65_536),
         };
         let mut conn = mock;
 

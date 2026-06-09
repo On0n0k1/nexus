@@ -7,7 +7,6 @@
 use std::io;
 use std::pin::Pin;
 
-use nexus_net::buf::WriteBuf;
 use nexus_net::{ParserSink, WireStream};
 use nexus_web::ws::{CloseCode, Error as WsError, FrameReader, FrameWriter, Message};
 
@@ -133,21 +132,19 @@ impl WsReader {
 
 /// Write half of a WebSocket connection.
 ///
-/// Owns the [`FrameWriter`] and [`WriteBuf`]. Encodes outgoing
-/// frames and flushes them through a transport connection passed
-/// to each send method.
+/// Owns the [`FrameWriter`]. Encodes outgoing frames and flushes them
+/// through a transport connection passed to each send method.
 pub struct WsWriter {
     pub(crate) writer: FrameWriter,
-    pub(crate) write_buf: WriteBuf,
 }
 
 impl WsWriter {
-    /// Construct from raw nexus-web types.
+    /// Construct from a [`FrameWriter`].
     ///
     /// For custom handshakes or testing. Prefer using
     /// [`WsStreamBuilder`](super::WsStreamBuilder) for normal connections.
-    pub fn from_raw_parts(writer: FrameWriter, write_buf: WriteBuf) -> Self {
-        Self { writer, write_buf }
+    pub fn from_raw_parts(writer: FrameWriter) -> Self {
+        Self { writer }
     }
 
     /// Send a text message.
@@ -156,9 +153,8 @@ impl WsWriter {
         conn: &mut S,
         text: &str,
     ) -> Result<(), WsError> {
-        self.writer
-            .encode_text_into(text.as_bytes(), &mut self.write_buf);
-        write_all_async(conn, self.write_buf.data()).await?;
+        self.writer.encode_text(text.as_bytes());
+        write_all_async(conn, self.writer.data()).await?;
         Ok(())
     }
 
@@ -168,8 +164,8 @@ impl WsWriter {
         conn: &mut S,
         data: &[u8],
     ) -> Result<(), WsError> {
-        self.writer.encode_binary_into(data, &mut self.write_buf);
-        write_all_async(conn, self.write_buf.data()).await?;
+        self.writer.encode_binary(data);
+        write_all_async(conn, self.writer.data()).await?;
         Ok(())
     }
 
@@ -179,10 +175,8 @@ impl WsWriter {
         conn: &mut S,
         data: &[u8],
     ) -> Result<(), WsError> {
-        self.writer
-            .encode_ping_into(data, &mut self.write_buf)
-            .map_err(WsError::Encode)?;
-        write_all_async(conn, self.write_buf.data()).await?;
+        self.writer.encode_ping(data).map_err(WsError::Encode)?;
+        write_all_async(conn, self.writer.data()).await?;
         Ok(())
     }
 
@@ -192,10 +186,8 @@ impl WsWriter {
         conn: &mut S,
         data: &[u8],
     ) -> Result<(), WsError> {
-        self.writer
-            .encode_pong_into(data, &mut self.write_buf)
-            .map_err(WsError::Encode)?;
-        write_all_async(conn, self.write_buf.data()).await?;
+        self.writer.encode_pong(data).map_err(WsError::Encode)?;
+        write_all_async(conn, self.writer.data()).await?;
         Ok(())
     }
 
@@ -207,15 +199,13 @@ impl WsWriter {
         reason: &str,
     ) -> Result<(), WsError> {
         if code == CloseCode::NoStatus {
-            let mut dst = [0u8; 14];
-            let n = self.writer.encode_empty_close(&mut dst);
-            write_all_async(conn, &dst[..n]).await?;
+            self.writer.encode_empty_close();
         } else {
             self.writer
-                .encode_close_into(code.as_u16(), reason.as_bytes(), &mut self.write_buf)
+                .encode_close(code.as_u16(), reason.as_bytes())
                 .map_err(WsError::Encode)?;
-            write_all_async(conn, self.write_buf.data()).await?;
         }
+        write_all_async(conn, self.writer.data()).await?;
         Ok(())
     }
 
