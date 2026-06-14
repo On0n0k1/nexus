@@ -64,7 +64,7 @@
 use core::fmt;
 use std::mem::ManuallyDrop;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering, fence};
 use std::time::{Duration, Instant};
 
 use crossbeam_utils::sync::{Parker, Unparker};
@@ -223,6 +223,7 @@ impl<T> Sender<T> {
         // Park phase
         loop {
             self.shared.sender_parked.store(true, Ordering::SeqCst);
+            fence(Ordering::SeqCst);
 
             if self.producer.is_disconnected() {
                 self.shared.sender_parked.store(false, Ordering::Relaxed);
@@ -278,6 +279,7 @@ impl<T> Sender<T> {
 
     #[inline]
     fn notify_receiver(&self) {
+        fence(Ordering::SeqCst);
         if self.shared.receiver_parked.load(Ordering::SeqCst) {
             self.receiver_unparker.unpark();
         }
@@ -366,6 +368,7 @@ impl<T> Receiver<T> {
         // Park phase
         loop {
             self.shared.receiver_parked.store(true, Ordering::SeqCst);
+            fence(Ordering::SeqCst);
 
             if let Some(v) = self.consumer.pop() {
                 self.shared.receiver_parked.store(false, Ordering::Relaxed);
@@ -434,6 +437,7 @@ impl<T> Receiver<T> {
             }
 
             self.shared.receiver_parked.store(true, Ordering::SeqCst);
+            fence(Ordering::SeqCst);
 
             if let Some(v) = self.consumer.pop() {
                 self.shared.receiver_parked.store(false, Ordering::Relaxed);
@@ -487,6 +491,7 @@ impl<T> Receiver<T> {
 
     #[inline]
     fn notify_sender(&self) {
+        fence(Ordering::SeqCst);
         if self.shared.sender_parked.load(Ordering::SeqCst) {
             self.sender_unparker.unpark();
         }
