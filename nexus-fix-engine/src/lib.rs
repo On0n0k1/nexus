@@ -9,6 +9,8 @@
 
 mod frame;
 mod framework;
+#[cfg(unix)]
+pub mod persist;
 mod session;
 
 pub use frame::{
