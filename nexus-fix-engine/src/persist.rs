@@ -50,7 +50,7 @@ impl<'a> Iterator for ResendIter<'a> {
                 });
             }
             let seq = self.seq;
-            self.seq += 1;
+            self.seq = self.seq.saturating_add(1);
             let is_gap = match self.journal.resend_one(seq) {
                 ResendPlan::GapFill => true,
                 ResendPlan::Replay(frame) => {

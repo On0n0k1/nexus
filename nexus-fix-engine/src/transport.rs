@@ -45,6 +45,7 @@ pub struct FixConnection<S, D: FixDictionary> {
     state: SessionState,
     journal: FixJournal,
     config: SessionConfig,
+    garbage_frames: u64,
 }
 
 pub struct FixConnectionBuilder<D: FixDictionary> {
@@ -109,6 +110,7 @@ impl<D: FixDictionary> FixConnectionBuilder<D> {
             state,
             journal,
             config,
+            garbage_frames: 0,
         })
     }
 
@@ -134,6 +136,7 @@ impl<D: FixDictionary> FixConnectionBuilder<D> {
             state,
             journal,
             config,
+            garbage_frames: 0,
         }
     }
 }
@@ -164,6 +167,7 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
             state,
             journal,
             config,
+            garbage_frames: 0,
         }
     }
 
@@ -173,6 +177,10 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
 
     pub fn state_mut(&mut self) -> &mut SessionState {
         &mut self.state
+    }
+
+    pub fn garbage_frame_count(&self) -> u64 {
+        self.garbage_frames
     }
 
     pub fn allocate_seq(&mut self) -> u32 {
@@ -230,7 +238,9 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                 Err(FrameError::MessageTooLarge { size }) => {
                     return Err(Error::FrameTooLarge(size));
                 }
-                Err(FrameError::Garbage { .. }) => {}
+                Err(FrameError::Garbage { .. }) => {
+                    self.garbage_frames += 1;
+                }
                 Ok(None) => {
                     let n = {
                         let spare = self.reader.inner.spare();
@@ -399,6 +409,11 @@ impl<S: Read + Write, D: FixDictionary> FixConnection<S, D> {
                     self.writer.flush_to(&mut self.stream).map_err(Error::Io)?;
                 }
                 if let Some(Event::ResendRange { begin: rb, end: re }) = out.event() {
+                    let re = if re == 0 {
+                        self.state.next_outbound_seq().saturating_sub(1)
+                    } else {
+                        re.min(self.state.next_outbound_seq().saturating_sub(1))
+                    };
                     do_resend::<S, D>(
                         rb,
                         re,
